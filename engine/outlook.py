@@ -16,12 +16,16 @@ from models.signalModel import Direction
 from signals.base import clip
 
 SKILL = 0.25            # at full conviction the centre moves a quarter of a typical move
-LEAN_THRESHOLD = 0.2    # below this the outlook says "no clear lean"
+LEAN_THRESHOLD = 0.15   # at or above this the lean is stated plainly; below it, as "slight"
+COIN_FLIP = 0.03        # below this there is genuinely nothing to go on
+PRIOR_WEIGHT = 0.25     # pulls the score toward neutral when little evidence is present
 BASE_FUNDING_APR = 11.0 # Hyperliquid's resting funding (~0.00125%/h); crowding is judged against it
 
 # How much each piece of evidence counts, by horizon. Microstructure (book,
 # sweeps) matters for the next minute; positioning (crowded funding) for the
-# next hours. Rows sum to 1, so missing evidence pulls the lean toward neutral.
+# next hours. The score is averaged over the evidence that is actually present
+# (plus a small neutral prior), so a quiet funding rate doesn't silence the
+# book and flow on long horizons.
 WEIGHTS = {
     "short": {"book": 0.35, "flow": 0.25, "sweeps": 0.15, "momentum": 0.10, "crowding": 0.00, "absorption": 0.15},
     "medium": {"book": 0.20, "flow": 0.25, "sweeps": 0.10, "momentum": 0.10, "crowding": 0.15, "absorption": 0.20},
@@ -48,7 +52,9 @@ def components(ex: Explanation, book_imbalance: float | None) -> dict[str, tuple
         imb = flow.metrics.get("imbalance", 0.0)
         buy, sell = flow.metrics.get("buy_notional", 0.0), flow.metrics.get("sell_notional", 0.0)
         share = (buy if imb >= 0 else sell) / (buy + sell) if buy + sell else 0.5
-        out["flow"] = (clip(imb / 0.4), f"{'buyers' if imb >= 0 else 'sellers'} took {share:.0%} of flow")
+        # Flow seen over only part of a long window says less about it.
+        cov = clip(ex.flow_coverage * 2, 0.2, 1.0)
+        out["flow"] = (clip(imb / 0.4) * cov, f"{'buyers' if imb >= 0 else 'sellers'} took {share:.0%} of flow")
 
         opposite = ex.move.direction is not Direction.NEUTRAL and flow.direction is not ex.move.direction
         if flow.strength >= 0.5 and (ex.move.significance is Significance.QUIET or opposite):
@@ -78,25 +84,31 @@ def make_outlook(ex: Explanation, book_imbalance: float | None, sigma_1s_bps: fl
                  hit_rate: float | None = None, scored: int = 0) -> Outlook:
     w = WEIGHTS[horizon_key]
     comps = components(ex, book_imbalance)
-    score = clip(sum(w.get(k, 0.0) * v for k, (v, _) in comps.items()))
+    present = sum(w.get(k, 0.0) for k in comps if w.get(k, 0.0) > 0)
+    score = clip(sum(w.get(k, 0.0) * v for k, (v, _) in comps.items()) / (present + PRIOR_WEIGHT))
     sigma_h = max(sigma_1s_bps, 1e-6) * math.sqrt(ex.seconds)
     expected = SKILL * score * sigma_h
     p_up = _phi(expected / sigma_h)
-    lean = Direction.UP if score >= LEAN_THRESHOLD else Direction.DOWN if score <= -LEAN_THRESHOLD else Direction.NEUTRAL
+    lean = Direction.UP if score >= COIN_FLIP else Direction.DOWN if score <= -COIN_FLIP else Direction.NEUTRAL
 
     ranked = sorted(comps.items(), key=lambda kv: -abs(w.get(kv[0], 0.0) * kv[1][0]))
-    if lean is not Direction.NEUTRAL:
-        ranked = [kv for kv in ranked if kv[1][0] * score > 0]
-    reasons = [r for k, (v, r) in ranked if abs(w.get(k, 0.0) * v) >= 0.02][:2]
+    ranked = [(k, v, r) for k, (v, r) in ranked if abs(w.get(k, 0.0) * v) >= 0.01]
+    backing = [r for k, v, r in ranked if v * score > 0][:2]
+    against = [r for k, v, r in ranked if v * score < 0][:1]
+    why = ", ".join(backing) if backing else "book and flow balanced"
+    if against:
+        why += f" — but {against[0]}"
 
     typical = f"typical ±{sigma_h / 100:.2f}%"
+    odds = p_up if lean is not Direction.DOWN else 1 - p_up
+    odds_txt = f"{odds:.1%}" if odds < 0.52 else f"{odds:.0%}"   # 50.6% rather than a misleading 51%
     if lean is Direction.NEUTRAL:
-        why = ", ".join(reasons) if reasons else "book and flow balanced"
-        line = f"Next {ex.window}: no clear lean · {typical} — {why}"
+        line = f"Next {ex.window}: coin flip (50%) · {typical} — {why}"
     else:
-        odds = p_up if lean is Direction.UP else 1 - p_up
-        line = (f"Next {ex.window}: lean {lean.value} ({odds:.0%}) · expected {expected / 100:+.2f}%, "
-                f"{typical} — {', '.join(reasons)}")
+        strength = "lean" if abs(score) >= LEAN_THRESHOLD else "slight lean"
+        line = (f"Next {ex.window}: {strength} {lean.value} ({odds_txt}) · expected {expected / 100:+.2f}%, "
+                f"{typical} — {why}")
+    reasons = backing + against
     return Outlook(
         horizon_s=ex.seconds, lean=lean, score=round(score, 3), expected_bps=expected, range_bps=sigma_h,
         p_up=round(p_up, 3), reasons=reasons, line=line, hit_rate=hit_rate, scored=scored,
