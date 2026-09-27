@@ -7,7 +7,7 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from typing import Any
 
-from config import BOOK_LEVELS_SHOWN, MAX_WINDOW_S, WINDOWS
+from config import BOOK_LEVELS_SHOWN, CHART_POINTS, MAX_WINDOW_S, WINDOWS
 from models.explanationModel import Explanation, MoveEvent
 from signals.liquidations import is_sweep
 
@@ -98,7 +98,8 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
         "explanations": {w: explanation_dict(ex) for w, ex in an.latest.items()},
         "book": book_d,
         "trades": trades,
-        "series": [[t, m] for t, m in st.mid_series(MAX_WINDOW_S)],
+        "series": [[t, m] for t, m in st.mid_series(MAX_WINDOW_S, step_ms=_chart_step_ms())],
+        "chart_span_s": MAX_WINDOW_S,
         "events": [event_dict(e) for e in an.events.recent(events_limit)],
         "engine": {"runs": an.runs, "dropped": st.dropped, "trades_buffered": len(st.trades)},
     })
@@ -109,3 +110,8 @@ def _ticker(pipe) -> dict:
     ex = pipe.analyzer.latest.get("1m")
     return {"mid": pipe.state.mid, "move_1m_pct": ex.move.move_pct if ex else None,
             "significance": ex.move.significance.value if ex else None}
+
+
+def _chart_step_ms() -> int:
+    """Whole seconds per chart point: 1s for a 15m chart, 4s for a 60m one."""
+    return max(1, math.ceil(MAX_WINDOW_S / CHART_POINTS)) * 1000

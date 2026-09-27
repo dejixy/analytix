@@ -5,7 +5,7 @@ Logic, in order:
   1. Classify every signal against the move: supports / opposes / neutral.
   2. Rank supporters by weighted strength → headline names the top two.
      Weights depend on the horizon: sweeps matter most for 1m, positioning
-     for 15m — so the same data yields a different thesis per timeframe.
+     for 60m — so the same data yields a different thesis per timeframe.
   3. Strong opposers become "headwinds". Aggressive flow that *lost* (sellers
      hammering while price rose) is absorption — worth calling out by name.
   4. Confidence = how one-sided the evidence is.

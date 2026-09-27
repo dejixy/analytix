@@ -3,7 +3,7 @@ import { fmtPct, fmtPrice, fmtTime } from "../format.js";
 
 const HEIGHT = 420;
 const M = { top: 12, right: 78, bottom: 26, left: 10 };
-const SPAN_MS = 15 * 60 * 1000;
+const TICK_MINUTES = [1, 2, 3, 5, 10, 15, 30, 60];
 
 function niceStep(range, target = 5) {
   const raw = range / target;
@@ -23,7 +23,8 @@ function nearest(points, t) {
   return Math.abs(points[lo][0] - t) <= Math.abs(points[hi][0] - t) ? points[lo] : points[hi];
 }
 
-export default function PriceChart({ series, events, nowMs, windowSeconds, windowLabel, pinned, onPick }) {
+export default function PriceChart({ series, events, nowMs, spanSeconds, windowSeconds, windowLabel, pinned, onPick }) {
+  const SPAN_MS = spanSeconds * 1000; // the chart covers the longest timeframe
   const wrapRef = useRef(null);
   const [width, setWidth] = useState(800);
   const [hover, setHover] = useState(null);
@@ -58,10 +59,11 @@ export default function PriceChart({ series, events, nowMs, windowSeconds, windo
     const yTicks = [];
     for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) yTicks.push(v);
     const xTicks = [];
-    for (let t = Math.ceil(x0 / 180000) * 180000; t <= nowMs; t += 180000) xTicks.push(t);
+    const tickMs = (TICK_MINUTES.find((m) => m * 60000 * 6 >= SPAN_MS) || 60) * 60000;
+    for (let t = Math.ceil(x0 / tickMs) * tickMs; t <= nowMs; t += tickMs) xTicks.push(t);
     const d = pts.map(([t, p], i) => `${i ? "L" : "M"}${xs(t).toFixed(1)},${ys(p).toFixed(1)}`).join("");
     return { xs, ys, yTicks, xTicks, d, iw, ih, stepDigits: step < 1 ? 2 : step < 10 ? 1 : 0 };
-  }, [pts, width, x0, nowMs]);
+  }, [pts, width, x0, nowMs, SPAN_MS]);
 
   const shownEvents = events.filter((e) => e.window === windowLabel && e.peak_ms >= x0);
   if (pinned && pinned.peak_ms >= x0 && !shownEvents.some((e) => e.id === pinned.id)) shownEvents.push(pinned);
@@ -81,7 +83,7 @@ export default function PriceChart({ series, events, nowMs, windowSeconds, windo
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Mid price · 15m</h2>
+        <h2 className="panel-title">Mid price · {Math.round(spanSeconds / 60)}m</h2>
         <span className="panel-sub">shaded: {windowLabel} window · markers: {windowLabel} significant moves</span>
       </div>
       <div className="chart-wrap" ref={wrapRef}>

@@ -12,6 +12,7 @@ Numbers arrive as strings ("3012.5"); float() handles both.
 """
 from typing import Any
 
+from config import LIQUIDATOR_ADDRESSES
 from models.bookModel import BookLevel, OrderBook
 from models.contextModel import AssetContext
 from models.tradeModel import Trade, TradeSide
@@ -19,7 +20,9 @@ from state import Event
 
 
 def parse_trade(raw: dict[str, Any]) -> Trade:
-    users = raw.get("users") or [None, None]
+    # Wallet addresses are only needed to match liquidators; skipping them keeps
+    # an hour of trades per coin small in memory.
+    users = (raw.get("users") or [None, None]) if LIQUIDATOR_ADDRESSES else [None, None]
     return Trade(
         timestamp=int(raw["time"]),
         price=float(raw["px"]),

@@ -66,6 +66,7 @@ export default function App() {
           series={snap.series}
           events={snap.events}
           nowMs={snap.now_ms}
+          spanSeconds={snap.chart_span_s || Math.max(...Object.values(snap.windows))}
           windowSeconds={snap.windows[selected]}
           windowLabel={selected}
           pinned={pinned}

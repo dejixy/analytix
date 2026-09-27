@@ -149,6 +149,9 @@ button { font: inherit; color: inherit; }
 .align-icon { font-size: 11px; text-align: center; color: var(--muted); }
 .card-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted); }
 .shape-tag { color: var(--ink-2); }
+/* No red inside the timeframe cards: downward bars go grey, down moves stay white with ▼ */
+.card .fill.down { background: var(--grey-bar); }
+.card .move.down { color: var(--ink); }
 
 /* ── Chart ──────────────────────────────────────────────────────────────── */
 .chart-wrap { position: relative; padding-top: 6px; }

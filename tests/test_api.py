@@ -26,16 +26,16 @@ def test_health_reports_finished_replay(client):
 
 def test_snapshot_shape(client):
     s = client.get("/api/snapshot").json()
-    assert set(s["explanations"]) == {"1m", "5m", "15m"}
+    assert set(s["explanations"]) == {"1m", "10m", "60m"}
     ex = s["explanations"]["1m"]
     assert ex["headline"] and ex["drivers"] and "move_pct" in ex["move"]
     assert len(s["book"]["bids"]) > 0 and len(s["trades"]) == 40
-    assert 800 <= len(s["series"]) <= 901
+    assert 300 <= len(s["series"]) <= 901      # 25-minute sample, one point per 4s
     assert s["events"], "expected the scripted moves in the event log"
 
 
 def test_explain_endpoint_and_unknown_window(client):
-    assert client.get("/api/explain/5m").json()["window"] == "5m"
+    assert client.get("/api/explain/10m").json()["window"] == "10m"
     assert client.get("/api/explain/3h").status_code == 404
 
 

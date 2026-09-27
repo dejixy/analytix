@@ -24,7 +24,7 @@ class Baseline:
 
 @dataclass(frozen=True, slots=True)
 class WindowSlice:
-    label: str                   # "5m"
+    label: str                   # "10m"
     seconds: int
     start_ms: int
     end_ms: int

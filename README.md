@@ -1,6 +1,6 @@
 # Analytix
 
-**Why did this price move?** Analytix is a real-time market microstructure tool for Hyperliquid perps. It ingests live trades, the L2 order book and funding/open-interest data for several coins at once (ETH, BTC, SOL and HYPE by default, switchable in the top bar). It then explains each move over 1m, 5m and 15m windows in plain language, for example:
+**Why did this price move?** Analytix is a real-time market microstructure tool for Hyperliquid perps. It ingests live trades, the L2 order book and funding/open-interest data for several coins at once (ETH, BTC, SOL and HYPE by default, switchable in the top bar). It then explains each move over 1m, 10m and 60m windows in plain language, for example:
 
 > **ETH −1.33% in 1m** — driven by a long-liquidation-style cascade (22 sweeps, $3.79M) and aggressive selling (92% of taker volume)
 > · A significant move: 15.0× the typical 1m move (±9 bps)
@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 37 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 38 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -76,7 +76,7 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 - **Signals are pure functions.** Each one takes a window slice and returns a common `SignalResult` shape, so the explainer can rank them without knowing how they're computed. Adding a signal is one file plus one line in the registry.
 - **Significance is relative.** A move is scored against the market's own recent volatility: `z = move / (σ₁ₛ·√seconds)`. Ten bps is a big deal on a sleepy Sunday and noise during CPI.
 - **Derived events are computed at ingestion.** Fills are stitched into taker orders once, when they arrive, instead of for every window on every tick. That made the engine about 6× faster.
-- **Each timeframe tells its own story.** Driver weights depend on the horizon. Sweeps and pulled liquidity explain seconds to minutes, so they lead the 1m thesis. Open interest and funding explain slower moves, so they lead the 15m thesis. Windows longer than a minute also report the move's *shape*: one sharp minute (a shock) or a steady grind (a trend).
+- **Each timeframe tells its own story.** Driver weights depend on the horizon. Sweeps and pulled liquidity explain seconds to minutes, so they lead the 1m thesis. Open interest and funding explain slower moves, so they lead the 60m thesis. Windows longer than a minute also report the move's *shape*: one sharp minute (a shock) or a steady grind (a trend).
 - **One socket, many coins.** Live mode subscribes every coin in `ANALYTIX_COINS` on a single WebSocket and routes each message to its coin's own pipeline. The browser picks a coin with `/ws?coin=BTC`.
 - **Hysteresis in the event log.** An episode opens at 2.5σ and stays open while the move is still ≥1.5σ. A move hovering at the threshold is logged once, not five times.
 
@@ -101,7 +101,7 @@ The explainer also calls out **absorption**: heavy one-sided aggression that *lo
 ### Honest limitations
 
 - **Liquidations are inferred, not confirmed.** Hyperliquid's public feed doesn't label liquidations, because a market liquidation executes as an ordinary taker order. Analytix detects liquidation-*style* cascades from sweep footprints. If you know liquidator addresses, set `ANALYTIX_LIQUIDATORS=0xabc…,0xdef…` and matching trades are flagged as confirmed.
-- **History is 15 minutes plus a margin.** Older moves live on only in the event log (the last 200 events, in memory). Persisting them is on the roadmap.
+- **History is 60 minutes plus a margin.** Long windows are recomputed less often (the 60m view every 10 seconds) since they barely change second to second. Older moves live on only in the event log (the last 200 events, in memory). Persisting them is on the roadmap.
 - **The synthetic session is a toy market.** It is scripted so the tests have known answers. Record real sessions with `python -m scripts.record --minutes 60` and replay those.
 - **The live client was written against the documented message formats**, and the parsers are tested against those shapes. Watch the first live run for surprises (see the checklist below).
 
@@ -129,7 +129,7 @@ Thresholds live in `config.py`.
 | `GET /api/health` | feed status and engine tick count |
 | `GET /api/config` | watched coins, windows and mode |
 | `GET /api/snapshot?coin=BTC` | everything the dashboard shows for one coin |
-| `GET /api/explain/{1m\|5m\|15m}?coin=BTC` | one window's explanation, drivers and signals |
+| `GET /api/explain/{1m\|10m\|60m}?coin=BTC` | one window's explanation, drivers and signals |
 | `GET /api/events?coin=BTC&window=1m&limit=20` | significant moves, newest first |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
@@ -139,7 +139,7 @@ Thresholds live in `config.py`.
 
 1. `python -m uvicorn api.app:app`. The badge should say **Live** within a few seconds.
 2. `/api/health`: `messages` should be climbing and `engine_runs` should tick once per second.
-3. Wait 15 minutes for the 15m window to fill. Until then the cards say "warming up".
+3. The 10m card fills after 10 minutes and the 60m card after an hour. Until then the cards say "warming up".
 4. Record a session (`python -m scripts.record --minutes 30`) and run `python -m scripts.replayReport <file> --coin ETH`. Check whether the explanations match what you saw.
 5. Tune `config.py`. The sweep floor (`MIN_SWEEP_NOTIONAL`) and `SIGNIFICANT_Z` are the first knobs to adjust against real ETH flow.
 
@@ -147,5 +147,5 @@ Thresholds live in `config.py`.
 
 - Correlate spot moves with prediction-market odds (e.g. Polymarket ETH price markets)
 - Persist the event log (SQLite or Postgres) and add a "what happened at 14:32?" query over history
-- Longer windows (1h, 4h): add them to `WINDOWS`, and the buffers follow via `HISTORY_SECONDS`
+- Longer windows (4h+): add them to `WINDOWS`, and the buffers follow via `HISTORY_SECONDS` (watch memory: an hour of trades per coin is already the largest buffer)
 - Per-coin thresholds (a $50K sweep floor is large for SOL, small for BTC)
