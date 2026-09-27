@@ -26,7 +26,15 @@ def test_parse_trades():
     assert len(events) == 2 and all(isinstance(e, Trade) for e in events)
     t = events[0]
     assert t.side is TradeSide.BUY and t.price == 3012.5 and t.size == 1.25
-    assert t.buyer == "0xbuyer" and t.hash == "0xabc"
+    assert t.hash == "0xabc"
+    assert t.buyer is None          # wallets are dropped unless liquidator matching is on
+
+
+def test_wallets_kept_when_liquidators_configured(monkeypatch):
+    import ingestion.parsers as parsers
+    monkeypatch.setattr(parsers, "LIQUIDATOR_ADDRESSES", {"0xother"})
+    t = parse_message(TRADES, "ETH")[0]
+    assert t.buyer == "0xbuyer" and t.seller == "0xseller"
 
 
 def test_parse_book():

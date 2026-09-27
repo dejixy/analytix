@@ -21,18 +21,22 @@ HL_WS_URL = os.getenv("ANALYTIX_WS_URL", "wss://api.hyperliquid.xyz/ws")
 # ── Timeframes ──────────────────────────────────────────────────────────────
 WINDOWS: dict[str, int] = {
     "1m": 60,
-    "5m": 300,
-    "15m": 900,
+    "10m": 600,
+    "60m": 3600,
 }
 MAX_WINDOW_S = max(WINDOWS.values())
 
-# History buffers keep the longest window plus a margin, so the 15m window can
+# History buffers keep the longest window plus a margin, so the longest window can
 # still find the book / funding state *as of* its start.
 BUFFER_MARGIN_S = 30
 HISTORY_SECONDS = MAX_WINDOW_S + BUFFER_MARGIN_S
 
 # ── Cadence ─────────────────────────────────────────────────────────────────
 ANALYSIS_INTERVAL_MS = 1_000   # engine runs once per *exchange* second
+# Long windows barely change second to second, so each window is recomputed at
+# most every seconds/WINDOW_REFRESH_DIVISOR: 1m every 1s, 10m every ~2s, 60m every 10s.
+WINDOW_REFRESH_DIVISOR = 360
+CHART_POINTS = 900             # the price chart is downsampled to about this many points
 BROADCAST_INTERVAL_S = 0.5     # API pushes to browsers twice per *wall* second
 STALE_AFTER_S = 5.0            # ingestion flags the feed stale after this much silence
 PING_INTERVAL_S = 20.0         # Hyperliquid drops idle sockets after ~60s

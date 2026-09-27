@@ -23,7 +23,6 @@ export default function TradeTape({ trades }) {
                     <td className="muted">{fmtTime(t.ts)}</td>
                     <td>
                       <span className="side">
-                        <span className={`dot ${buy ? "up" : "down"}`} />
                         {buy ? "Buy" : "Sell"}
                         {t.sweep && <span className="chip">SWEEP</span>}
                       </span>

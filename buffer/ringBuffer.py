@@ -75,7 +75,7 @@ class RingBuffer(Generic[T]):
         is still measured against the same "now" as the busy trade buffer.
 
         Walks from the newest end and stops at the first item older than the
-        cutoff, so a 1m query on a 15m buffer touches ~1/15th of it.
+        cutoff, so a 1m query on a 60m buffer touches ~1/60th of it.
         """
         if seconds > self.max_seconds:
             raise ValueError(f"Buffer only holds {self.max_seconds}s, asked for {seconds}s")

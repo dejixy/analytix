@@ -9,6 +9,7 @@ import math
 
 from config import (
     ANALYSIS_INTERVAL_MS,
+    WINDOW_REFRESH_DIVISOR,
     DEFAULT_SIGMA_1S_BPS,
     MIN_SIGMA_SAMPLES,
     MIN_SWEEP_NOTIONAL,
@@ -37,6 +38,7 @@ class Analyzer:
         self.runs = 0
         self._last_run_ms = 0
         self._baseline_ms = 0
+        self._window_ms: dict[str, int] = {}   # when each window was last recomputed
 
     def reset(self) -> None:
         self.__init__(self.state, self.windows, self.interval_ms)
@@ -52,19 +54,23 @@ class Analyzer:
         if self.baseline is None or now_ms - self._baseline_ms >= BASELINE_REFRESH_MS:
             self.baseline = self.compute_baseline()
             self._baseline_ms = now_ms
-        latest: dict[str, Explanation] = {}
+        refreshed: dict[str, Explanation] = {}
         for label, seconds in self.windows.items():
+            every_ms = max(self.interval_ms, seconds * 1000 // WINDOW_REFRESH_DIVISOR)
+            if label in self.latest and now_ms - self._window_ms.get(label, 0) < every_ms:
+                continue                                  # a 60m view doesn't change in one second
             sl = self.build_slice(label, seconds, now_ms, self.baseline)
             if sl is None:
                 continue
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
-            latest[label] = explain(self.state.coin, sl, move, signals)
-        self.latest = latest
-        self.events.update(latest, now_ms)
+            refreshed[label] = explain(self.state.coin, sl, move, signals)
+            self._window_ms[label] = now_ms
+        self.latest = {**self.latest, **refreshed}
+        self.events.update(refreshed, now_ms)
         self._last_run_ms = now_ms
         self.runs += 1
-        return latest
+        return self.latest
 
     # ── baseline: what does "normal" look like right now? ───────────────────
     def compute_baseline(self) -> Baseline:

@@ -18,7 +18,7 @@ class BookSummary:
     A compressed snapshot of the book at one moment.
 
     The OrderBook itself is *state* (we only keep the latest). But to answer
-    "how did depth change over the last 5m?" we need history, so every book
+    "how did depth change over the last 10m?" we need history, so every book
     update also emits one of these small *events* into a RingBuffer.
     """
     timestamp: int

@@ -88,5 +88,5 @@ def test_timeframes_tell_different_stories(replayed):
 def test_longer_windows_describe_the_move_shape(replayed):
     pipe, _ = replayed
     r = regime("long_liquidation")
-    ev = max(events_in(pipe, "5m", r.start_s, r.end_s + 120), key=lambda e: abs(e.explanation.move.z))
+    ev = max(events_in(pipe, "10m", r.start_s, r.end_s + 600), key=lambda e: abs(e.explanation.move.z))
     assert ev.explanation.shape == "burst" and "one sharp minute" in ev.explanation.headline
