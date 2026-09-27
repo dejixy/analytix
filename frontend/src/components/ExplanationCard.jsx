@@ -1,7 +1,6 @@
 import { arrow, fmtPct, headlineBody } from "../format.js";
 
 const ALIGN_ICON = { supports: "✓", opposes: "✕", neutral: "–" };
-const SHAPE = { burst: "one sharp minute", grind: "steady grind", mixed: "mixed shape" };
 const ALIGN_TEXT = { supports: "supports the move", opposes: "pushed against the move", neutral: "not a factor" };
 
 export function DriverBars({ ex, limit = 4 }) {
@@ -28,7 +27,7 @@ export function DriverBars({ ex, limit = 4 }) {
 export default function ExplanationCard({ ex, window, selected, onSelect }) {
   if (!ex) {
     return (
-      <div className="panel card">
+      <div className="panel card" data-window={window}>
         <div className="card-top"><span className="window-chip">{window}</span></div>
         <div className="headline muted">waiting for data…</div>
       </div>
@@ -37,7 +36,7 @@ export default function ExplanationCard({ ex, window, selected, onSelect }) {
   const { move } = ex;
   const dirCls = move.significance === "quiet" ? "" : move.direction;
   return (
-    <button className={`panel card ${selected ? "selected" : ""}`} onClick={onSelect} aria-pressed={selected}>
+    <button className={`panel card ${selected ? "selected" : ""}`} onClick={onSelect} aria-pressed={selected} data-window={window}>
       <div className="card-top">
         <span className="window-chip">{window}</span>
         <span className={`move num ${dirCls}`}>
@@ -54,9 +53,15 @@ export default function ExplanationCard({ ex, window, selected, onSelect }) {
       <div className="card-foot">
         <span>
           {move.significance === "quiet" ? "no move to explain" : `confidence ${Math.round(ex.confidence * 100)}%`}
-          {ex.shape && <span className="shape-tag"> · {SHAPE[ex.shape]}</span>}
+          {ex.shape_label && <span className="shape-tag"> · {ex.shape_label}</span>}
         </span>
-        <span>{ex.coverage < 0.95 ? `warming up · ${Math.round(ex.coverage * 100)}% of window` : `range ${(((move.high / move.low) - 1) * 100).toFixed(2)}%`}</span>
+        <span>
+          {ex.coverage < 0.95
+            ? `warming up · ${Math.round(ex.coverage * 100)}% of window`
+            : ex.flow_coverage < 0.95
+              ? `flow data: ${Math.round(ex.flow_coverage * 100)}% of window`
+              : `range ${(((move.high / move.low) - 1) * 100).toFixed(2)}%`}
+        </span>
       </div>
     </button>
   );

@@ -23,7 +23,11 @@ export function useSnapshot(coin) {
         retry = 0;
         setConn("open");
       };
-      ws.onmessage = (e) => setSnap(JSON.parse(e.data));
+      // The long-window chart series only rides along every few pushes — keep the last one.
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        setSnap((prev) => (msg.bar_series || !prev || prev.coin !== msg.coin ? msg : { ...msg, bar_series: prev.bar_series }));
+      };
       ws.onclose = () => {
         setConn("closed");
         if (!disposed) timer = setTimeout(connect, Math.min(1000 * 2 ** retry++, 10000));

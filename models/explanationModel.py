@@ -37,8 +37,9 @@ class PriceMove:
     expected_bps: float
     significance: Significance
     direction: Direction
-    burst_bps: float = 0.0  # biggest single-minute move inside the window, in the move's direction
+    burst_bps: float = 0.0  # biggest move over one burst span inside the window, in the move's direction
     burst_end_ms: int = 0
+    burst_span_s: int = 60
 
     @property
     def burst_share(self) -> float:
@@ -63,8 +64,25 @@ class Explanation:
     drivers: list[Driver]
     confidence: float
     signals: dict[str, SignalResult] = field(default_factory=dict)
-    shape: str = ""         # "burst" | "grind" | "" — only for windows longer than a minute
+    shape: str = ""         # "burst" | "grind" | "mixed" | "" — only for windows longer than a minute
+    shape_label: str = ""   # human text for the shape, e.g. "one sharp 30-minute stretch"
+    flow_coverage: float = 1.0
+    outlook: "Outlook | None" = None
 
+
+@dataclass(frozen=True, slots=True)
+class Outlook:
+    """A lean for the next window-length of time — a heuristic estimate, scored against what happens."""
+    horizon_s: int
+    lean: Direction
+    score: float            # -1..+1 combined evidence
+    expected_bps: float     # centre of the estimate
+    range_bps: float        # typical (1σ) move over the horizon
+    p_up: float             # rough probability price is higher at the end of the horizon
+    reasons: list[str]
+    line: str
+    hit_rate: float | None = None   # share of past non-neutral leans that were right
+    scored: int = 0                 # how many past leans have been scored
 
 @dataclass(slots=True)
 class MoveEvent:

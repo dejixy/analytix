@@ -17,25 +17,47 @@ COIN = os.getenv("ANALYTIX_COIN", COINS[0] if COINS else "ETH")   # selected by 
 if COIN not in COINS:
     COINS.insert(0, COIN)
 HL_WS_URL = os.getenv("ANALYTIX_WS_URL", "wss://api.hyperliquid.xyz/ws")
+HL_INFO_URL = os.getenv("ANALYTIX_INFO_URL", "https://api.hyperliquid.xyz/info")
 
 # ── Timeframes ──────────────────────────────────────────────────────────────
 WINDOWS: dict[str, int] = {
     "1m": 60,
     "10m": 600,
     "60m": 3600,
+    "6h": 6 * 3600,
+    "12h": 12 * 3600,
+    "24h": 24 * 3600,
+    "1w": 7 * 86400,
 }
 MAX_WINDOW_S = max(WINDOWS.values())
 
-# History buffers keep the longest window plus a margin, so the longest window can
-# still find the book / funding state *as of* its start.
+# Two data tiers. Windows up to an hour read tick-level buffers (every trade,
+# every book update). Longer windows read one-minute bars — an hour of trades
+# per coin is already the biggest thing in memory; a week of them wouldn't fit.
+TICK_WINDOW_MAX_S = 3600
+TICK_WINDOWS = {k: v for k, v in WINDOWS.items() if v <= TICK_WINDOW_MAX_S}
+BAR_WINDOWS = {k: v for k, v in WINDOWS.items() if v > TICK_WINDOW_MAX_S}
+MAX_TICK_WINDOW_S = max(TICK_WINDOWS.values())
+
+# Tick buffers keep the longest tick window plus a margin, so it can still find
+# the book / funding state *as of* its start.
 BUFFER_MARGIN_S = 30
-HISTORY_SECONDS = MAX_WINDOW_S + BUFFER_MARGIN_S
+HISTORY_SECONDS = MAX_TICK_WINDOW_S + BUFFER_MARGIN_S
+
+# Minute bars keep the longest window plus an hour.
+BAR_SECONDS = 60
+BAR_HISTORY_S = MAX_WINDOW_S + 3600
+BACKFILL_INTERVAL = "5m"            # Hyperliquid serves the last 5000 candles: 5m covers ~17 days
+BACKFILL_ENABLED = os.getenv("ANALYTIX_BACKFILL", "1") == "1"
+BARS_DB = Path(os.getenv("ANALYTIX_BARS_DB", str(ROOT / "data" / "bars.sqlite")))
 
 # ── Cadence ─────────────────────────────────────────────────────────────────
 ANALYSIS_INTERVAL_MS = 1_000   # engine runs once per *exchange* second
 # Long windows barely change second to second, so each window is recomputed at
-# most every seconds/WINDOW_REFRESH_DIVISOR: 1m every 1s, 10m every ~2s, 60m every 10s.
+# most every seconds/WINDOW_REFRESH_DIVISOR: 1m every 1s, 10m every ~2s, 60m every 10s,
+# capped at MAX_REFRESH_MS so the 6h–1w cards still tick along.
 WINDOW_REFRESH_DIVISOR = 360
+MAX_REFRESH_MS = 15_000
 CHART_POINTS = 900             # the price chart is downsampled to about this many points
 BROADCAST_INTERVAL_S = 0.5     # API pushes to browsers twice per *wall* second
 STALE_AFTER_S = 5.0            # ingestion flags the feed stale after this much silence

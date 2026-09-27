@@ -7,7 +7,7 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from typing import Any
 
-from config import BOOK_LEVELS_SHOWN, CHART_POINTS, MAX_WINDOW_S, WINDOWS
+from config import BOOK_LEVELS_SHOWN, CHART_POINTS, MAX_TICK_WINDOW_S, WINDOWS
 from models.explanationModel import Explanation, MoveEvent
 from signals.liquidations import is_sweep
 
@@ -46,7 +46,8 @@ def event_dict(ev: MoveEvent) -> dict:
     }
 
 
-def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int = 30) -> dict:
+def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int = 30,
+                   include_bars: bool = True) -> dict:
     pipe = runtime.pipeline(coin)
     st, an = pipe.state, pipe.analyzer
     book, c = st.book, st.context
@@ -98,8 +99,9 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
         "explanations": {w: explanation_dict(ex) for w, ex in an.latest.items()},
         "book": book_d,
         "trades": trades,
-        "series": [[t, m] for t, m in st.mid_series(MAX_WINDOW_S, step_ms=_chart_step_ms())],
-        "chart_span_s": MAX_WINDOW_S,
+        "series": [[t, m] for t, m in st.mid_series(MAX_TICK_WINDOW_S, step_ms=_chart_step_ms())],
+        "chart_span_s": MAX_TICK_WINDOW_S,
+        **({"bar_series": bar_series(st)} if include_bars else {}),
         "events": [event_dict(e) for e in an.events.recent(events_limit)],
         "engine": {"runs": an.runs, "dropped": st.dropped, "trades_buffered": len(st.trades)},
     })
@@ -114,4 +116,22 @@ def _ticker(pipe) -> dict:
 
 def _chart_step_ms() -> int:
     """Whole seconds per chart point: 1s for a 15m chart, 4s for a 60m one."""
-    return max(1, math.ceil(MAX_WINDOW_S / CHART_POINTS)) * 1000
+    return max(1, math.ceil(MAX_TICK_WINDOW_S / CHART_POINTS)) * 1000
+
+
+def bar_series(st, recent_s: int = 86_400, recent_step_s: int = 120, old_step_s: int = 900) -> list[list[float]]:
+    """
+    Close prices for the long-window chart: 2-minute points for the last 24h,
+    15-minute points before that — about 1,300 points for a full week.
+    """
+    if not len(st.bars):
+        return []
+    cutoff = (st.now_ms or st.bars.newest.end_ms) - recent_s * 1000
+    points: dict[int, float] = {}
+    for b in st.bars:
+        step = (recent_step_s if b.end_ms >= cutoff else old_step_s) * 1000
+        points[b.end_ms // step * step] = b.close
+    out = [[t, p] for t, p in sorted(points.items())]
+    if st.mid is not None and st.now_ms:
+        out.append([st.now_ms, st.mid])
+    return out

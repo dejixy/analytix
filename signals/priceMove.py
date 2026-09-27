@@ -34,6 +34,7 @@ def price_move(s: WindowSlice) -> PriceMove:
     return PriceMove(
         burst_bps=s.burst_up_bps if up else s.burst_down_bps,
         burst_end_ms=s.burst_up_end_ms if up else s.burst_down_end_ms,
+        burst_span_s=s.burst_span_s,
         start_price=start,
         end_price=end,
         high=s.high if s.high is not None else max(start, end),
