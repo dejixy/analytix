@@ -13,6 +13,22 @@ function Gauge({ score }) {
   );
 }
 
+function OutlookLine({ o }) {
+  const [head, ...rest] = o.line.split(" — ");
+  const track =
+    o.hit_rate != null ? `called right ${Math.round(o.hit_rate * 100)}% of ${o.scored} times` : `scoring… ${o.scored}/10 leans checked`;
+  return (
+    <div className="outlook" title="Heuristic estimate from the current book, flow, sweeps, momentum and funding. Not financial advice.">
+      <span className={`outlook-lean ${o.lean}`}>{o.lean === "up" ? "▲" : o.lean === "down" ? "▼" : "•"}</span>
+      <span>
+        <span className="outlook-head">{head}</span>
+        {rest.length > 0 && <span className="ink2"> — {rest.join(" — ")}</span>}
+        <span className="muted"> · {track}</span>
+      </span>
+    </div>
+  );
+}
+
 export default function DetailPanel({ ex, pinned, onUnpin }) {
   if (!ex) {
     return (
@@ -39,6 +55,7 @@ export default function DetailPanel({ ex, pinned, onUnpin }) {
           </div>
         )}
         <p className="detail-headline">{ex.headline}</p>
+        {ex.outlook && <OutlookLine o={ex.outlook} />}
         <ul className="narrative">
           {ex.narrative.map((line, i) => (
             <li key={i}>{line}</li>

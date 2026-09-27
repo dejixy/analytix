@@ -20,8 +20,28 @@ from signals.base import WindowSlice
 
 ABSORPTION_STRENGTH = 0.5
 HEADWIND_STRENGTH = 0.4
+FADE_SHARE = 1.5     # one stretch moved ≥1.5× the net move → it spiked and mostly gave it back
 BURST_SHARE = 0.6    # one minute delivered ≥60% of the net move → a shock
 GRIND_SHARE = 0.4    # no minute delivered more than 40% → a grind
+
+
+def span_words(seconds: int) -> str:
+    """60 → 'minute', 1800 → '30-minute stretch', 3600 → 'hour', 50400 → '14-hour stretch'."""
+    if seconds <= 60:
+        return "minute"
+    if seconds == 3600:
+        return "hour"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}-hour stretch"
+    return f"{seconds // 60}-minute stretch"
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 3600:
+        return f"{seconds / 60:.0f} min"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f} h"
+    return f"{seconds / 86400:.1f} days"
 
 
 def _align(sig: SignalResult, move: PriceMove) -> Alignment:
@@ -100,14 +120,17 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
     shape = ""
     if not quiet and s.seconds > 60 and move.burst_bps:
         share = move.burst_share
-        shape = "burst" if share >= BURST_SHARE else "grind" if share <= GRIND_SHARE else "mixed"
+        shape = ("faded" if share >= FADE_SHARE else "burst" if share >= BURST_SHARE
+                 else "grind" if share <= GRIND_SHARE else "mixed")
 
     if not quiet:
         top = [sig for sig, _, _ in supporters[:2]]
         flow_opposes = any(sig.name == "volume_imbalance" and sig.strength >= HEADWIND_STRENGTH
                            for sig, _, _ in opposers)
         verb = "rose" if move.direction is Direction.UP else "fell"
-        lead = {"burst": "one sharp minute, ", "grind": "a steady grind, ", "mixed": ""}.get(shape, "")
+        words = span_words(move.burst_span_s)
+        lead = {"burst": f"one sharp {words}, ", "grind": "a steady grind, ", "faded": "a spike that mostly faded, ",
+                "mixed": ""}.get(shape, "")
         if top:
             reasons = " and ".join(sig.phrase for sig in top)
             headline = f"{coin} {pct} in {s.label} — {lead}driven by {reasons}"
@@ -121,13 +144,18 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
             f"A {move.significance.value} move: {abs(move.z):.1f}× the typical {s.label} move "
             f"(±{move.expected_bps:.0f} bps), range {move.low:,.2f}–{move.high:,.2f}."
         )
-        if shape == "burst":
+        if shape == "faded":
             narrative.append(
-                f"Shape: {move.burst_bps / 100:+.2f}% of the {pct} came in a single minute — a shock, not a trend."
+                f"Shape: the sharpest {words} moved {move.burst_bps / 100:+.2f}%, but most of it was given back — "
+                f"net only {pct}."
+            )
+        elif shape == "burst":
+            narrative.append(
+                f"Shape: {move.burst_bps / 100:+.2f}% of the {pct} came in a single {words} — a shock, not a trend."
             )
         elif shape == "grind":
             narrative.append(
-                f"Shape: spread out — the sharpest minute was only {move.burst_bps / 100:+.2f}% of the {pct}, "
+                f"Shape: spread out — the sharpest {words} was only {move.burst_bps / 100:+.2f}% of the {pct}, "
                 f"so this is a trend, not a one-off shock."
             )
         narrative += [sig.summary for sig, _, _ in supporters[:3]]
@@ -147,7 +175,12 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
         narrative.append(f"Positioning: {fund.summary}")
     if s.coverage < 0.95:
         have = s.seconds * s.coverage
-        narrative.append(f"Warming up — {have / 60:.1f} of {s.seconds / 60:.0f} minutes of history so far.")
+        narrative.append(f"Warming up — {_duration(have)} of {_duration(s.seconds)} of history so far.")
+    if s.resolution == "bar" and s.flow_coverage < 0.95:
+        narrative.append(
+            f"Order flow, depth and OI cover the last {_duration(s.seconds * s.flow_coverage)} of this window "
+            f"(recorded live; Hyperliquid only serves price history)."
+        )
 
     return Explanation(
         window=s.label,
@@ -162,4 +195,7 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
         confidence=round(confidence, 3),
         signals=by_name,
         shape=shape,
+        shape_label={"burst": f"one sharp {span_words(move.burst_span_s)}", "grind": "steady grind",
+                     "faded": "spike, mostly faded", "mixed": "mixed shape"}.get(shape, ""),
+        flow_coverage=round(s.flow_coverage, 3),
     )

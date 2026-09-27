@@ -23,6 +23,25 @@ class Baseline:
 
 
 @dataclass(frozen=True, slots=True)
+class FlowAgg:
+    """Taker flow summed from minute bars (long windows only)."""
+    buy: float
+    sell: float
+    fills: int
+    seconds: float      # seconds of the window that live flow covers
+    coverage: float     # seconds / window length
+
+
+@dataclass(frozen=True, slots=True)
+class SweepAgg:
+    buy_n: int
+    sell_n: int
+    buy_notional: float
+    sell_notional: float
+    total_notional: float
+
+
+@dataclass(frozen=True, slots=True)
 class WindowSlice:
     label: str                   # "10m"
     seconds: int
@@ -38,10 +57,15 @@ class WindowSlice:
     low: float | None
     coverage: float              # 0..1 — how much of the window we have data for
     baseline: Baseline
-    burst_up_bps: float = 0.0    # largest 60s rise inside the window
-    burst_down_bps: float = 0.0  # largest 60s fall inside the window (negative)
+    burst_up_bps: float = 0.0    # largest rise over any burst_span_s stretch inside the window
+    burst_down_bps: float = 0.0  # largest fall over any burst_span_s stretch (negative)
     burst_up_end_ms: int = 0
     burst_down_end_ms: int = 0
+    burst_span_s: int = 60       # 1 minute for tick windows, window/12 for long ones
+    resolution: str = "tick"     # "tick" (raw trades/book) | "bar" (minute bars)
+    flow: FlowAgg | None = None  # bar windows: pre-summed flow instead of trades
+    sweep_agg: SweepAgg | None = None
+    flow_coverage: float = 1.0   # share of the window with live flow/depth/OI data
 
     @property
     def price_start(self) -> float | None:

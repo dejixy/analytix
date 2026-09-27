@@ -17,8 +17,8 @@ them are reported as confirmed liquidations.
 """
 from dataclasses import dataclass
 
-from config import CASCADE_MAX_GAP_MS, CASCADE_MIN_SWEEPS, MIN_SWEEP_NOTIONAL, SWEEP_MIN_LEVELS
-from models.orderModel import AggressiveOrder
+from config import CASCADE_MAX_GAP_MS, CASCADE_MIN_SWEEPS
+from models.orderModel import AggressiveOrder, is_sweep  # noqa: F401  (re-exported)
 from models.signalModel import Direction, SignalResult
 from models.tradeModel import TradeSide
 from signals.base import WindowSlice, clip, fmt_usd
@@ -39,14 +39,6 @@ class Cascade:
         return (self.end_ms - self.start_ms) / 1000
 
 
-def is_sweep(o: AggressiveOrder, threshold: float) -> bool:
-    return (
-        o.confirmed_liquidation
-        or o.notional >= threshold
-        or (o.levels >= SWEEP_MIN_LEVELS and o.notional >= MIN_SWEEP_NOTIONAL)
-    )
-
-
 def find_cascades(sweeps: list[AggressiveOrder]) -> list[Cascade]:
     cascades: list[Cascade] = []
     chain: list[AggressiveOrder] = []
@@ -65,7 +57,34 @@ def find_cascades(sweeps: list[AggressiveOrder]) -> list[Cascade]:
     return cascades
 
 
+def _from_bars(s: WindowSlice) -> SignalResult:
+    """Long windows: sweeps were counted per minute bar as they happened; no cascade chaining."""
+    a = s.sweep_agg
+    if a is None or a.total_notional <= 0:
+        return SignalResult(NAME, LABEL, 0.0, 0.0, Direction.NEUTRAL, "No live flow in this window yet.", stat="—")
+    metrics = {"sweeps_buy": float(a.buy_n), "sweeps_sell": float(a.sell_n),
+               "sweep_notional_buy": a.buy_notional, "sweep_notional_sell": a.sell_notional,
+               "cascades": 0.0, "confirmed_liquidations": 0.0, "largest_order": 0.0,
+               "sweep_threshold": s.baseline.sweep_threshold}
+    if a.buy_n + a.sell_n == 0:
+        return SignalResult(NAME, LABEL, 0.0, 0.0, Direction.NEUTRAL,
+                            "No sweeps in the live part of this window; flow was ordinary size.",
+                            stat="no sweeps", metrics=metrics)
+    score = clip((a.buy_notional - a.sell_notional) / (a.total_notional * 0.25))
+    if s.flow_coverage < 0.95:
+        score *= clip(s.flow_coverage * 2, 0.2, 1.0)
+    side_word = "buy" if score >= 0 else "sell"
+    n = a.buy_n if score >= 0 else a.sell_n
+    summary = (f"{a.buy_n} buy sweeps ({fmt_usd(a.buy_notional)}) vs {a.sell_n} sell sweeps "
+               f"({fmt_usd(a.sell_notional)}) in the live part of this window.")
+    return SignalResult(NAME, LABEL, score, abs(score), Direction.of(score, eps=0.05), summary,
+                        phrase=f"large {side_word} sweeps ({n}, {fmt_usd(a.buy_notional if score >= 0 else a.sell_notional)})",
+                        stat=f"{n} {side_word} sweeps", metrics=metrics)
+
+
 def liquidations(s: WindowSlice) -> SignalResult:
+    if s.resolution == "bar":
+        return _from_bars(s)
     orders = s.orders
     total = sum(o.notional for o in orders)
     if total <= 0:

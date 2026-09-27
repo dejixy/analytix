@@ -19,11 +19,16 @@ HORIZON_WEIGHTS = {
     "short": {"liquidations": 1.25, "volume_imbalance": 1.0, "depth_delta": 0.9, "funding": 0.45},
     "medium": {"volume_imbalance": 1.0, "liquidations": 0.9, "funding": 0.85, "depth_delta": 0.65},
     "long": {"funding": 1.2, "volume_imbalance": 1.0, "liquidations": 0.6, "depth_delta": 0.45},
+    "very_long": {"funding": 1.3, "volume_imbalance": 1.0, "liquidations": 0.4, "depth_delta": 0.3},
 }
 
 
 def horizon(seconds: int) -> str:
-    return "short" if seconds <= 120 else "medium" if seconds <= 600 else "long"
+    if seconds <= 120:
+        return "short"
+    if seconds <= 600:
+        return "medium"
+    return "long" if seconds <= 3600 else "very_long"
 
 
 def weights_for(seconds: int) -> dict[str, float]:

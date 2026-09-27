@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useSnapshot } from "./useSnapshot.js";
 import Header from "./components/Header.jsx";
 import ExplanationCard from "./components/ExplanationCard.jsx";
@@ -14,6 +14,7 @@ export default function App() {
   const { snap, conn } = useSnapshot(coin);
   const [selected, setSelected] = useState("1m");
   const [pinned, setPinned] = useState(null); // a MoveEvent object, kept even after it scrolls out of the feed
+  const railRef = useRef(null);
 
   if (!snap) {
     return (
@@ -35,6 +36,18 @@ export default function App() {
     setSelected(ev.window);
   };
 
+  // Swipe/scroll the card rail by one card; the tab strip jumps straight to a card.
+  const scrollRail = (dir) => {
+    const el = railRef.current;
+    if (el) el.scrollBy({ left: dir * (el.firstElementChild?.offsetWidth || 300), behavior: "smooth" });
+  };
+  const jumpTo = (w) => {
+    setPinned(null);
+    setSelected(w);
+    const card = railRef.current?.querySelector(`[data-window="${w}"]`);
+    if (card) card.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  };
+
   return (
     <div className="app">
       <Header
@@ -46,27 +59,43 @@ export default function App() {
         }}
       />
 
-      <section className="cards" aria-label="Explanations by timeframe">
-        {windows.map(([w]) => (
-          <ExplanationCard
-            key={w}
-            ex={snap.explanations[w]}
-            window={w}
-            selected={!pinned && selected === w}
-            onSelect={() => {
-              setPinned(null);
-              setSelected(w);
-            }}
-          />
-        ))}
+      <section className="rail-wrap" aria-label="Explanations by timeframe">
+        <div className="rail-head">
+          <nav className="tf-tabs" aria-label="Timeframe">
+            {windows.map(([w]) => (
+              <button key={w} className={`tf-tab ${!pinned && selected === w ? "active" : ""}`} onClick={() => jumpTo(w)}>
+                {w}
+              </button>
+            ))}
+          </nav>
+          <div className="rail-arrows">
+            <button className="rail-arrow" onClick={() => scrollRail(-1)} aria-label="Shorter timeframes">‹</button>
+            <button className="rail-arrow" onClick={() => scrollRail(1)} aria-label="Longer timeframes">›</button>
+          </div>
+        </div>
+        <div className="cards" ref={railRef}>
+          {windows.map(([w]) => (
+            <ExplanationCard
+              key={w}
+              ex={snap.explanations[w]}
+              window={w}
+              selected={!pinned && selected === w}
+              onSelect={() => {
+                setPinned(null);
+                setSelected(w);
+              }}
+            />
+          ))}
+        </div>
       </section>
 
       <section className="main">
         <PriceChart
           series={snap.series}
+          barSeries={snap.bar_series || []}
           events={snap.events}
           nowMs={snap.now_ms}
-          spanSeconds={snap.chart_span_s || Math.max(...Object.values(snap.windows))}
+          tickSpanSeconds={snap.chart_span_s || 3600}
           windowSeconds={snap.windows[selected]}
           windowLabel={selected}
           pinned={pinned}

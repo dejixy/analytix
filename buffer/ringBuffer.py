@@ -57,6 +57,21 @@ class RingBuffer(Generic[T]):
     def clear(self) -> None:
         self._buf.clear()
 
+    def merge(self, items: list[T], overlaps=None) -> int:
+        """
+        Merge older or gap-filling items into the buffer (e.g. backfilled history
+        that arrives after live data has started). Items for which
+        `overlaps(item)` is true are skipped. Rebuilds the deque in time order,
+        so it's O(n) — meant for occasional backfills, not the hot path.
+        """
+        keep = [i for i in items if overlaps is None or not overlaps(i)]
+        if not keep:
+            return 0
+        merged = sorted([*self._buf, *keep], key=lambda i: i.timestamp)
+        self._buf = deque(merged)
+        self._evict()
+        return len(keep)
+
     # ── reads ───────────────────────────────────────────────────────────────
     @property
     def newest(self) -> T | None:

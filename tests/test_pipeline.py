@@ -81,7 +81,7 @@ def test_cascade_snapshot_has_all_drivers_aligned(replayed):
 
 def test_timeframes_tell_different_stories(replayed):
     _, snaps = replayed
-    heads = {w: ex.headline for w, ex in snaps["cascade"].items()}
+    heads = {w: snaps["cascade"][w].headline for w in ("1m", "10m", "60m")}
     assert len(set(heads.values())) == 3, heads
 
 

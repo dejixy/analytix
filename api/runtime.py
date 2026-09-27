@@ -4,17 +4,34 @@ file) and the connected browsers. One instance per app.
 
 Live mode subscribes every coin in COINS on a single socket and routes each
 message to its coin's pipeline. Replay mode plays one recorded coin.
+
+Live mode also keeps the long-window history: minute bars are saved to SQLite
+as they close and reloaded on start, and price candles are backfilled from
+Hyperliquid's REST API for the time the app wasn't running.
 """
 import asyncio
 import json
 import logging
 import math
+import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import WebSocket
 
-from config import BROADCAST_INTERVAL_S, COIN, COINS, RECORD_FILE, REPLAY_FILE, REPLAY_LOOP, REPLAY_SPEED
+from config import (
+    BACKFILL_ENABLED,
+    BAR_HISTORY_S,
+    BARS_DB,
+    BROADCAST_INTERVAL_S,
+    COIN,
+    COINS,
+    RECORD_FILE,
+    REPLAY_FILE,
+    REPLAY_LOOP,
+    REPLAY_SPEED,
+)
+from ingestion.backfill import backfill
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
 from ingestion.parsers import coin_of
@@ -22,6 +39,9 @@ from ingestion.recorder import JsonlRecorder
 from ingestion.replay import ReplaySource
 from ingestion.synthetic import generate_session
 from pipeline import Pipeline
+from storage.barStore import BarStore
+
+BARS_EVERY_N_BROADCASTS = 10   # the long-window chart changes slowly; send it every ~5s, not twice a second
 
 log = logging.getLogger("analytix.runtime")
 
@@ -29,7 +49,8 @@ log = logging.getLogger("analytix.runtime")
 class Runtime:
     def __init__(self, mode: str, coins: list[str] | None = None, default_coin: str = COIN,
                  replay_file: Path = REPLAY_FILE, speed: float = REPLAY_SPEED, loop: bool = REPLAY_LOOP,
-                 record_file: str | None = RECORD_FILE, broadcast_interval_s: float = BROADCAST_INTERVAL_S):
+                 record_file: str | None = RECORD_FILE, broadcast_interval_s: float = BROADCAST_INTERVAL_S,
+                 bars_db: Path | None = BARS_DB, backfill_enabled: bool = BACKFILL_ENABLED):
         if mode not in ("live", "replay"):
             raise ValueError(f"ANALYTIX_MODE must be 'live' or 'replay', got {mode!r}")
         self.mode = mode
@@ -46,6 +67,11 @@ class Runtime:
         self.clients: dict[WebSocket, str] = {}      # browser → the coin it's watching
         self._tasks: list[asyncio.Task] = []
         self._recorder: JsonlRecorder | None = None
+        # History persistence and backfill are live-only: a replay must never write into the live history.
+        self.bars_db = bars_db if mode == "live" else None
+        self.backfill_enabled = backfill_enabled and mode == "live"
+        self.store: BarStore | None = None
+        self._broadcasts = 0
 
     # ── pipelines ───────────────────────────────────────────────────────────
     def pipeline(self, coin: str | None = None) -> Pipeline:
@@ -73,9 +99,12 @@ class Runtime:
         else:
             if self.record_file:
                 self._recorder = JsonlRecorder(self.record_file)
+            self._load_history()
             source = HyperliquidClient(self.coins, self.on_message, self.status, recorder=self._recorder)
         self._tasks = [asyncio.create_task(source.run(), name="source"),
                        asyncio.create_task(self._broadcast_loop(), name="broadcast")]
+        if self.backfill_enabled:
+            self._tasks.append(asyncio.create_task(self._backfill(), name="backfill"))
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
 
     async def stop(self) -> None:
@@ -84,23 +113,53 @@ class Runtime:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._recorder:
             self._recorder.close()
+        if self.store:
+            self.store.close()
+
+    # ── long-window history ─────────────────────────────────────────────────
+    def _load_history(self) -> None:
+        if not self.bars_db:
+            return
+        try:
+            self.store = BarStore(self.bars_db)
+            since = int(time.time() * 1000) - BAR_HISTORY_S * 1000
+            self.store.prune(since - 86_400_000)
+            for coin, pipe in self.pipelines.items():
+                n = pipe.state.merge_bars(self.store.load(coin, since))
+                pipe.state.on_bar = self.store.save
+                log.info("loaded %d saved minute bars for %s", n, coin)
+        except Exception:
+            log.exception("could not open the bar history at %s — long windows will start empty", self.bars_db)
+            self.store = None
+
+    async def _backfill(self) -> None:
+        for coin, pipe in self.pipelines.items():
+            try:
+                bars = await backfill(coin, BAR_HISTORY_S)
+                added = pipe.state.merge_bars(bars)
+                log.info("backfill %s: %d candles merged", coin, added)
+            except Exception as exc:  # network down, API change — long windows just warm up live
+                log.warning("backfill for %s failed: %s", coin, exc)
 
     # ── browser push ────────────────────────────────────────────────────────
-    def snapshot(self, coin: str | None = None) -> dict:
+    def snapshot(self, coin: str | None = None, include_bars: bool = True) -> dict:
         from api.serializers import build_snapshot
-        return build_snapshot(self, coin or self.default_coin)
+        return build_snapshot(self, coin or self.default_coin, include_bars=include_bars)
 
     async def _broadcast_loop(self) -> None:
         while True:
             await asyncio.sleep(self.broadcast_interval_s)
             if not self.clients:
                 continue
+            self._broadcasts += 1
+            with_bars = self._broadcasts % BARS_EVERY_N_BROADCASTS == 0
             payloads: dict[str, str] = {}   # one snapshot per watched coin, shared by its viewers
             dead = []
             for ws, coin in list(self.clients.items()):
                 try:
                     if coin not in payloads:
-                        payloads[coin] = json.dumps(self.snapshot(coin), separators=(",", ":"), allow_nan=False)
+                        payloads[coin] = json.dumps(self.snapshot(coin, include_bars=with_bars),
+                                                    separators=(",", ":"), allow_nan=False)
                     await ws.send_text(payloads[coin])
                 except Exception:
                     dead.append(ws)

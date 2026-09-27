@@ -6,3 +6,4 @@ venv/
 data/*.jsonl
 data/recordings/
 frontend/node_modules/
+data/*.sqlite

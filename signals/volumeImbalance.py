@@ -14,28 +14,38 @@ NAME, LABEL = "volume_imbalance", "Order flow"
 
 
 def volume_imbalance(s: WindowSlice) -> SignalResult:
-    buy = sell = 0.0
-    for t in s.trades:
-        if t.side is TradeSide.BUY:
-            buy += t.notional
-        else:
-            sell += t.notional
+    coverage_note = ""
+    if s.flow is not None:                      # long window: pre-summed from minute bars
+        buy, sell, fills = s.flow.buy, s.flow.sell, s.flow.fills
+        elapsed = max(1.0, s.flow.seconds)
+    else:
+        buy = sell = 0.0
+        for t in s.trades:
+            if t.side is TradeSide.BUY:
+                buy += t.notional
+            else:
+                sell += t.notional
+        fills = len(s.trades)
+        elapsed = max(1.0, s.seconds * s.coverage)
     total = buy + sell
     if total <= 0:
         return SignalResult(NAME, LABEL, 0.0, 0.0, Direction.NEUTRAL, "No trades in this window.", stat="—")
 
     imbalance = (buy - sell) / total
-    elapsed = max(1.0, s.seconds * s.coverage)
     activity = (total / elapsed) / s.baseline.notional_per_s if s.baseline.notional_per_s > 0 else 1.0
     activity_weight = clip(0.5 + 0.5 * activity, 0.5, 1.0)
     strength = clip(abs(imbalance) / IMBALANCE_FULL_STRENGTH, 0.0, 1.0) * activity_weight
+    if s.flow is not None and s.flow.coverage < 0.95:
+        # Flow seen over a slice of the window says less about the whole window.
+        strength *= clip(s.flow.coverage * 2, 0.2, 1.0)
+        coverage_note = f" Live flow covers {s.flow.coverage:.0%} of this window."
 
     buy_pct = buy / total * 100
     aggressor, pct = ("Buyers", buy_pct) if imbalance >= 0 else ("Sellers", 100 - buy_pct)
     phrase = f"aggressive {'buying' if imbalance >= 0 else 'selling'} ({pct:.0f}% of taker volume)"
     summary = (
         f"{aggressor} took {pct:.0f}% of {fmt_usd(total)} taker volume "
-        f"({len(s.trades)} fills, {activity:.1f}× normal pace)."
+        f"({fills:,} fills, {activity:.1f}× normal pace).{coverage_note}"
     )
     return SignalResult(
         NAME, LABEL,
@@ -50,6 +60,6 @@ def volume_imbalance(s: WindowSlice) -> SignalResult:
             "sell_notional": sell,
             "imbalance": imbalance,
             "activity": activity,
-            "fills": float(len(s.trades)),
+            "fills": float(fills),
         },
     )

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Iterable
 
+from config import MIN_SWEEP_NOTIONAL, SWEEP_MIN_LEVELS
 from models.tradeModel import Trade, TradeSide
 
 
@@ -50,3 +51,12 @@ def group_orders(trades: Iterable[Trade], liquidators: frozenset[str] | set[str]
                                       fills[0].price, fills[-1].price, confirmed))
     orders.sort(key=lambda o: o.timestamp)
     return orders
+
+
+def is_sweep(o: AggressiveOrder, threshold: float) -> bool:
+    """Large versus recent orders, or walking several levels with real size, or a known liquidation."""
+    return (
+        o.confirmed_liquidation
+        or o.notional >= threshold
+        or (o.levels >= SWEEP_MIN_LEVELS and o.notional >= MIN_SWEEP_NOTIONAL)
+    )

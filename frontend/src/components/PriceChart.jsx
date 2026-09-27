@@ -3,7 +3,14 @@ import { fmtPct, fmtPrice, fmtTime } from "../format.js";
 
 const HEIGHT = 420;
 const M = { top: 12, right: 78, bottom: 26, left: 10 };
-const TICK_MINUTES = [1, 2, 3, 5, 10, 15, 30, 60];
+const TICK_MINUTES = [1, 2, 3, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
+
+function tickLabel(t, tickMs) {
+  const d = new Date(t);
+  if (tickMs >= 86_400_000) return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
+  if (tickMs >= 6 * 3_600_000) return d.toLocaleString(undefined, { weekday: "short", hour: "2-digit", hour12: false });
+  return fmtTime(t).slice(0, 5);
+}
 
 function niceStep(range, target = 5) {
   const raw = range / target;
@@ -23,8 +30,12 @@ function nearest(points, t) {
   return Math.abs(points[lo][0] - t) <= Math.abs(points[hi][0] - t) ? points[lo] : points[hi];
 }
 
-export default function PriceChart({ series, events, nowMs, spanSeconds, windowSeconds, windowLabel, pinned, onPick }) {
-  const SPAN_MS = spanSeconds * 1000; // the chart covers the longest timeframe
+export default function PriceChart({ series, barSeries, events, nowMs, tickSpanSeconds, windowSeconds, windowLabel, pinned, onPick }) {
+  // ≤60m windows: tick-level mids over the last hour. Longer windows: minute-bar closes,
+  // spanning 1.5× the window so the shaded window sits in some context.
+  const long = windowSeconds > tickSpanSeconds;
+  const SPAN_MS = (long ? Math.min(windowSeconds * 1.5, 8 * 86_400) : tickSpanSeconds) * 1000;
+  const source = long ? barSeries : series;
   const wrapRef = useRef(null);
   const [width, setWidth] = useState(800);
   const [hover, setHover] = useState(null);
@@ -38,7 +49,7 @@ export default function PriceChart({ series, events, nowMs, spanSeconds, windowS
   }, []);
 
   const x0 = nowMs - SPAN_MS;
-  const pts = useMemo(() => series.filter(([t]) => t >= x0), [series, x0]);
+  const pts = useMemo(() => source.filter(([t]) => t >= x0), [source, x0]);
 
   const geo = useMemo(() => {
     if (pts.length < 2) return null;
@@ -61,8 +72,9 @@ export default function PriceChart({ series, events, nowMs, spanSeconds, windowS
     const xTicks = [];
     const tickMs = (TICK_MINUTES.find((m) => m * 60000 * 6 >= SPAN_MS) || 60) * 60000;
     for (let t = Math.ceil(x0 / tickMs) * tickMs; t <= nowMs; t += tickMs) xTicks.push(t);
+    const xLabel = (t) => tickLabel(t, tickMs);
     const d = pts.map(([t, p], i) => `${i ? "L" : "M"}${xs(t).toFixed(1)},${ys(p).toFixed(1)}`).join("");
-    return { xs, ys, yTicks, xTicks, d, iw, ih, stepDigits: step < 1 ? 2 : step < 10 ? 1 : 0 };
+    return { xs, ys, yTicks, xTicks, xLabel, d, iw, ih, stepDigits: step < 1 ? 2 : step < 10 ? 1 : 0 };
   }, [pts, width, x0, nowMs, SPAN_MS]);
 
   const shownEvents = events.filter((e) => e.window === windowLabel && e.peak_ms >= x0);
@@ -83,12 +95,12 @@ export default function PriceChart({ series, events, nowMs, spanSeconds, windowS
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Mid price · {Math.round(spanSeconds / 60)}m</h2>
+        <h2 className="panel-title">Mid price · {long ? `${windowLabel} view` : `${Math.round(tickSpanSeconds / 60)}m`}</h2>
         <span className="panel-sub">shaded: {windowLabel} window · markers: {windowLabel} significant moves</span>
       </div>
       <div className="chart-wrap" ref={wrapRef}>
         {!geo ? (
-          <div className="empty">Collecting price history…</div>
+          <div className="empty">{long ? "Loading long-window history…" : "Collecting price history…"}</div>
         ) : (
           <svg height={HEIGHT} role="img" aria-label={`Mid price over the last 15 minutes, last ${fmtPrice(last?.[1])}`}>
             {/* selected window */}
@@ -107,7 +119,7 @@ export default function PriceChart({ series, events, nowMs, spanSeconds, windowS
             ))}
             {geo.xTicks.map((t) => (
               <text key={t} x={geo.xs(t)} y={HEIGHT - 8} fontSize="11" fill="var(--muted)" textAnchor="middle" className="num">
-                {fmtTime(t).slice(0, 5)}
+                {geo.xLabel(t)}
               </text>
             ))}
             <line x1={M.left} x2={width - M.right} y1={M.top + geo.ih} y2={M.top + geo.ih} stroke="var(--axis)" strokeWidth="1" />
@@ -153,7 +165,8 @@ export default function PriceChart({ series, events, nowMs, spanSeconds, windowS
           <div className="tooltip" style={{ left: geo.xs(hover.t), top: geo.ys(hover.p) }}>
             <div className="num" style={{ fontWeight: 600 }}>{fmtPrice(hover.p)}</div>
             <div className="muted num">
-              {fmtTime(hover.t)} · {fmtPct((last[1] / hover.p - 1) * 100)} since
+              {long ? new Date(hover.t).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }) : fmtTime(hover.t)}
+              {" · "}{fmtPct((last[1] / hover.p - 1) * 100)} since
             </div>
           </div>
         )}
