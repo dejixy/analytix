@@ -28,7 +28,21 @@ def test_bid_heavy_book_and_buyers_lean_up_but_stay_humble():
 
 def test_no_evidence_means_no_lean():
     o = make_outlook(ex(), book_imbalance=0.0, sigma_1s_bps=1.0, horizon_key="short")
-    assert o.lean is Direction.NEUTRAL and "no clear lean" in o.line
+    assert o.lean is Direction.NEUTRAL and "coin flip" in o.line
+
+
+def test_long_horizons_can_lean_on_flow_and_book_alone():
+    # Normal funding used to silence the 6h+ outlook entirely; flow + book must still count.
+    o = make_outlook(ex("12h", 43200, {"volume_imbalance": FLOW_UP}, z=2.0), book_imbalance=0.3, sigma_1s_bps=1.0,
+                     horizon_key="very_long")
+    assert o.lean is Direction.UP and abs(o.score) >= 0.15
+
+
+def test_conflicting_evidence_is_spelled_out():
+    flow_down = SignalResult("volume_imbalance", "Order flow", -0.34, 0.8, Direction.DOWN, "", "", "",
+                             {"imbalance": -0.34, "buy_notional": 3.3e5, "sell_notional": 6.7e5})
+    o = make_outlook(ex("12h", 43200, {"volume_imbalance": flow_down}), 0.24, 1.0, "very_long")
+    assert " — but " in o.line
 
 
 def test_crowded_funding_matters_more_on_long_horizons():
