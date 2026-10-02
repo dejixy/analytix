@@ -47,7 +47,8 @@ class CascadeInfo:
     side: TradeSide
     start_ms: int
     end_ms: int
-    oi_change_usd: float | None      # None until OI has settled after the cascade
+    oi_settled: bool                 # the OI check is done (a reading after the cascade, or given up)
+    oi_change_usd: float | None      # None until settled, or if OI wasn't available
     confirm_share: float | None      # OI drop as a share of the cascade's notional
     verdict: str | None              # "likely" | "partly" | "unlikely" liquidations
     move_bps: float                  # price before → the cascade's extreme

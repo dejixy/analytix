@@ -15,7 +15,7 @@ const FLOW_MIN_STRENGTH = 0.25;
 /** Which way order flow leans on a timeframe: "up" | "down" | "neutral" (too weak or too little live data). */
 function flowDir(ex) {
   const f = ex?.signals?.volume_imbalance;
-  if (!f || f.strength < FLOW_MIN_STRENGTH || (ex.flow_coverage ?? 1) < 0.5) return "neutral";
+  if (!f || f.strength < FLOW_MIN_STRENGTH || Math.min(ex.coverage ?? 1, ex.flow_coverage ?? 1) < 0.5) return "neutral";
   return f.direction;
 }
 
@@ -152,7 +152,7 @@ export default function App() {
       </section>
 
       <EventLog events={snap.events} marketEvents={snap.market_events || []} pinned={pinned} onPick={pin} />
-      <Toasts coin={snap.coin} marketEvents={snap.market_events || []} />
+      <Toasts coin={snap.coin} nowMs={snap.now_ms} marketEvents={snap.market_events || []} />
     </div>
   );
 }

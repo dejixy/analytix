@@ -95,7 +95,8 @@ class Collector:
                 self._log(f"impact outsized: follow the move ({w})", now, 1 if im.actual_bps > 0 else -1, mid, every)
         dirs = []
         for w in TICK_WINDOWS:
-            f = latest.get(w) and latest[w].signals.get("volume_imbalance")
+            ex = latest.get(w)
+            f = ex.signals.get("volume_imbalance") if ex and ex.coverage >= 0.95 else None
             dirs.append(f.direction.value if f and f.strength >= FLOW_MIN_STRENGTH else "neutral")
         if dirs[0] != "neutral" and len(set(dirs)) == 1:
             self._log("flow aligned 1m–60m: follow it", now, 1 if dirs[0] == "up" else -1, mid, 600)
@@ -117,14 +118,16 @@ class Collector:
             self._events_seen.add(ev.id)
 
     def _walls(self, now: int, mid: float) -> None:
-        exits = list(self.pipe.analyzer.walls.exits)
-        for e in exits[self._exits_seen:] if len(exits) >= self._exits_seen else exits:
+        tracker = self.pipe.analyzer.walls
+        new = tracker.total_exits - self._exits_seen
+        exits = list(tracker.exits)[-new:] if new > 0 else []
+        for e in exits:
             toward = 1 if e.side == "ask" else -1               # price moving toward where the wall stood
             if e.outcome == "pulled_near":
                 self.occurrences.append(Occurrence(f"{e.side} wall pulled near price: price goes through", now, toward, mid))
             elif e.outcome == "eaten":
                 self.occurrences.append(Occurrence(f"{e.side} wall eaten: follow through", now, toward, mid))
-        self._exits_seen = len(exits)
+        self._exits_seen = tracker.total_exits
 
 
 def attach_forward_returns(occ: list[Occurrence], mids: list[tuple[int, float]],

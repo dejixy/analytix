@@ -44,7 +44,6 @@ export function impactHelp(im, window) {
   return (
     `Net ${side} of ${fmtUsd(Math.abs(im.net_flow))} normally moves price ${fmtPct(im.expected_bps / 100)} over ${window}; ` +
     `it moved ${fmtPct(im.actual_bps / 100)}. Under 0.35× = absorbed by passive orders; over 2.5× = thin book or led from other venues. ` +
-    `Normal impact: ${im.lam_bps_per_m.toFixed(1)} bps per $1M of net flow` +
-    (im.source === "measured" ? "." : ", from the 1m fit while this timeframe builds history.")
+    `Normal impact here: ${im.lam_bps_per_m.toFixed(1)} bps per $1M of net flow.`
   );
 }

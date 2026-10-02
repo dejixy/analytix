@@ -39,6 +39,7 @@ BREAK_CONFIRM_MS = 10_000
 LEVEL_TTL_MS = 4 * 3600_000
 MIN_HELD_MS = 3 * 60_000    # a level that gives way within 3 minutes was never much of a level: no event
 GROUP_MS = 30_000           # levels on one side that break within 30s of each other are one event
+BROKEN_COOLDOWN_MS = 30 * 60_000   # a broken level isn't re-tracked for 30 minutes
 MAX_LEVELS = 8
 
 
@@ -98,12 +99,16 @@ class LevelTracker:
         self.events: deque[MarketEvent] = deque(maxlen=50)
         self._next = 1
         self._group: dict[str, tuple[int, str, list[TrackedLevel]]] = {}   # side → (first break ms, event id, levels)
+        self._broken: list[tuple[str, float, int]] = []                   # (side, price, broke at ms)
 
     def observe(self, window: str, lv: DefendedLevel, now_ms: int, sweep_threshold: float,
                 sigma_1s_bps: float = 0.0) -> None:
         if window not in TRACK_WINDOWS or lv.absorbed < MIN_ABSORBED_SWEEPS * sweep_threshold:
             return
         near = max(MERGE_BPS, _margin_bps(sigma_1s_bps))
+        self._broken = [b for b in self._broken if now_ms - b[2] < BROKEN_COOLDOWN_MS]
+        if any(side == lv.side and abs(lv.price / price - 1) * 10_000 <= near for side, price, _ in self._broken):
+            return                                   # it just gave way: don't draw it as holding again
         for t in self._levels:
             if t.side == lv.side and abs(lv.price / t.price - 1) * 10_000 <= near:
                 t.absorbed = max(t.absorbed, lv.absorbed)
@@ -131,6 +136,7 @@ class LevelTracker:
             elif t.beyond_since is None:
                 t.beyond_since = now_ms
             elif now_ms - t.beyond_since >= BREAK_CONFIRM_MS:
+                self._broken.append((t.side, t.price, now_ms))
                 if t.beyond_since - t.created_ms >= MIN_HELD_MS:
                     broke.append(self._record_break(t))
                 continue

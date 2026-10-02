@@ -89,6 +89,7 @@ class Analyzer:
         self.cascades.update(st, self.baseline.sweep_threshold, now_ms)
         cascades = tuple(self.cascades.infos(now_ms))
         recent = max(1, (now_ms - self._last_run_ms) // 1000 + 1) if self._last_run_ms else 5
+        recent = min(recent, st.trades.max_seconds)      # after a long feed gap, only what the buffer still holds
         self.walls.update(st.book, st.trades.window(recent, now_ms), now_ms, self.baseline.sweep_threshold)
         wall_stats = self.walls.stats(now_ms)
         refreshed: dict[str, Explanation] = {}

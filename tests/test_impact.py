@@ -39,10 +39,10 @@ def test_gaps_break_the_rolling_windows_and_short_history_is_not_trusted():
     assert m.samples[60] == 30 and 600 not in m.samples            # 10m needs 30 gap-free stretches
 
 
-def test_short_windows_borrow_the_one_minute_lambda_long_ones_wait():
+def test_each_timeframe_waits_for_its_own_fit():
     m = ImpactModel({60: 4.0}, {60: 50})
-    assert m.lookup(600) == (4.0, "scaled from 1m")
-    assert m.lookup(3600) is None
+    assert m.lookup(60) == (4.0, "measured")
+    assert m.lookup(600) is None                     # impact fades with time: 1m's λ would overstate 10m
 
 
 def test_verdicts():

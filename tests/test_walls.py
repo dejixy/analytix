@@ -21,10 +21,12 @@ def test_a_wall_pulled_as_price_nears_it_counts_as_bait():
     for s in range(20):                                   # $1.2M ask wall at 3000.55, ~1.8 bps away
         tr.update(_book(T0 + s * 1000, wall_at=3000.55), [], T0 + s * 1000, sweep_threshold=100_000)
     assert len(tr.active(T0 + 19_000)) == 1
-    tr.update(_book(T0 + 20_000), [], T0 + 20_000, 100_000)        # gone, nothing traded there
+    tr.update(_book(T0 + 20_000), [], T0 + 20_000, 100_000)        # gone, nothing traded there…
+    assert not tr.exits                                             # …judged after a 2s grace
+    tr.update(_book(T0 + 22_000), [], T0 + 22_000, 100_000)
     (ex,) = tr.exits
     assert ex.outcome == "pulled_near" and ex.side == "ask"
-    assert tr.stats(T0 + 20_000).pulled_near == {"bid": 0, "ask": 1}
+    assert tr.stats(T0 + 22_000).pulled_near == {"bid": 0, "ask": 1}
 
 
 def test_a_wall_traded_into_is_eaten_and_a_tested_one_that_stands_is_held():
@@ -34,9 +36,11 @@ def test_a_wall_traded_into_is_eaten_and_a_tested_one_that_stands_is_held():
     fills = [trade(T0 + 15_000 + i, px=2999.45, sz=60, side="A") for i in range(2)]   # 120 of 400 coins
     tr.update(_book(T0 + 16_000, wall_at=2999.45, wall_side="bid", wall_size=280), fills, T0 + 16_000, 100_000)
     assert tr.stats(T0 + 16_000).held == {"bid": 1, "ask": 0}
-    more = [trade(T0 + 17_000 + i, px=2999.45, sz=70, side="A") for i in range(4)]    # the rest gets hit
-    tr.update(_book(T0 + 18_000), more, T0 + 18_000, 100_000)
-    assert [e.outcome for e in tr.exits] == ["eaten"]
+    tr.update(_book(T0 + 18_000), [], T0 + 18_000, 100_000)       # the book shows it gone first…
+    more = [trade(T0 + 17_000 + i, px=2999.45, sz=70, side="A") for i in range(4)]
+    tr.update(_book(T0 + 19_000), more, T0 + 19_000, 100_000)     # …then that block's fills arrive
+    tr.update(_book(T0 + 21_000), [], T0 + 21_000, 100_000)
+    assert [e.outcome for e in tr.exits] == ["eaten"] and tr.total_exits == 1
 
 
 def test_flickering_quotes_are_not_walls():
@@ -52,3 +56,12 @@ def test_depth_summary_flags_stacking_that_keeps_getting_pulled():
     real = WallStats(pulled_near={"bid": 1, "ask": 0}, eaten={"bid": 2, "ask": 0}, held={"bid": 1, "ask": 0})
     assert "3 of 4 held or got traded into" in _wall_note(real, bid_chg=0.5, ask_chg=0.0)
     assert _wall_note(w, bid_chg=0.0, ask_chg=0.05) == ""          # not stacking: nothing to say
+
+
+def test_a_wall_that_scrolls_out_of_the_visible_book_is_not_called_pulled():
+    tr = WallTracker()
+    for s in range(15):
+        tr.update(_book(T0 + s * 1000, wall_at=2999.45, wall_side="bid"), [], T0 + s * 1000, 100_000)
+    for s in range(15, 20):                       # price rallies 1.5: the wall is now below the 10 visible levels
+        tr.update(_book(T0 + s * 1000, mid=3001.5), [], T0 + s * 1000, 100_000)
+    assert not tr.exits and tr.active(T0 + 20_000) == []

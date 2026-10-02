@@ -51,3 +51,21 @@ def test_no_event_until_the_cascade_is_over_and_oi_is_pending_at_first():
     assert tr.events == []
     (info,) = tr.infos(st.now_ms)
     assert info.verdict is None and oi_sentence(info) == "Checking open interest…"
+
+
+def test_without_a_fresh_oi_reading_the_cascade_says_so_instead_of_guessing():
+    st, tr = MarketState("ETH"), CascadeTracker("ETH")
+    st.apply(book(T0, mid=3000.0))
+    st.apply(ctx(T0, oi=100_000.0))                         # the only OI reading, from before the cascade
+    for s in range(1, 90):
+        ts = T0 + s * S
+        st.apply(book(ts, mid=2990.0 if s >= 11 else 3000.0))
+        if 10 <= s <= 12:
+            st.apply_many([trade(ts + 100, px=2995.0, sz=20, side="A", h=f"y{s}")])
+        tr.update(st, sweep_threshold=50_000, now_ms=ts + 500)
+        if s == 40:
+            assert tr.events == []                          # still waiting for OI: nothing published yet
+    (ev,) = tr.events
+    (info,) = tr.infos(st.now_ms)
+    assert info.oi_settled and info.verdict is None and ev.detail.startswith("OI unavailable")
+    assert oi_sentence(info) == "Open interest wasn't available around it."

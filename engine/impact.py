@@ -18,8 +18,9 @@ minus sells) — and compare each window against it:
 λ(T) is fitted per timeframe from live minute bars (Kyle's lambda, OLS through
 the origin over rolling T-long stretches), because impact is not linear in
 time: part of it fades, so 60 minutes of flow moves price less than 60 × one
-minute's worth. Short windows (≤ 10m) fall back to the one-minute λ until their
-own fit has enough samples; longer windows wait for their own.
+minute's worth. Each timeframe waits for its own fit — 20 minutes of live bars
+for 1m, about 40 for 10m, about 4 hours for 60m. Saved bars carry over across
+restarts, so this is a one-off warm-up.
 
 A ratio is only reported when the flow was big enough to matter — when it
 "should" have moved price by at least 0.75 of a normal move for the window.
@@ -33,7 +34,6 @@ from models.explanationModel import FlowImpact
 
 MIN_SAMPLES_1M = 20         # one-minute samples before λ(1m) is trusted
 MIN_SAMPLES = 30            # rolling samples before a longer horizon's own λ is trusted
-FALLBACK_MAX_S = 600        # windows up to 10m may borrow λ(1m) while their own fit warms up
 MIN_EXPECTED_SIGMA = 0.75   # flow must "explain" ≥ 0.75σ of the window before a ratio means anything
 ABSORBED_BELOW = 0.35
 OUTSIZED_ABOVE = 2.5
@@ -45,11 +45,7 @@ class ImpactModel:
     samples: dict[int, int] = field(default_factory=dict)
 
     def lookup(self, seconds: int) -> tuple[float, str] | None:
-        if seconds in self.lam:
-            return self.lam[seconds], "measured"
-        if seconds <= FALLBACK_MAX_S and 60 in self.lam:
-            return self.lam[60], "scaled from 1m"
-        return None
+        return (self.lam[seconds], "measured") if seconds in self.lam else None
 
 
 def _runs(bars: list[Bar]) -> list[list[Bar]]:

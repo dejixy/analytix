@@ -77,3 +77,12 @@ def test_levels_breaking_together_are_one_event():
     tr.check(t + 15_000 + BREAK_CONFIRM_MS, 2993.0, 0.5)                    # then the lower one
     (ev,) = tr.events
     assert ev.title == "Bid levels 2,995.00–3,000.00 broke — they had absorbed $3.00M of selling"
+
+
+def test_a_broken_level_is_not_drawn_as_holding_again():
+    tr = _tracked()
+    t = T0 + MIN_HELD_MS + MIN
+    tr.check(t, 2998.0, 0.5)
+    tr.check(t + BREAK_CONFIRM_MS, 2998.0, 0.5)
+    tr.observe("10m", DefendedLevel("bid", 3000.1, 2e6, 0.5), t + 20_000, sweep_threshold=100_000)
+    assert tr.active() == []

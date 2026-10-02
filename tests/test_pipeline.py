@@ -91,3 +91,18 @@ def test_longer_windows_describe_the_move_shape(replayed):
     r = regime("long_liquidation")
     ev = max(events_in(pipe, "10m", r.start_s, r.end_s + 600), key=lambda e: abs(e.explanation.move.z))
     assert ev.explanation.shape == "burst" and "one sharp minute" in ev.explanation.headline
+
+
+def test_engine_keeps_running_after_a_long_feed_gap():
+    from pipeline import Pipeline
+    from tests.helpers import T0, book, trade
+    pipe = Pipeline("ETH")
+    for s in range(30):
+        pipe.state.apply_many([trade(T0 + s * 1000, side="A" if s % 2 else "B")])
+        pipe.state.apply(book(T0 + s * 1000))
+        pipe.analyzer.maybe_run()
+    later = T0 + 2 * 3600_000                               # the laptop slept for two hours
+    for s in range(5):
+        pipe.state.apply(book(later + s * 1000))
+        assert pipe.analyzer.maybe_run()
+    assert pipe.analyzer.latest["1m"].end_ms == later + 4000

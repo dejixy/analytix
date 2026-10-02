@@ -13,7 +13,10 @@ and its exit is classified:
 
 A wall is a level holding at least 4× the median level size of the visible
 book and at least two sweeps' worth of USD. Walls that live under 10 seconds
-are ignored (that's ordinary quote churn). A standing wall that has absorbed at
+are ignored (that's ordinary quote churn), and a wall that merely scrolls out of
+the visible book (Hyperliquid shows 20 levels a side) is dropped unclassified.
+An exit is judged 2 seconds after the wall goes, so the fills from the same
+block are counted even if they arrive after the book update. A standing wall that has absorbed at
 least 20% of its size is counted as "held". Counts cover the last 30 minutes.
 """
 from collections import deque
@@ -28,6 +31,7 @@ MIN_WALL_SWEEPS = 2.0
 MIN_LIFE_MS = 10_000
 APPROACH_BPS = 10.0
 GONE_FRACTION = 0.3        # a wall shrunk below 30% of its peak is gone
+EXIT_GRACE_MS = 2_000      # wait this long before classifying an exit: the block's trades may land after its book
 EATEN_SHARE = 0.5
 TESTED_SHARE = 0.2
 STATS_WINDOW_MS = 30 * 60_000
@@ -44,6 +48,8 @@ class Wall:
     first_dist_bps: float
     dist_bps: float
     traded: float = 0.0    # USD of aggressive flow filled at this price since it appeared
+    gone_since: int | None = None
+    gone_size: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,20 +70,26 @@ class WallTracker:
     def __init__(self):
         self._walls: dict[tuple[str, float], Wall] = {}
         self.exits: deque[WallExit] = deque(maxlen=500)
-        self._last_ms = 0
+        self.total_exits = 0                  # all exits ever, for readers that page through `exits`
+        self._seen: set[tuple[int, int]] = set()      # (timestamp, tid) of trades already attributed, last few seconds
+        self._newest_trade = 0
 
     def update(self, book: OrderBook | None, trades: list[Trade], now_ms: int, sweep_threshold: float) -> None:
         if book is None or book.mid is None:
             return
         mid = book.mid
         for t in trades:                                  # fills at a wall's price count against it
-            if t.timestamp <= self._last_ms:
+            key = (t.timestamp, t.tid)
+            if key in self._seen or t.timestamp < self._newest_trade - 5_000:
                 continue
+            self._seen.add(key)
+            self._newest_trade = max(self._newest_trade, t.timestamp)
             side = "bid" if t.side is TradeSide.SELL else "ask"
             w = self._walls.get((side, t.price))
             if w:
                 w.traded += t.notional
-        self._last_ms = max(self._last_ms, now_ms)
+
+        self._seen = {k for k in self._seen if k[0] >= self._newest_trade - 5_000}
 
         levels = {("bid", l.price): l.notional for l in book.bids} | {("ask", l.price): l.notional for l in book.asks}
         sizes = sorted(levels.values())
@@ -92,28 +104,41 @@ class WallTracker:
                 d = _dist_bps(key[0], key[1], mid)
                 self._walls[key] = Wall(key[0], key[1], now_ms, now_ms, notional, notional, d, d)
 
+        lowest_bid = book.bids[-1].price if book.bids else None
+        highest_ask = book.asks[-1].price if book.asks else None
         for key, w in list(self._walls.items()):
             now_size = levels.get(key, 0.0)
             if now_size >= GONE_FRACTION * w.peak:
-                w.notional, w.last_ms = now_size, now_ms
+                w.notional, w.last_ms, w.gone_since = now_size, now_ms, None
                 w.peak = max(w.peak, now_size)
                 w.dist_bps = _dist_bps(w.side, w.price, mid)
+                continue
+            # Out of view, not gone: the feed shows only the top 20 levels, so price moving away hides walls.
+            if (w.side == "bid" and lowest_bid is not None and w.price < lowest_bid) or \
+                    (w.side == "ask" and highest_ask is not None and w.price > highest_ask):
+                del self._walls[key]
+                continue
+            if w.gone_since is None:
+                w.gone_since, w.gone_size = now_ms, now_size
+                continue
+            if now_ms - w.gone_since < EXIT_GRACE_MS:
                 continue
             del self._walls[key]
             life = w.last_ms - w.first_ms
             if life < MIN_LIFE_MS:
                 continue
-            vanished = max(1.0, w.peak - now_size)
+            vanished = max(1.0, w.peak - w.gone_size)
             if w.traded >= EATEN_SHARE * vanished:
                 outcome = "eaten"
             elif w.dist_bps <= APPROACH_BPS:
                 outcome = "pulled_near"
             else:
                 outcome = "pulled_far"
-            self.exits.append(WallExit(w.side, w.price, w.peak, outcome, now_ms, life))
+            self.exits.append(WallExit(w.side, w.price, w.peak, outcome, w.gone_since, life))
+            self.total_exits += 1
 
     def active(self, now_ms: int) -> list[Wall]:
-        return [w for w in self._walls.values() if now_ms - w.first_ms >= MIN_LIFE_MS]
+        return [w for w in self._walls.values() if now_ms - w.first_ms >= MIN_LIFE_MS and w.gone_since is None]
 
     def stats(self, now_ms: int) -> WallStats:
         recent = [e for e in self.exits if now_ms - e.ts <= STATS_WINDOW_MS]
