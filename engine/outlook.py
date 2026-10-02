@@ -5,10 +5,13 @@ window-length of time ("what's likely over the next 1m / 10m / 6h?").
 Honest framing, because it matters: short-horizon direction is mostly noise.
 The evidence used here — book imbalance, who is aggressive, sweeps, momentum,
 crowded funding and absorption — has a small edge at best. So the estimate is
-deliberately conservative: the lean shifts the centre of the range by at most
-SKILL × σ, which caps the implied probability at about 60%. The tracker scores
-every lean after the fact, and the dashboard shows the hit rate next to it —
-counted in independent periods, not overlapping samples.
+deliberately conservative: the evidence shifts the centre of the range by at
+most SKILL × σ, which caps the model's own odds at about 60%.
+
+Only strong agreement earns the word "lean" (model odds ≥ ~55%). Anything
+weaker is a "coin flip", with the small tilt shown in passing. Once enough
+independent periods of leans have been scored, the odds shown are the leans'
+real hit rate ("earned") instead of the model's estimate ("est.").
 """
 import math
 
@@ -18,8 +21,8 @@ from models.signalModel import Direction
 from signals.base import clip
 
 SKILL = 0.25            # at full conviction the centre moves a quarter of a typical move
-LEAN_THRESHOLD = 0.15   # at or above this the lean is stated plainly; below it, as "slight"
-COIN_FLIP = 0.03        # below this there is genuinely nothing to go on
+STRONG_SCORE = 0.5      # evidence agreement needed to call a lean: model odds Φ(0.25 × 0.5) ≈ 55%
+NO_TILT = 0.03          # below this there isn't even a tilt worth mentioning
 PRIOR_WEIGHT = 0.25     # pulls the score toward neutral when little evidence is present
 BASE_FUNDING_APR = 11.0 # Hyperliquid's resting funding (~0.00125%/h); crowding is judged against it
 
@@ -84,11 +87,15 @@ def components(ex: Explanation, book_imbalance: float | None) -> dict[str, tuple
 
 def track_line(window: str, t: TrackRecord) -> str:
     """The track record in words. The count is independent periods, not samples:
-    sixty 10m leans taken a minute apart are judged on about six 10m stretches."""
+    sixty 10m leans taken a minute apart are judged on about six 10m stretches.
+    Only leans are scored for direction — coin flips make no call."""
     n = "0" if t.periods == 0 else "<1" if t.periods < 1 else f"~{t.periods:.0f}"
     if t.hit_rate is None:
-        return f"scoring… {n} of {MIN_PERIODS} separate {window} periods checked"
-    line = f"called right {t.hit_rate:.0%} over {n} separate {window} periods"
+        line = f"scoring leans… {n} of {MIN_PERIODS} separate {window} periods checked"
+        if t.range_rate is not None:
+            line += f" · inside range {t.range_rate:.0%}"
+        return line
+    line = f"leans right {t.hit_rate:.0%} over {n} separate {window} periods"
     if t.range_rate is not None:
         line += f" · inside range {t.range_rate:.0%}"
     return line
@@ -104,28 +111,41 @@ def make_outlook(ex: Explanation, book_imbalance: float | None, sigma_1s_bps: fl
     sigma_h = max(sigma_1s_bps, 1e-6) * math.sqrt(ex.seconds)
     expected = SKILL * score * sigma_h
     p_up = _phi(expected / sigma_h)
-    lean = Direction.UP if score >= COIN_FLIP else Direction.DOWN if score <= -COIN_FLIP else Direction.NEUTRAL
+    tilt = Direction.UP if score >= NO_TILT else Direction.DOWN if score <= -NO_TILT else Direction.NEUTRAL
+    lean = tilt if abs(score) >= STRONG_SCORE else Direction.NEUTRAL
 
     ranked = sorted(comps.items(), key=lambda kv: -abs(w.get(kv[0], 0.0) * kv[1][0]))
     ranked = [(k, v, r) for k, (v, r) in ranked if abs(w.get(k, 0.0) * v) >= 0.01]
     backing = [r for k, v, r in ranked if v * score > 0][:2]
     against = [r for k, v, r in ranked if v * score < 0][:1]
-    why = ", ".join(backing) if backing else "book and flow balanced"
-    if against:
-        why += f" — but {against[0]}"
+    if tilt is Direction.NEUTRAL:
+        # No tilt: say whether the signals cancel out or are simply too faint to matter.
+        ups = [r for k, v, r in ranked if v > 0][:1]
+        downs = [r for k, v, r in ranked if v < 0][:1]
+        backing, against = ups + downs, []
+        why = (f"{ups[0]} vs {downs[0]} cancel out" if ups and downs
+               else f"only faint signs: {backing[0]}" if backing else "book and flow balanced")
+    else:
+        why = ", ".join(backing) if backing else "book and flow balanced"
+        if against:
+            why += f" — but {against[0]}"
 
     typical = f"typical ±{sigma_h / 100:.2f}%"
-    odds = p_up if lean is not Direction.DOWN else 1 - p_up
-    odds_txt = f"{odds:.1%}" if odds < 0.52 else f"{odds:.0%}"   # 50.6% rather than a misleading 51%
+    model_odds = p_up if tilt is not Direction.DOWN else 1 - p_up
     if lean is Direction.NEUTRAL:
-        line = f"Next {ex.window}: coin flip (50%) · {typical} — {why}"
+        tilt_txt = "no tilt" if tilt is Direction.NEUTRAL else f"tilt {tilt.value} {model_odds:.1%}"
+        odds, source = model_odds, "model"
+        line = f"Next {ex.window}: coin flip · {tilt_txt} · {typical} — {why}"
     else:
-        strength = "lean" if abs(score) >= LEAN_THRESHOLD else "slight lean"
-        line = (f"Next {ex.window}: {strength} {lean.value} ({odds_txt}) · expected {expected / 100:+.2f}%, "
-                f"{typical} — {why}")
+        # Once the leans have a real track record, show it instead of the model's estimate.
+        earned = track.hit_rate is not None
+        odds, source = (track.hit_rate, "earned") if earned else (model_odds, "model")
+        line = (f"Next {ex.window}: lean {lean.value} ({odds:.0%} {'earned' if earned else 'est.'}) · "
+                f"expected {expected / 100:+.2f}%, {typical} — {why}")
     reasons = backing + against
     return Outlook(
         horizon_s=ex.seconds, lean=lean, score=round(score, 3), expected_bps=expected, range_bps=sigma_h,
         p_up=round(p_up, 3), reasons=reasons, line=line, hit_rate=track.hit_rate, scored=track.called,
         periods=track.periods, range_rate=track.range_rate, track=track_line(ex.window, track),
+        tilt=tilt, odds=round(odds, 3), odds_source=source,
     )

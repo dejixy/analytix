@@ -86,6 +86,9 @@ class Outlook:
     periods: float = 0.0            # independent window-lengths those leans cover: the honest sample size
     range_rate: float | None = None # share of past outlooks whose outcome landed inside expected ± range
     track: str = ""                 # the track record in words, for the dashboard
+    tilt: Direction = Direction.NEUTRAL   # which way the evidence points, even when too weak to call a lean
+    odds: float = 0.5               # odds shown: the leans' real hit rate once earned, else the model's estimate
+    odds_source: str = "model"      # "model" | "earned"
 
 
 @dataclass(frozen=True, slots=True)

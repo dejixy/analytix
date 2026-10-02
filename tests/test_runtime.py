@@ -22,3 +22,12 @@ def test_replay_watches_the_coins_in_the_recording(tmp_path):
     path.write_text("\n".join(json.dumps({"recv_ms": i, "msg": _as(c, TRADES)}) for i, c in enumerate(["SOL", "ETH", "SOL"])))
     rt = Runtime("replay", coins=["BTC"], default_coin="ETH", replay_file=path)
     assert rt.coins == ["SOL", "ETH"] and rt.default_coin == "ETH"
+
+
+def test_live_mode_keeps_the_outlook_track_record_and_replay_never_does(tmp_path):
+    rt = Runtime("live", coins=["ETH", "BTC"], bars_db=None, outlook_db=tmp_path / "outlook.sqlite")
+    rt._load_track_records()
+    assert rt.track_store and all(p.analyzer.tracker._store is rt.track_store for p in rt.pipelines.values())
+    rt.track_store.close()
+    replay = Runtime("replay", coins=["ETH"], replay_file=tmp_path / "none.jsonl", outlook_db=tmp_path / "x.sqlite")
+    assert replay.outlook_db is None

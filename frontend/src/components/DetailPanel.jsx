@@ -14,16 +14,28 @@ function Gauge({ score }) {
 }
 
 function OutlookLine({ o }) {
+  // "Next 1m: coin flip · tilt up 51.7% · typical ±0.08% — why" → the call, its details, the reasons
   const [head, ...rest] = o.line.split(" — ");
+  const [call, ...details] = head.split(" · ");
+  const flip = o.lean === "neutral";
+  const callHelp = flip
+    ? "Coin flip: the signals don't agree strongly enough to call a direction. " +
+      "The tilt is which way they faintly point, with the model's odds — too close to 50% to act on."
+    : o.odds_source === "earned"
+      ? "Lean: the signals strongly agree. The odds are earned — how often this window's past leans were actually right."
+      : "Lean: the signals strongly agree. The odds are the model's estimate until enough past leans have been scored.";
   const trackHelp =
     "Leans are sampled several times per period, so neighbouring samples share most of their price action. " +
     "The count is how many separate periods they cover, and the hit rate stays hidden until there are enough. " +
     "Inside range: how often the price ended within the stated typical range (about 68% if the range is honest).";
   return (
-    <div className="outlook" title="Heuristic estimate from the current book, flow, sweeps, momentum and funding. Not financial advice.">
+    <div className={`outlook ${flip ? "flip" : ""}`} title="Heuristic estimate from the current book, flow, sweeps, momentum and funding. Not financial advice.">
       <span className={`outlook-lean ${o.lean}`}>{o.lean === "up" ? "▲" : o.lean === "down" ? "▼" : "•"}</span>
       <span>
-        <span className="outlook-head">{head}</span>
+        <span className="outlook-head" title={callHelp}>{call}</span>
+        {details.map((d, i) => (
+          <span key={i} className={d === "no tilt" || d.startsWith("tilt ") ? "outlook-tilt" : ""}> · {d}</span>
+        ))}
         {rest.length > 0 && <span className="ink2"> — {rest.join(" — ")}</span>}
         {o.track && <span className="muted" title={trackHelp}> · {o.track}</span>}
       </span>

@@ -50,6 +50,9 @@ BAR_HISTORY_S = MAX_WINDOW_S + 3600
 BACKFILL_INTERVAL = "5m"            # Hyperliquid serves the last 5000 candles: 5m covers ~17 days
 BACKFILL_ENABLED = os.getenv("ANALYTIX_BACKFILL", "1") == "1"
 BARS_DB = Path(os.getenv("ANALYTIX_BARS_DB", str(ROOT / "data" / "bars.sqlite")))
+# The outlook's track record (pending and scored leans) — its own file, so the two
+# stores never wait on each other's write lock.
+OUTLOOK_DB = Path(os.getenv("ANALYTIX_OUTLOOK_DB", str(ROOT / "data" / "outlook.sqlite")))
 
 # ── Cadence ─────────────────────────────────────────────────────────────────
 ANALYSIS_INTERVAL_MS = 1_000   # engine runs once per *exchange* second

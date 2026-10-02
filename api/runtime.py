@@ -7,7 +7,8 @@ message to its coin's pipeline. Replay mode plays one recorded coin.
 
 Live mode also keeps the long-window history: minute bars are saved to SQLite
 as they close and reloaded on start, and price candles are backfilled from
-Hyperliquid's REST API for the time the app wasn't running.
+Hyperliquid's REST API for the time the app wasn't running. The outlook's
+track record is saved the same way, so a 24h hit rate isn't reset by a restart.
 """
 import asyncio
 import json
@@ -23,6 +24,7 @@ from config import (
     BACKFILL_ENABLED,
     BAR_HISTORY_S,
     BARS_DB,
+    OUTLOOK_DB,
     BROADCAST_INTERVAL_S,
     COIN,
     COINS,
@@ -40,8 +42,10 @@ from ingestion.replay import ReplaySource
 from ingestion.synthetic import generate_session
 from pipeline import Pipeline
 from storage.barStore import BarStore
+from storage.trackerStore import TrackerStore
 
 BARS_EVERY_N_BROADCASTS = 10   # the long-window chart changes slowly; send it every ~5s, not twice a second
+TRACK_COMMIT_S = 10            # how often the outlook track record is written to disk
 
 log = logging.getLogger("analytix.runtime")
 
@@ -50,7 +54,8 @@ class Runtime:
     def __init__(self, mode: str, coins: list[str] | None = None, default_coin: str = COIN,
                  replay_file: Path = REPLAY_FILE, speed: float = REPLAY_SPEED, loop: bool = REPLAY_LOOP,
                  record_file: str | None = RECORD_FILE, broadcast_interval_s: float = BROADCAST_INTERVAL_S,
-                 bars_db: Path | None = BARS_DB, backfill_enabled: bool = BACKFILL_ENABLED):
+                 bars_db: Path | None = BARS_DB, backfill_enabled: bool = BACKFILL_ENABLED,
+                 outlook_db: Path | None = OUTLOOK_DB):
         if mode not in ("live", "replay"):
             raise ValueError(f"ANALYTIX_MODE must be 'live' or 'replay', got {mode!r}")
         self.mode = mode
@@ -69,8 +74,10 @@ class Runtime:
         self._recorder: JsonlRecorder | None = None
         # History persistence and backfill are live-only: a replay must never write into the live history.
         self.bars_db = bars_db if mode == "live" else None
+        self.outlook_db = outlook_db if mode == "live" else None
         self.backfill_enabled = backfill_enabled and mode == "live"
         self.store: BarStore | None = None
+        self.track_store: TrackerStore | None = None
         self._broadcasts = 0
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -100,11 +107,14 @@ class Runtime:
             if self.record_file:
                 self._recorder = JsonlRecorder(self.record_file)
             self._load_history()
+            self._load_track_records()
             source = HyperliquidClient(self.coins, self.on_message, self.status, recorder=self._recorder)
         self._tasks = [asyncio.create_task(source.run(), name="source"),
                        asyncio.create_task(self._broadcast_loop(), name="broadcast")]
         if self.backfill_enabled:
             self._tasks.append(asyncio.create_task(self._backfill(), name="backfill"))
+        if self.track_store:
+            self._tasks.append(asyncio.create_task(self._commit_loop(), name="track-commit"))
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
 
     async def stop(self) -> None:
@@ -115,6 +125,8 @@ class Runtime:
             self._recorder.close()
         if self.store:
             self.store.close()
+        if self.track_store:
+            self.track_store.close()
 
     # ── long-window history ─────────────────────────────────────────────────
     def _load_history(self) -> None:
@@ -131,6 +143,25 @@ class Runtime:
         except Exception:
             log.exception("could not open the bar history at %s — long windows will start empty", self.bars_db)
             self.store = None
+
+    def _load_track_records(self) -> None:
+        if not self.outlook_db:
+            return
+        try:
+            self.track_store = TrackerStore(self.outlook_db)
+            for coin, pipe in self.pipelines.items():
+                n = pipe.analyzer.tracker.attach(self.track_store, coin)
+                log.info("loaded %d saved outlook samples for %s", n, coin)
+            self.track_store.commit()
+        except Exception:
+            log.exception("could not open the outlook track record at %s — it will start empty", self.outlook_db)
+            self.track_store = None
+
+    async def _commit_loop(self) -> None:
+        while True:
+            await asyncio.sleep(TRACK_COMMIT_S)
+            if self.track_store:
+                self.track_store.commit()
 
     async def _backfill(self) -> None:
         for coin, pipe in self.pipelines.items():

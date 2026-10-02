@@ -77,7 +77,7 @@ class Analyzer:
             self.bar_baseline = self.compute_bar_baseline(self.baseline)
             self._bar_baseline_ms = now_ms
 
-        self.tracker.evaluate(now_ms, st.mid)
+        self.tracker.evaluate(now_ms, st.mid, self.price_near)
         book_now = st.books.newest
         refreshed: dict[str, Explanation] = {}
         for label, seconds in self.windows.items():
@@ -106,6 +106,16 @@ class Analyzer:
         self._last_run_ms = now_ms
         self.runs += 1
         return self.latest
+
+    def price_near(self, ts_ms: int) -> tuple[float, int] | None:
+        """The bar-history price nearest a past moment, and when it was: the open or close of the
+        bar around ts_ms, whichever is closer. Used to grade outlooks that came due while the app was off."""
+        b = self.state.bars.latest_at(ts_ms)
+        if b is None:
+            return None
+        if ts_ms - b.timestamp <= b.end_ms - ts_ms:
+            return b.open, b.timestamp
+        return b.close, b.end_ms
 
     # ── baselines: what does "normal" look like right now? ──────────────────
     def compute_baseline(self) -> Baseline:
