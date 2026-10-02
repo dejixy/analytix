@@ -79,4 +79,3 @@ def test_six_hour_window_reads_bars_and_price_from_before_the_window():
     assert abs(ex.move.start_price - start_close) < 0.2
     assert ex.move.end_price == 3050.0
     assert ex.flow_coverage == 0.0             # candles carry no order flow
-    assert ex.outlook and ex.outlook.line.startswith("Next 6h")

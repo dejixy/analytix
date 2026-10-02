@@ -188,14 +188,6 @@ button { font: inherit; color: inherit; }
 
 /* ── Detail ─────────────────────────────────────────────────────────────── */
 .detail-headline { font-size: 13px; font-weight: 700; margin: 0 0 8px; }
-.outlook {
-  display: flex; gap: 8px; align-items: baseline; margin: 0 0 12px; padding: 7px 10px;
-  background: var(--surface-2); border: 1px solid var(--grid); border-left: 2px solid var(--up); border-radius: 2px;
-  font-size: 12px;
-}
-.outlook-head { font-weight: 600; }
-.outlook-lean { font-size: 11px; color: var(--ink-2); }
-.outlook-lean.up { color: var(--up-bright); }
 .narrative { margin: 0 0 12px; padding: 0; list-style: none; display: grid; gap: 5px; color: var(--ink-2); }
 .narrative li { padding-left: 14px; position: relative; }
 .narrative li::before { content: ">"; position: absolute; left: 0; color: var(--up); }

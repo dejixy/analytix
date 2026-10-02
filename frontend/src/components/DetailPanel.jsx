@@ -13,24 +13,6 @@ function Gauge({ score }) {
   );
 }
 
-function OutlookLine({ o }) {
-  const [head, ...rest] = o.line.split(" — ");
-  const trackHelp =
-    "Leans are sampled several times per period, so neighbouring samples share most of their price action. " +
-    "The count is how many separate periods they cover, and the hit rate stays hidden until there are enough. " +
-    "Inside range: how often the price ended within the stated typical range (about 68% if the range is honest).";
-  return (
-    <div className="outlook" title="Heuristic estimate from the current book, flow, sweeps, momentum and funding. Not financial advice.">
-      <span className={`outlook-lean ${o.lean}`}>{o.lean === "up" ? "▲" : o.lean === "down" ? "▼" : "•"}</span>
-      <span>
-        <span className="outlook-head">{head}</span>
-        {rest.length > 0 && <span className="ink2"> — {rest.join(" — ")}</span>}
-        {o.track && <span className="muted" title={trackHelp}> · {o.track}</span>}
-      </span>
-    </div>
-  );
-}
-
 export default function DetailPanel({ ex, pinned, onUnpin }) {
   if (!ex) {
     return (
@@ -57,7 +39,6 @@ export default function DetailPanel({ ex, pinned, onUnpin }) {
           </div>
         )}
         <p className="detail-headline">{ex.headline}</p>
-        {ex.outlook && <OutlookLine o={ex.outlook} />}
         <ul className="narrative">
           {ex.narrative.map((line, i) => (
             <li key={i}>{line}</li>

@@ -1,7 +1,6 @@
 """
 The engine loop: once per exchange-second, slice the buffers into each
-window, run every signal, explain the move, estimate the next period, and
-update the event log.
+window, run every signal, explain the move and update the event log.
 
 Two tiers:
   • tick windows (≤ 60m) read raw trades and book updates,
@@ -11,7 +10,6 @@ Driven by the exchange clock (MarketState.now_ms), not a timer — so a replay
 at 50× produces exactly the same explanations as the live session did.
 """
 import math
-from dataclasses import replace
 
 from config import (
     ANALYSIS_INTERVAL_MS,
@@ -26,12 +24,10 @@ from config import (
 )
 from engine.eventLog import EventLog
 from engine.explainer import explain
-from engine.outlook import make_outlook
-from engine.outlookTracker import OutlookTracker
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
 from models.explanationModel import Explanation
-from signals import DRIVER_SIGNALS, horizon, price_move
+from signals import DRIVER_SIGNALS, price_move
 from signals.base import Baseline, FlowAgg, SweepAgg, WindowSlice
 from state import MarketState
 
@@ -48,7 +44,6 @@ class Analyzer:
         self.interval_ms = interval_ms
         self.latest: dict[str, Explanation] = {}
         self.events = EventLog()
-        self.tracker = OutlookTracker()
         self.baseline: Baseline | None = None
         self.bar_baseline: Baseline | None = None
         self.runs = 0
@@ -77,8 +72,6 @@ class Analyzer:
             self.bar_baseline = self.compute_bar_baseline(self.baseline)
             self._bar_baseline_ms = now_ms
 
-        self.tracker.evaluate(now_ms, st.mid)
-        book_now = st.books.newest
         refreshed: dict[str, Explanation] = {}
         for label, seconds in self.windows.items():
             every_ms = min(MAX_REFRESH_MS, max(self.interval_ms, seconds * 1000 // WINDOW_REFRESH_DIVISOR))
@@ -94,12 +87,7 @@ class Analyzer:
                 continue
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
-            ex = explain(st.coin, sl, move, signals)
-
-            outlook = make_outlook(ex, book_now.imbalance if book_now else None, baseline.sigma_1s_bps,
-                                   horizon(seconds), self.tracker.stats(label))
-            self.tracker.record(label, now_ms, st.mid, outlook)
-            refreshed[label] = replace(ex, outlook=outlook)
+            refreshed[label] = explain(st.coin, sl, move, signals)
             self._window_ms[label] = now_ms
         self.latest = {**self.latest, **refreshed}
         self.events.update(refreshed, now_ms)

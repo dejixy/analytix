@@ -1,6 +1,6 @@
 # Analytix
 
-**Why did this price move?** Analytix is a real-time market microstructure tool for Hyperliquid perps. It ingests live trades, the L2 order book and funding/open-interest data for several coins at once (ETH, BTC, SOL and HYPE by default, switchable in the top bar). It then explains each move over 1m, 10m, 60m, 6h, 12h, 24h and 1w windows in plain language, with a one-line outlook for the next period, for example:
+**Why did this price move?** Analytix is a real-time market microstructure tool for Hyperliquid perps. It ingests live trades, the L2 order book and funding/open-interest data for several coins at once (ETH, BTC, SOL and HYPE by default, switchable in the top bar). It then explains each move over 1m, 10m, 60m, 6h, 12h, 24h and 1w windows in plain language, for example:
 
 > **ETH −1.33% in 1m** — driven by a long-liquidation-style cascade (22 sweeps, $3.79M) and aggressive selling (92% of taker volume)
 > · A significant move: 15.0× the typical 1m move (±9 bps)
@@ -63,7 +63,6 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 | `models/barModel.py` | One-minute `Bar`s — the storage tier for 6h … 1w windows. |
 | `storage/barStore.py` | Saves live bars to SQLite (`data/bars.sqlite`) so the long windows survive restarts. |
 | `ingestion/backfill.py` | Downloads ~a week of 5m price candles and funding history from Hyperliquid's REST API on start. |
-| `engine/outlook.py`, `engine/outlookTracker.py` | The next-period lean, expected move and range — and the scorer that checks each lean after the fact. |
 | `buffer/ringBuffer.py` | A time-evicting buffer on the **exchange clock**. `T` is bound to a `Timestamped` Protocol. `window()` stops early. Out-of-order items are rejected. |
 | `state.py` | `MarketState`. Events (trades, book summaries, funding ticks) are **buffered**. State (the book, the latest context) is **replaced**. Derived events such as `BookSummary` and `AggressiveOrder` are built once, on arrival. |
 | `ingestion/` | `hyperliquidClient.py` (live, with reconnect and ping), `replay.py`, `recorder.py`, `parsers.py` (raw JSON → models), `feedStatus.py` (the one place the **wall clock** is used, to detect a stale feed) and `synthetic.py` (the scripted demo market). |
@@ -83,7 +82,6 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 - **Each timeframe tells its own story.** Driver weights depend on the horizon. Sweeps and pulled liquidity explain seconds to minutes, so they lead the 1m thesis. Open interest and funding explain slower moves, so they lead the 60m thesis. Windows longer than a minute also report the move's *shape*: one sharp minute (a shock) or a steady grind (a trend).
 - **One socket, many coins.** Live mode subscribes every coin in `ANALYTIX_COINS` on a single WebSocket and routes each message to its coin's own pipeline. The browser picks a coin with `/ws?coin=BTC`.
 - **Two data tiers.** Windows up to an hour read every trade and book update. The 6h … 1w windows read one-minute bars rolled up as data arrives, because a week of raw trades for four coins wouldn't fit in memory. Price history for the long windows is backfilled from Hyperliquid's candles; order flow, depth and OI can't be (the API has no history of them), so each long card shows how much of its window that data covers.
-- **An outlook that grades itself.** The next-period lean combines book imbalance, who's aggressive, sweeps, momentum, crowded funding and absorption, weighted by horizon. It's deliberately humble: the lean moves the expected value by at most a quarter of a typical move (≈60% odds at most). Every lean is checked when its horizon ends, and the dashboard shows the hit rate beside it, along with how often the price landed inside the stated range. Leans are sampled about ten times per horizon, so neighbouring samples share most of their price action; the count shown is independent periods, not samples, and the hit rate stays hidden until there are 30 of them. A flat price counts as a win for neither side.
 - **Hysteresis in the event log.** An episode opens at 2.5σ and stays open while the move is still ≥1.5σ. A move hovering at the threshold is logged once, not five times.
 
 ---
@@ -108,7 +106,7 @@ The explainer also calls out **absorption**: heavy one-sided aggression that *lo
 
 - **Liquidations are inferred, not confirmed.** Hyperliquid's public feed doesn't label liquidations, because a market liquidation executes as an ordinary taker order. Analytix detects liquidation-*style* cascades from sweep footprints. If you know liquidator addresses, set `ANALYTIX_LIQUIDATORS=0xabc…,0xdef…` and matching trades are flagged as confirmed.
 - **Long windows are only as complete as the app's uptime.** Price is backfilled, but order flow, depth and OI for the 6h … 1w windows build up while the app runs (saved across restarts). Long windows refresh every 15 seconds.
-- **The outlook is a heuristic, not a trading signal.** Short-horizon direction is mostly noise; watch its hit rate before trusting it. Older moves live on only in the event log (the last 200 events, in memory). Persisting them is on the roadmap.
+- **Older moves are kept in memory only.** They live on in the event log (the last 200 events). Persisting them is on the roadmap.
 - **The synthetic session is a toy market.** It is scripted so the tests have known answers. Record real sessions with `python -m scripts.record --minutes 60` and replay those.
 - **The live client was written against the documented message formats**, and the parsers are tested against those shapes. Watch the first live run for surprises (see the checklist below).
 
