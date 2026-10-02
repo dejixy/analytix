@@ -130,18 +130,18 @@ def make_outlook(ex: Explanation, book_imbalance: float | None, sigma_1s_bps: fl
         if against:
             why += f" — but {against[0]}"
 
-    typical = f"typical ±{sigma_h / 100:.2f}%"
+    swing = f"normal swing ±{sigma_h / 100:.2f}%"
     model_odds = p_up if tilt is not Direction.DOWN else 1 - p_up
     if lean is Direction.NEUTRAL:
         tilt_txt = "no tilt" if tilt is Direction.NEUTRAL else f"tilt {tilt.value} {model_odds:.1%}"
         odds, source = model_odds, "model"
-        line = f"Next {ex.window}: coin flip · {tilt_txt} · {typical} — {why}"
+        line = f"Next {ex.window}: coin flip · {tilt_txt} · {swing} — {why}"
     else:
         # Once the leans have a real track record, show it instead of the model's estimate.
         earned = track.hit_rate is not None
         odds, source = (track.hit_rate, "earned") if earned else (model_odds, "model")
         line = (f"Next {ex.window}: lean {lean.value} ({odds:.0%} {'earned' if earned else 'est.'}) · "
-                f"expected {expected / 100:+.2f}%, {typical} — {why}")
+                f"expected {expected / 100:+.2f}% ({swing}) — {why}")
     reasons = backing + against
     return Outlook(
         horizon_s=ex.seconds, lean=lean, score=round(score, 3), expected_bps=expected, range_bps=sigma_h,

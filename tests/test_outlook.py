@@ -29,14 +29,15 @@ def test_strong_agreement_earns_a_lean_and_stays_humble():
     assert 0 < o.expected_bps <= SKILL * sigma + 1e-9
     assert 0.55 <= o.p_up <= 0.6 and o.odds_source == "model"
     assert abs(o.range_bps - sigma) < 1e-9
-    assert o.line.startswith("Next 1m: lean up (") and "% est.)" in o.line and "bid-heavy" in o.line
+    assert o.line.startswith("Next 1m: lean up (") and "% est.) · expected +" in o.line
+    assert "% (normal swing ±0.08%) — " in o.line and "bid-heavy" in o.line
 
 
 def test_weak_agreement_is_a_coin_flip_with_the_tilt_shown():
     # bid-heavy book alone: points up, but nowhere near strong agreement
     o = make_outlook(ex(), book_imbalance=0.15, sigma_1s_bps=1.0, horizon_key="short")
     assert o.lean is Direction.NEUTRAL and o.tilt is Direction.UP
-    assert o.line.startswith("Next 1m: coin flip · tilt up 5") and "% · typical" in o.line
+    assert o.line.startswith("Next 1m: coin flip · tilt up 5") and "% · normal swing ±" in o.line
     assert o.odds < 0.55 and o.odds_source == "model"
 
 
@@ -70,7 +71,7 @@ def test_conflicting_evidence_is_spelled_out():
 
 def test_a_faint_one_sided_sign_is_called_faint():
     o = make_outlook(ex(), book_imbalance=0.02, sigma_1s_bps=1.0, horizon_key="short")
-    assert o.tilt is Direction.NEUTRAL and o.line.endswith("no tilt · typical ±0.08% — only faint signs: book 2% bid-heavy")
+    assert o.tilt is Direction.NEUTRAL and o.line.endswith("no tilt · normal swing ±0.08% — only faint signs: book 2% bid-heavy")
 
 
 def test_crowded_funding_matters_more_on_long_horizons():
