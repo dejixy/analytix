@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
 from models.orderModel import AggressiveOrder
-from models.tradeModel import Trade
+from models.tradeModel import Trade, TradeSide
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +42,29 @@ class SweepAgg:
 
 
 @dataclass(frozen=True, slots=True)
+class CascadeInfo:
+    """What happened around a tracked cascade (engine/cascades.py): the OI check and the recovery since."""
+    side: TradeSide
+    start_ms: int
+    end_ms: int
+    oi_settled: bool                 # the OI check is done (a reading after the cascade, or given up)
+    oi_change_usd: float | None      # None until settled, or if OI wasn't available
+    confirm_share: float | None      # OI drop as a share of the cascade's notional
+    verdict: str | None              # "likely" | "partly" | "unlikely" liquidations
+    move_bps: float                  # price before → the cascade's extreme
+    recovered: float | None          # share of that move price has won back since (can be < 0 or > 1)
+    since_end_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class WallStats:
+    """How big resting orders near the price have behaved over the last 30 minutes (engine/walls.py)."""
+    pulled_near: dict[str, int]      # side ("bid"/"ask") → walls that vanished, unfilled, as price came within 10 bps
+    eaten: dict[str, int]            # → walls that were traded into
+    held: dict[str, int]             # → walls standing now that have absorbed ≥ 20% of their size
+
+
+@dataclass(frozen=True, slots=True)
 class WindowSlice:
     label: str                   # "10m"
     seconds: int
@@ -66,6 +89,10 @@ class WindowSlice:
     flow: FlowAgg | None = None  # bar windows: pre-summed flow instead of trades
     sweep_agg: SweepAgg | None = None
     flow_coverage: float = 1.0   # share of the window with live flow/depth/OI data
+    cascades: tuple[CascadeInfo, ...] = ()   # tracked cascades with their OI check and recovery
+    walls: WallStats | None = None           # how recent big resting orders behaved: real or pulled
+    funding_history: tuple[float, ...] = ()  # sorted hourly funding rates, past week (engine/positioning.py)
+    oi_history: tuple[float, ...] = ()       # sorted |ΔOI %| over this timeframe, from saved live bars
 
     @property
     def price_start(self) -> float | None:
@@ -102,3 +129,10 @@ def fmt_usd(x: float) -> str:
 
 def fmt_pct(x: float, digits: int = 1, sign: bool = True) -> str:
     return f"{x:+.{digits}f}%" if sign else f"{x:.{digits}f}%"
+
+
+def fmt_px(p: float) -> str:
+    """A price at a sensible precision: 2,650.40 · 0.8123 · 0.000123."""
+    if p >= 1:
+        return f"{p:,.2f}"
+    return f"{p:.4f}" if p >= 0.01 else f"{p:.6f}"

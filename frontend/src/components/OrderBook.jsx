@@ -10,7 +10,7 @@ function withCumulative(levels) {
   });
 }
 
-export default function OrderBook({ book, price }) {
+export default function OrderBook({ book, price, walls }) {
   if (!book) {
     return (
       <div className="panel">
@@ -24,16 +24,33 @@ export default function OrderBook({ book, price }) {
   const max = Math.max(bids.at(-1)?.cum || 0, asks.at(-1)?.cum || 0) || 1;
   const bidShare = book.bid_notional + book.ask_notional > 0 ? book.bid_notional / (book.bid_notional + book.ask_notional) : 0.5;
 
-  const row = (l, side) => (
-    <tr className="book-row" key={`${side}${l.px}`}>
+  const wallAt = new Map((walls?.active || []).map((w) => [`${w.side}${w.price}`, w]));
+  const stats = walls?.stats;
+  const row = (l, side) => {
+    const wall = wallAt.get(`${side}${l.px}`);
+    return (
+    <tr className={`book-row ${wall ? "wall" : ""}`} key={`${side}${l.px}`}>
       <td className={side === "bid" ? "up" : "down"}>{fmtPrice(l.px)}</td>
-      <td>{fmtSize(l.sz)}</td>
+      <td>
+        {fmtSize(l.sz)}
+        {wall && (
+          <span className="wall-tag" title={`Wall: ${fmtUsd(wall.notional)} resting for ${Math.round(wall.age_s)}s · ${fmtUsd(wall.traded)} traded into it so far`}>
+            wall
+          </span>
+        )}
+      </td>
       <td className="muted">{fmtSize(l.cum)}</td>
       <td style={{ position: "static", padding: 0, width: 0 }}>
         <span className={`depth-bar ${side}`} style={{ width: `${(l.cum / max) * 100}%` }} />
       </td>
     </tr>
-  );
+    );
+  };
+  const wallLine = (side, label) => {
+    const real = stats.eaten[side] + stats.held[side];
+    const pulled = stats.pulled_near[side];
+    return real + pulled === 0 ? `${label}: none yet` : `${label}: ${real} real · ${pulled} pulled`;
+  };
 
   return (
     <div className="panel">
@@ -63,6 +80,15 @@ export default function OrderBook({ book, price }) {
           <span>Bids {fmtUsd(book.bid_notional)} · {Math.round(bidShare * 100)}%</span>
           <span>{Math.round((1 - bidShare) * 100)}% · {fmtUsd(book.ask_notional)} Asks</span>
         </div>
+        {stats && (
+          <div
+            className="panel-sub num wall-stats"
+            title="Big resting orders (4× a normal level) over the last 30 minutes. Real = traded into, or standing after absorbing 20%+ of its size. Pulled = vanished unfilled as price came within 10 bps: often bait."
+          >
+            <span>{wallLine("bid", "Bid walls")}</span>
+            <span>{wallLine("ask", "Ask walls")}</span>
+          </div>
+        )}
       </div>
     </div>
   );

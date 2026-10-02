@@ -1,9 +1,15 @@
 import { fmtPct, fmtSigned, fmtUsd } from "../format.js";
 
+function ordinal(p) {
+  const n = Math.min(99, Math.max(1, Math.round(p * 100)));
+  const s = n % 100 >= 10 && n % 100 <= 20 ? "th" : { 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th";
+  return `${n}${s}`;
+}
+
 export default function Positioning({ context, explanations }) {
   const rows = Object.entries(explanations).map(([w, ex]) => {
     const f = ex.signals.funding;
-    return { w, oi: f?.metrics?.oi_change_pct, phrase: f?.phrase || "—", move: ex.move.move_pct };
+    return { w, oi: f?.metrics?.oi_change_pct, oiPct: f?.metrics?.oi_pct, phrase: f?.phrase || "—", move: ex.move.move_pct };
   });
   const crowded = context && Math.abs(context.funding_apr) >= 20 ? (context.funding_apr > 0 ? "Longs" : "Shorts") : null;
 
@@ -24,6 +30,11 @@ export default function Positioning({ context, explanations }) {
                 <div className="tile-value num">{fmtPct(context.funding_apr, 1)}</div>
                 <div className="tile-sub num">
                   {(context.funding_hourly * 100).toFixed(4)}%/h · {context.funding_apr >= 0 ? "longs pay" : "shorts pay"}
+                  {context.funding_pct != null && (
+                    <span title="Where today's funding sits among the past week's hourly readings for this coin">
+                      {" "}· {ordinal(context.funding_pct)} pct (7d)
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="tile">
@@ -51,7 +62,10 @@ export default function Positioning({ context, explanations }) {
                   <tr key={r.w}>
                     <td>{r.w}</td>
                     <td>{fmtPct(r.move)}</td>
-                    <td>{r.oi == null ? "—" : fmtPct(r.oi)}</td>
+                    <td title={r.oiPct == null ? "Not enough history to rank this yet" : `Bigger than ${Math.round(r.oiPct * 100)}% of ${r.w} OI moves on record`}>
+                      {r.oi == null ? "—" : fmtPct(r.oi)}
+                      {r.oiPct != null && r.oiPct >= 0.9 && <span className="rank-tag">top {Math.max(1, Math.round((1 - r.oiPct) * 100))}%</span>}
+                    </td>
                     <td style={{ textAlign: "left" }} className="ink2">{r.phrase.replace(/ \(OI.*\)$/, "")}</td>
                   </tr>
                 ))}

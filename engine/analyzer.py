@@ -10,6 +10,7 @@ Driven by the exchange clock (MarketState.now_ms), not a timer — so a replay
 at 50× produces exactly the same explanations as the live session did.
 """
 import math
+from dataclasses import replace
 
 from config import (
     ANALYSIS_INTERVAL_MS,
@@ -24,6 +25,11 @@ from config import (
 )
 from engine.eventLog import EventLog
 from engine.explainer import explain
+from engine.impact import ImpactModel, assess, fit_impact
+from engine.cascades import CascadeTracker
+from engine.levels import LevelTracker
+from engine.positioning import PositioningModel, fit_positioning
+from engine.walls import WallTracker
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
 from models.explanationModel import Explanation
@@ -46,6 +52,11 @@ class Analyzer:
         self.events = EventLog()
         self.baseline: Baseline | None = None
         self.bar_baseline: Baseline | None = None
+        self.impact_model: ImpactModel | None = None
+        self.positioning = PositioningModel()
+        self.levels = LevelTracker(state.coin)
+        self.cascades = CascadeTracker(state.coin)
+        self.walls = WallTracker()
         self.runs = 0
         self._last_run_ms = 0
         self._baseline_ms = 0
@@ -70,8 +81,17 @@ class Analyzer:
             self._baseline_ms = now_ms
         if self.bar_baseline is None or now_ms - self._bar_baseline_ms >= BAR_BASELINE_REFRESH_MS:
             self.bar_baseline = self.compute_bar_baseline(self.baseline)
+            bars = list(st.bars)
+            self.impact_model = fit_impact(bars, list(self.windows.values()))
+            self.positioning = fit_positioning(bars, list(self.windows.values()))
             self._bar_baseline_ms = now_ms
 
+        self.cascades.update(st, self.baseline.sweep_threshold, now_ms)
+        cascades = tuple(self.cascades.infos(now_ms))
+        recent = max(1, (now_ms - self._last_run_ms) // 1000 + 1) if self._last_run_ms else 5
+        recent = min(recent, st.trades.max_seconds)      # after a long feed gap, only what the buffer still holds
+        self.walls.update(st.book, st.trades.window(recent, now_ms), now_ms, self.baseline.sweep_threshold)
+        wall_stats = self.walls.stats(now_ms)
         refreshed: dict[str, Explanation] = {}
         for label, seconds in self.windows.items():
             every_ms = min(MAX_REFRESH_MS, max(self.interval_ms, seconds * 1000 // WINDOW_REFRESH_DIVISOR))
@@ -79,21 +99,35 @@ class Analyzer:
                 continue                                  # a 60m view doesn't change in one second
             if seconds <= TICK_WINDOW_MAX_S:
                 baseline = self.baseline
-                sl = self.build_slice(label, seconds, now_ms, baseline)
+                sl = self.build_slice(label, seconds, now_ms, baseline, cascades, wall_stats)
             else:
                 baseline = self.bar_baseline
                 sl = self.build_bar_slice(label, seconds, now_ms, baseline)
             if sl is None:
                 continue
+            sl = replace(sl, funding_history=self.positioning.funding_history(),
+                         oi_history=self.positioning.oi_history(seconds))
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
-            refreshed[label] = explain(st.coin, sl, move, signals)
+            flow = next((x for x in signals if x.name == "volume_imbalance"), None)
+            impact = assess(self.impact_model, seconds, flow.metrics.get("buy_notional", 0.0),
+                            flow.metrics.get("sell_notional", 0.0), move.move_bps, move.expected_bps,
+                            sl.flow_coverage) if flow and flow.metrics and sl.coverage >= 0.95 else None
+            refreshed[label] = explain(st.coin, sl, move, signals, impact)
             self._window_ms[label] = now_ms
         self.latest = {**self.latest, **refreshed}
         self.events.update(refreshed, now_ms)
+        for label, ex in refreshed.items():
+            if ex.level:
+                self.levels.observe(label, ex.level, now_ms, self.baseline.sweep_threshold, self.baseline.sigma_1s_bps)
+        self.levels.check(now_ms, st.mid, self.baseline.sigma_1s_bps)
         self._last_run_ms = now_ms
         self.runs += 1
         return self.latest
+
+    def market_events(self) -> list:
+        """Discrete events for the feed (broken levels, cascades), newest last."""
+        return list(self.levels.events) + self.cascades.events
 
     # ── baselines: what does "normal" look like right now? ──────────────────
     def compute_baseline(self) -> Baseline:
@@ -135,7 +169,8 @@ class Analyzer:
                         sweep_threshold=tick.sweep_threshold, covered_s=float(sum(b.span_s for b in bars)))
 
     # ── slicing: tick windows ────────────────────────────────────────────────
-    def build_slice(self, label: str, seconds: int, now_ms: int, baseline: Baseline) -> WindowSlice | None:
+    def build_slice(self, label: str, seconds: int, now_ms: int, baseline: Baseline,
+                    cascades: tuple = (), walls=None) -> WindowSlice | None:
         st = self.state
         start_ms = now_ms - seconds * 1000
         book_end = st.books.latest_at(now_ms)
@@ -170,6 +205,8 @@ class Analyzer:
             burst_down_bps=bursts[1],
             burst_up_end_ms=bursts[2],
             burst_down_end_ms=bursts[3],
+            cascades=cascades,
+            walls=walls,
         )
 
     # ── slicing: bar windows ─────────────────────────────────────────────────

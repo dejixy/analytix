@@ -29,3 +29,21 @@ export function headlineBody(headline) {
   const body = i >= 0 ? headline.slice(i + 3) : headline;
   return body.charAt(0).toUpperCase() + body.slice(1);
 }
+
+/** Flow efficiency for the card footer: "impact 0.3× · absorbed". */
+export function impactText(im) {
+  if (!im) return null;
+  if (im.verdict === "against") return "moved against flow";
+  const r = `impact ${im.ratio.toFixed(1)}×`;
+  return im.verdict === "absorbed" ? `${r} · absorbed` : im.verdict === "outsized" ? `${r} · outsized` : r;
+}
+
+export function impactHelp(im, window) {
+  if (!im) return "";
+  const side = im.net_flow >= 0 ? "buying" : "selling";
+  return (
+    `Net ${side} of ${fmtUsd(Math.abs(im.net_flow))} normally moves price ${fmtPct(im.expected_bps / 100)} over ${window}; ` +
+    `it moved ${fmtPct(im.actual_bps / 100)}. Under 0.35× = absorbed by passive orders; over 2.5× = thin book or led from other venues. ` +
+    `Normal impact here: ${im.lam_bps_per_m.toFixed(1)} bps per $1M of net flow.`
+  );
+}

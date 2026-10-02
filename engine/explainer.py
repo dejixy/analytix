@@ -13,12 +13,15 @@ Logic, in order:
      minute (a shock) or spread out (a grind / trend).
 """
 from config import CROWDED_FUNDING_APR, MIN_DRIVER_STRENGTH, SIGNIFICANT_Z
-from models.explanationModel import Alignment, Driver, Explanation, PriceMove, Significance
+from models.explanationModel import Alignment, Driver, Explanation, FlowImpact, PriceMove, Significance
 from models.signalModel import Direction, SignalResult
 from signals import weights_for
-from signals.base import WindowSlice
+from signals.base import WindowSlice, fmt_px, fmt_usd
+from models.tradeModel import TradeSide
+from engine.levels import defended_level, level_sentence
 
 ABSORPTION_STRENGTH = 0.5
+IMPACT_ABSORPTION_STRENGTH = 0.3
 HEADWIND_STRENGTH = 0.4
 FADE_SHARE = 1.5     # one stretch moved ≥1.5× the net move → it spiked and mostly gave it back
 BURST_SHARE = 0.6    # one minute delivered ≥60% of the net move → a shock
@@ -69,7 +72,29 @@ def _absorption_sentence(flow: SignalResult, move: PriceMove) -> str:
     )
 
 
-def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResult]) -> Explanation:
+def _impact_sentence(label: str, im: FlowImpact) -> str:
+    buying = im.net_flow > 0
+    aggressors = "buyers" if buying else "sellers"
+    head = (f"Impact: net {'buying' if buying else 'selling'} of {fmt_usd(abs(im.net_flow))} normally moves price "
+            f"about {im.expected_bps / 100:+.2f}% over {label}; it moved {im.actual_bps / 100:+.2f}%")
+    return head + {
+        "against": f" — the other way. The {aggressors} were absorbed.",
+        "absorbed": f" — {im.ratio:.1f}× the usual impact. The {aggressors} were largely absorbed.",
+        "normal": f" — about the usual impact ({im.ratio:.1f}×).",
+        "outsized": f" — {im.ratio:.1f}× the usual impact: a thin book, or a move led from other venues.",
+    }[im.verdict]
+
+
+def _level(s: WindowSlice, flow: SignalResult):
+    """The price passive orders defended against the aggressors (tick windows only — bars carry no fill prices)."""
+    if not s.trades:
+        return None
+    lv = defended_level(s.trades, TradeSide.SELL if flow.score < 0 else TradeSide.BUY)
+    return lv if lv and lv.absorbed >= s.baseline.sweep_threshold else None
+
+
+def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResult],
+            impact: FlowImpact | None = None) -> Explanation:
     by_name = {sig.name: sig for sig in signals}
     weights = weights_for(s.seconds)
     aligned = [(sig, _align(sig, move), weights.get(sig.name, 1.0) * sig.strength) for sig in signals]
@@ -91,6 +116,7 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
     ]
 
     pct = f"{move.move_pct:+.2f}%"
+    level = None
     flow = by_name.get("volume_imbalance")
     quiet = move.significance is Significance.QUIET
     narrative: list[str] = []
@@ -99,6 +125,9 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
         range_bps = (move.high / move.low - 1) * 10_000 if move.low else 0.0
         absorbed = bool(flow and flow.strength >= ABSORPTION_STRENGTH and (
             abs(move.z) < 1.0 or (move.direction is not Direction.NEUTRAL and flow.direction is not move.direction)))
+        # Measured impact is the sharper test: plenty of flow, far less movement than it normally buys.
+        absorbed = absorbed or bool(flow and impact and impact.verdict in ("against", "absorbed")
+                                    and flow.strength >= IMPACT_ABSORPTION_STRENGTH)
         if range_bps >= SIGNIFICANT_Z * move.expected_bps:
             headline = f"{coin} little changed over {s.label} ({pct}) after a {range_bps / 100:.2f}% round trip"
             narrative.append(
@@ -108,8 +137,12 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
         elif absorbed:
             side = "sellers" if flow.score < 0 else "buyers"
             passive = "bids" if flow.score < 0 else "offers"
-            headline = f"{coin} little changed over {s.label} ({pct}) — {side} pressed but {passive} absorbed it"
+            level = _level(s, flow)
+            at = f" at {fmt_px(level.price)}" if level else ""
+            headline = f"{coin} little changed over {s.label} ({pct}) — {side} pressed but {passive} absorbed it{at}"
             narrative.append(_absorption_sentence(flow, move))
+            if level:
+                narrative.append(level_sentence(level))
         else:
             headline = f"{coin} little changed over {s.label} ({pct}) — balanced two-way flow"
         narrative.append(
@@ -135,7 +168,9 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
             reasons = " and ".join(sig.phrase for sig in top)
             headline = f"{coin} {pct} in {s.label} — {lead}driven by {reasons}"
         elif flow_opposes and flow:
-            headline = f"{coin} {pct} in {s.label} — {verb} despite {flow.phrase}: passive liquidity absorbed it"
+            level = _level(s, flow)
+            at = f" at {fmt_px(level.price)}" if level else ""
+            headline = f"{coin} {pct} in {s.label} — {verb} despite {flow.phrase}: passive liquidity absorbed it{at}"
         elif flow and flow.metrics.get("activity", 1.0) < 0.8:
             headline = f"{coin} {pct} in {s.label} — no clear driver; price drifted on light activity"
         else:
@@ -164,9 +199,15 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
                 continue
             if sig.name == "volume_imbalance":
                 narrative.append(_absorption_sentence(sig, move))
+                level = level or _level(s, sig)
+                if level:
+                    narrative.append(level_sentence(level))
             else:
                 narrative.append(f"Headwind ({sig.label.lower()}): {sig.summary}")
         confidence = sup_total / (sup_total + opp_total + 0.35) if sup_total else 0.0
+
+    if impact:
+        narrative.append(_impact_sentence(s.label, impact))
 
     fund = by_name.get("funding")
     fund_relevant = fund and (fund.strength >= MIN_DRIVER_STRENGTH
@@ -198,4 +239,6 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
         shape_label={"burst": f"one sharp {span_words(move.burst_span_s)}", "grind": "steady grind",
                      "faded": "spike, mostly faded", "mixed": "mixed shape"}.get(shape, ""),
         flow_coverage=round(s.flow_coverage, 3),
+        impact=impact,
+        level=level,
     )

@@ -77,6 +77,13 @@ button { font: inherit; color: inherit; }
 .tf-tab:hover { color: var(--ink); }
 .tf-tab.active { color: var(--ink); border-color: var(--up); background: var(--up-deep); }
 .rail-arrows { display: flex; gap: 4px; }
+.tf-flow { margin-left: 5px; font-size: 9px; color: var(--muted); }
+.tf-flow.up { color: var(--up-bright); }
+.tf-flow.down { color: var(--grey-bar); }
+.tf-agree { margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; cursor: help; }
+.tf-agree.up { color: var(--up-bright); }
+.tf-agree.down, .tf-agree.mixed { color: var(--ink-2); }
+@media (max-width: 820px) { .tf-agree { display: none; } }
 .rail-arrow {
   border: 1px solid var(--border); background: var(--surface); color: var(--ink-2); cursor: pointer;
   width: 28px; height: 24px; border-radius: 2px; font-size: 15px; line-height: 1;
@@ -170,6 +177,7 @@ button { font: inherit; color: inherit; }
 .fill.neutral { background: var(--neutral-mark); }
 .align-icon { font-size: 11px; text-align: center; color: var(--muted); }
 .card-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted); }
+.card-foot .impact { color: var(--ink-2); cursor: help; }
 .shape-tag { color: var(--ink-2); }
 /* No red inside the timeframe cards: downward bars go grey, down moves stay white with ▼ */
 .card .fill.down { background: var(--grey-bar); }
@@ -247,6 +255,26 @@ tr.sweep td { font-weight: 700; color: var(--ink); background: var(--surface-2);
 .event:hover { background: var(--surface-2); }
 .event.pinned { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--up); }
 .event-head { font-size: 12px; }
+.event.static { cursor: default; }
+.wall-tag { margin-left: 6px; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 0 4px; border: 1px solid var(--axis); border-radius: 2px; color: var(--ink-2); cursor: help; }
+tr.wall td { color: var(--ink); }
+.rank-tag { margin-left: 6px; font-size: 9.5px; color: var(--ink); border: 1px solid var(--axis); border-radius: 2px; padding: 0 4px; }
+.wall-stats { display: flex; justify-content: space-between; margin-top: 4px; cursor: help; }
+.event.static:hover { background: none; }
+.legend-item .dash { display: inline-block; width: 14px; border-top: 1px dashed var(--up); }
+
+/* ── Toasts ─────────────────────────────────────────────────────────────── */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: grid; gap: 8px; width: min(380px, calc(100vw - 32px)); }
+.toast {
+  background: var(--surface-3); border: 1px solid var(--axis); border-left: 2px solid var(--grey-bar);
+  border-radius: 2px; padding: 8px 10px; font-size: 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+.toast.up { border-left-color: var(--up); }
+.toast-head { display: flex; align-items: center; gap: 8px; font-size: 10.5px; margin-bottom: 4px; }
+.toast-x { margin-left: auto; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; }
+.toast-title { color: var(--ink); }
+.toast-detail { font-size: 10.5px; margin-top: 2px; }
 .empty { padding: 16px 12px; color: var(--muted); font-size: 12px; }
 .panel-body .empty { padding: 0; }
 @media (max-width: 820px) {

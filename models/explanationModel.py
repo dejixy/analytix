@@ -52,6 +52,40 @@ class PriceMove:
 
 
 @dataclass(frozen=True, slots=True)
+class FlowImpact:
+    """How far price moved compared with what the window's net taker flow normally does (engine/impact.py)."""
+    net_flow: float          # USD, taker buys − taker sells
+    expected_bps: float      # the move that much net flow normally produces over this timeframe
+    actual_bps: float
+    ratio: float             # actual ÷ expected
+    verdict: str             # "against" | "absorbed" | "normal" | "outsized"
+    lam_bps_per_m: float     # normal impact: bps per $1M of net flow
+    source: str              # "measured" | "scaled from 1m"
+
+
+@dataclass(frozen=True, slots=True)
+class DefendedLevel:
+    """Where passive orders soaked up the aggression in an absorbed window (engine/levels.py)."""
+    side: str                # "bid": held against sellers (support) · "ask": held against buyers (resistance)
+    price: float             # notional-weighted price of the aggressive fills it absorbed
+    absorbed: float          # USD of aggressive flow that hit it
+    share: float             # that, as a share of all the aggressors' volume in the window
+
+
+@dataclass(frozen=True, slots=True)
+class MarketEvent:
+    """A discrete thing worth knowing about, for the event feed: a broken level, a cascade."""
+    id: str
+    kind: str                # "level_break" | "cascade"
+    ts: int                  # exchange ms
+    direction: Direction     # which way price went / was pushed
+    title: str
+    detail: str = ""         # a short note after the title
+    window: str = ""         # the timeframe it came from, if any
+    stat: str = ""           # the short figure shown beside the arrow (a timeframe, or the move)
+
+
+@dataclass(frozen=True, slots=True)
 class Explanation:
     window: str
     seconds: int
@@ -67,6 +101,8 @@ class Explanation:
     shape: str = ""         # "burst" | "grind" | "mixed" | "" — only for windows longer than a minute
     shape_label: str = ""   # human text for the shape, e.g. "one sharp 30-minute stretch"
     flow_coverage: float = 1.0
+    impact: FlowImpact | None = None
+    level: DefendedLevel | None = None
 
 
 @dataclass(slots=True)
