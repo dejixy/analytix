@@ -67,34 +67,7 @@ class Explanation:
     shape: str = ""         # "burst" | "grind" | "mixed" | "" — only for windows longer than a minute
     shape_label: str = ""   # human text for the shape, e.g. "one sharp 30-minute stretch"
     flow_coverage: float = 1.0
-    outlook: "Outlook | None" = None
 
-
-@dataclass(frozen=True, slots=True)
-class Outlook:
-    """A lean for the next window-length of time — a heuristic estimate, scored against what happens."""
-    horizon_s: int
-    lean: Direction
-    score: float            # -1..+1 combined evidence
-    expected_bps: float     # centre of the estimate
-    range_bps: float        # typical (1σ) move over the horizon
-    p_up: float             # rough probability price is higher at the end of the horizon
-    reasons: list[str]
-    line: str
-    hit_rate: float | None = None   # share of past directional leans that were right (hidden until enough periods)
-    scored: int = 0                 # directional leans scored — overlapping samples, several per period
-    periods: float = 0.0            # independent window-lengths those leans cover: the honest sample size
-    range_rate: float | None = None # share of past outlooks whose outcome landed inside expected ± range
-    track: str = ""                 # the track record in words, for the dashboard
-
-
-@dataclass(frozen=True, slots=True)
-class TrackRecord:
-    """How past outlooks for one window turned out (see engine/outlookTracker.py)."""
-    hit_rate: float | None = None   # share of directional calls that were right; None until enough periods
-    called: int = 0                 # directional calls scored (overlapping samples)
-    periods: float = 0.0            # independent horizons those calls cover
-    range_rate: float | None = None # share of all samples that ended inside expected ± range
 
 @dataclass(slots=True)
 class MoveEvent:
