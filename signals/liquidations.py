@@ -84,7 +84,7 @@ def _from_bars(s: WindowSlice) -> SignalResult:
                f"({fmt_usd(a.sell_notional)}) in the live part of this window.")
     return SignalResult(NAME, LABEL, score, abs(score), Direction.of(score, eps=0.05), summary,
                         phrase=f"large {side_word} sweeps ({n}, {fmt_usd(a.buy_notional if score >= 0 else a.sell_notional)})",
-                        stat=f"{n} {side_word} sweeps", metrics=metrics)
+                        stat=f"{n} {side_word} sweep{'' if n == 1 else 's'}", metrics=metrics)
 
 
 def liquidations(s: WindowSlice) -> SignalResult:
@@ -155,7 +155,7 @@ def liquidations(s: WindowSlice) -> SignalResult:
         side_word = "buy" if score >= 0 else "sell"
         n = len(buy_sw) if score >= 0 else len(sell_sw)
         phrase = f"large {side_word} sweeps ({n}, {fmt_usd(buy_n if score >= 0 else sell_n)})"
-        stat = f"{n} {side_word} sweeps"
+        stat = f"{n} {side_word} sweep{'' if n == 1 else 's'}"
         summary = (
             f"{len(buy_sw)} buy sweeps ({fmt_usd(buy_n)}) vs {len(sell_sw)} sell sweeps ({fmt_usd(sell_n)}) "
             f"above {fmt_usd(s.baseline.sweep_threshold)}."

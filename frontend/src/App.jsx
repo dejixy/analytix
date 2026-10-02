@@ -10,6 +10,27 @@ import Positioning from "./components/Positioning.jsx";
 import EventLog from "./components/EventLog.jsx";
 import Toasts from "./components/Toasts.jsx";
 
+const FLOW_MIN_STRENGTH = 0.25;
+
+/** Which way order flow leans on a timeframe: "up" | "down" | "neutral" (too weak or too little live data). */
+function flowDir(ex) {
+  const f = ex?.signals?.volume_imbalance;
+  if (!f || f.strength < FLOW_MIN_STRENGTH || (ex.flow_coverage ?? 1) < 0.5) return "neutral";
+  return f.direction;
+}
+
+/** One line on whether short- and longer-term flow agree, from 1m, 10m and 60m. */
+function agreement(explanations) {
+  const [a, b, c] = ["1m", "10m", "60m"].map((w) => flowDir(explanations[w]));
+  const glyph = (d) => (d === "up" ? "▲" : "▼");
+  if (a !== "neutral" && a === b && b === c) return { text: `Flow aligned ${glyph(a)} 1m–60m`, cls: a };
+  if (c !== "neutral" && a !== "neutral" && b !== "neutral" && a === b && a !== c)
+    return { text: `Short-term flow against the 60m ${glyph(c)}`, cls: "mixed" };
+  if (b !== "neutral" && b === c && a !== "neutral" && a !== b)
+    return { text: `1m pushing against 10m–60m ${glyph(b)}`, cls: "mixed" };
+  return { text: "Flow mixed across timeframes", cls: "neutral" };
+}
+
 export default function App() {
   const [coin, setCoin] = useState(null); // null = the server's default coin
   const { snap, conn } = useSnapshot(coin);
@@ -29,6 +50,7 @@ export default function App() {
   }
 
   const windows = Object.entries(snap.windows); // [["1m", 60], ...]
+  const agree = agreement(snap.explanations);
   const current = snap.explanations[selected];
   const detail = pinned ? pinned.explanation : current;
 
@@ -63,12 +85,29 @@ export default function App() {
       <section className="rail-wrap" aria-label="Explanations by timeframe">
         <div className="rail-head">
           <nav className="tf-tabs" aria-label="Timeframe">
-            {windows.map(([w]) => (
-              <button key={w} className={`tf-tab ${!pinned && selected === w ? "active" : ""}`} onClick={() => jumpTo(w)}>
-                {w}
-              </button>
-            ))}
+            {windows.map(([w]) => {
+              const ex = snap.explanations[w];
+              const d = flowDir(ex);
+              const f = ex?.signals?.volume_imbalance;
+              return (
+                <button
+                  key={w}
+                  className={`tf-tab ${!pinned && selected === w ? "active" : ""}`}
+                  onClick={() => jumpTo(w)}
+                  title={f?.stat && f.stat !== "—" ? `${w} order flow: ${f.stat}` : `${w}: no flow read yet`}
+                >
+                  {w}
+                  <span className={`tf-flow ${d}`} aria-hidden="true">{d === "up" ? "▲" : d === "down" ? "▼" : "·"}</span>
+                </button>
+              );
+            })}
           </nav>
+          <span
+            className={`tf-agree ${agree.cls}`}
+            title="Which way aggressive order flow leans on 1m, 10m and 60m. Aligned = every timeframe agrees; against = the short term is pushing the other way."
+          >
+            {agree.text}
+          </span>
           <div className="rail-arrows">
             <button className="rail-arrow" onClick={() => scrollRail(-1)} aria-label="Shorter timeframes">‹</button>
             <button className="rail-arrow" onClick={() => scrollRail(1)} aria-label="Longer timeframes">›</button>
