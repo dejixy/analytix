@@ -81,8 +81,20 @@ class Outlook:
     p_up: float             # rough probability price is higher at the end of the horizon
     reasons: list[str]
     line: str
-    hit_rate: float | None = None   # share of past non-neutral leans that were right
-    scored: int = 0                 # how many past leans have been scored
+    hit_rate: float | None = None   # share of past directional leans that were right (hidden until enough periods)
+    scored: int = 0                 # directional leans scored — overlapping samples, several per period
+    periods: float = 0.0            # independent window-lengths those leans cover: the honest sample size
+    range_rate: float | None = None # share of past outlooks whose outcome landed inside expected ± range
+    track: str = ""                 # the track record in words, for the dashboard
+
+
+@dataclass(frozen=True, slots=True)
+class TrackRecord:
+    """How past outlooks for one window turned out (see engine/outlookTracker.py)."""
+    hit_rate: float | None = None   # share of directional calls that were right; None until enough periods
+    called: int = 0                 # directional calls scored (overlapping samples)
+    periods: float = 0.0            # independent horizons those calls cover
+    range_rate: float | None = None # share of all samples that ended inside expected ± range
 
 @dataclass(slots=True)
 class MoveEvent:

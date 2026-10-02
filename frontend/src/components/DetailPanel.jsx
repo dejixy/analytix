@@ -15,15 +15,17 @@ function Gauge({ score }) {
 
 function OutlookLine({ o }) {
   const [head, ...rest] = o.line.split(" — ");
-  const track =
-    o.hit_rate != null ? `called right ${Math.round(o.hit_rate * 100)}% of ${o.scored} times` : `scoring… ${o.scored}/10 leans checked`;
+  const trackHelp =
+    "Leans are sampled several times per period, so neighbouring samples share most of their price action. " +
+    "The count is how many separate periods they cover, and the hit rate stays hidden until there are enough. " +
+    "Inside range: how often the price ended within the stated typical range (about 68% if the range is honest).";
   return (
     <div className="outlook" title="Heuristic estimate from the current book, flow, sweeps, momentum and funding. Not financial advice.">
       <span className={`outlook-lean ${o.lean}`}>{o.lean === "up" ? "▲" : o.lean === "down" ? "▼" : "•"}</span>
       <span>
         <span className="outlook-head">{head}</span>
         {rest.length > 0 && <span className="ink2"> — {rest.join(" — ")}</span>}
-        <span className="muted"> · {track}</span>
+        {o.track && <span className="muted" title={trackHelp}> · {o.track}</span>}
       </span>
     </div>
   );

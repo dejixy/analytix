@@ -7,11 +7,13 @@ The evidence used here — book imbalance, who is aggressive, sweeps, momentum,
 crowded funding and absorption — has a small edge at best. So the estimate is
 deliberately conservative: the lean shifts the centre of the range by at most
 SKILL × σ, which caps the implied probability at about 60%. The tracker scores
-every lean after the fact, and the dashboard shows the hit rate next to it.
+every lean after the fact, and the dashboard shows the hit rate next to it —
+counted in independent periods, not overlapping samples.
 """
 import math
 
-from models.explanationModel import Explanation, Outlook, Significance
+from engine.outlookTracker import MIN_PERIODS
+from models.explanationModel import Explanation, Outlook, Significance, TrackRecord
 from models.signalModel import Direction
 from signals.base import clip
 
@@ -80,8 +82,21 @@ def components(ex: Explanation, book_imbalance: float | None) -> dict[str, tuple
     return out
 
 
+def track_line(window: str, t: TrackRecord) -> str:
+    """The track record in words. The count is independent periods, not samples:
+    sixty 10m leans taken a minute apart are judged on about six 10m stretches."""
+    n = "0" if t.periods == 0 else "<1" if t.periods < 1 else f"~{t.periods:.0f}"
+    if t.hit_rate is None:
+        return f"scoring… {n} of {MIN_PERIODS} separate {window} periods checked"
+    line = f"called right {t.hit_rate:.0%} over {n} separate {window} periods"
+    if t.range_rate is not None:
+        line += f" · inside range {t.range_rate:.0%}"
+    return line
+
+
 def make_outlook(ex: Explanation, book_imbalance: float | None, sigma_1s_bps: float, horizon_key: str,
-                 hit_rate: float | None = None, scored: int = 0) -> Outlook:
+                 track: TrackRecord | None = None) -> Outlook:
+    track = track or TrackRecord()
     w = WEIGHTS[horizon_key]
     comps = components(ex, book_imbalance)
     present = sum(w.get(k, 0.0) for k in comps if w.get(k, 0.0) > 0)
@@ -111,5 +126,6 @@ def make_outlook(ex: Explanation, book_imbalance: float | None, sigma_1s_bps: fl
     reasons = backing + against
     return Outlook(
         horizon_s=ex.seconds, lean=lean, score=round(score, 3), expected_bps=expected, range_bps=sigma_h,
-        p_up=round(p_up, 3), reasons=reasons, line=line, hit_rate=hit_rate, scored=scored,
+        p_up=round(p_up, 3), reasons=reasons, line=line, hit_rate=track.hit_rate, scored=track.called,
+        periods=track.periods, range_rate=track.range_rate, track=track_line(ex.window, track),
     )
