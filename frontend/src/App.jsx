@@ -107,7 +107,7 @@ export default function App() {
       </section>
 
       <section className="lower">
-        <OrderBook book={snap.book} price={snap.price} />
+        <OrderBook book={snap.book} price={snap.price} walls={snap.walls} />
         <TradeTape trades={snap.trades} />
         <Positioning context={snap.context} explanations={snap.explanations} />
       </section>

@@ -249,6 +249,10 @@ tr.sweep td { font-weight: 700; color: var(--ink); background: var(--surface-2);
 .event.pinned { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--up); }
 .event-head { font-size: 12px; }
 .event.static { cursor: default; }
+.wall-tag { margin-left: 6px; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 0 4px; border: 1px solid var(--axis); border-radius: 2px; color: var(--ink-2); cursor: help; }
+tr.wall td { color: var(--ink); }
+.wall-stats { display: flex; justify-content: space-between; margin-top: 4px; cursor: help; }
 .event.static:hover { background: none; }
 .legend-item .dash { display: inline-block; width: 14px; border-top: 1px dashed var(--up); }
 

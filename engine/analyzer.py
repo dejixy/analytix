@@ -27,6 +27,7 @@ from engine.explainer import explain
 from engine.impact import ImpactModel, assess, fit_impact
 from engine.cascades import CascadeTracker
 from engine.levels import LevelTracker
+from engine.walls import WallTracker
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
 from models.explanationModel import Explanation
@@ -52,6 +53,7 @@ class Analyzer:
         self.impact_model: ImpactModel | None = None
         self.levels = LevelTracker(state.coin)
         self.cascades = CascadeTracker(state.coin)
+        self.walls = WallTracker()
         self.runs = 0
         self._last_run_ms = 0
         self._baseline_ms = 0
@@ -81,6 +83,9 @@ class Analyzer:
 
         self.cascades.update(st, self.baseline.sweep_threshold, now_ms)
         cascades = tuple(self.cascades.infos(now_ms))
+        recent = max(1, (now_ms - self._last_run_ms) // 1000 + 1) if self._last_run_ms else 5
+        self.walls.update(st.book, st.trades.window(recent, now_ms), now_ms, self.baseline.sweep_threshold)
+        wall_stats = self.walls.stats(now_ms)
         refreshed: dict[str, Explanation] = {}
         for label, seconds in self.windows.items():
             every_ms = min(MAX_REFRESH_MS, max(self.interval_ms, seconds * 1000 // WINDOW_REFRESH_DIVISOR))
@@ -88,7 +93,7 @@ class Analyzer:
                 continue                                  # a 60m view doesn't change in one second
             if seconds <= TICK_WINDOW_MAX_S:
                 baseline = self.baseline
-                sl = self.build_slice(label, seconds, now_ms, baseline, cascades)
+                sl = self.build_slice(label, seconds, now_ms, baseline, cascades, wall_stats)
             else:
                 baseline = self.bar_baseline
                 sl = self.build_bar_slice(label, seconds, now_ms, baseline)
@@ -157,7 +162,7 @@ class Analyzer:
 
     # ── slicing: tick windows ────────────────────────────────────────────────
     def build_slice(self, label: str, seconds: int, now_ms: int, baseline: Baseline,
-                    cascades: tuple = ()) -> WindowSlice | None:
+                    cascades: tuple = (), walls=None) -> WindowSlice | None:
         st = self.state
         start_ms = now_ms - seconds * 1000
         book_end = st.books.latest_at(now_ms)
@@ -193,6 +198,7 @@ class Analyzer:
             burst_up_end_ms=bursts[2],
             burst_down_end_ms=bursts[3],
             cascades=cascades,
+            walls=walls,
         )
 
     # ── slicing: bar windows ─────────────────────────────────────────────────

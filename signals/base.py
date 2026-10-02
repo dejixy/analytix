@@ -56,6 +56,14 @@ class CascadeInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class WallStats:
+    """How big resting orders near the price have behaved over the last 30 minutes (engine/walls.py)."""
+    pulled_near: dict[str, int]      # side ("bid"/"ask") → walls that vanished, unfilled, as price came within 10 bps
+    eaten: dict[str, int]            # → walls that were traded into
+    held: dict[str, int]             # → walls standing now that have absorbed ≥ 20% of their size
+
+
+@dataclass(frozen=True, slots=True)
 class WindowSlice:
     label: str                   # "10m"
     seconds: int
@@ -81,6 +89,7 @@ class WindowSlice:
     sweep_agg: SweepAgg | None = None
     flow_coverage: float = 1.0   # share of the window with live flow/depth/OI data
     cascades: tuple[CascadeInfo, ...] = ()   # tracked cascades with their OI check and recovery
+    walls: WallStats | None = None           # how recent big resting orders behaved: real or pulled
 
     @property
     def price_start(self) -> float | None:
