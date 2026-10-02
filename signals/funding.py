@@ -18,6 +18,7 @@ import math
 
 from config import CROWDED_FUNDING_APR, OI_REF_PCT_PER_SQRT_MIN
 from models.signalModel import Direction, SignalResult
+from engine.positioning import percentile
 from signals.base import WindowSlice, clip
 
 NAME, LABEL = "funding", "Funding & OI"
@@ -30,6 +31,15 @@ QUADRANTS = {
     (Direction.NEUTRAL, True): "positions building on both sides",
     (Direction.NEUTRAL, False): "positions unwinding",
 }
+
+
+TOP_SHARE = 0.9     # an OI move bigger than 90% of history gets flagged on the card
+
+
+def _ordinal(p: float) -> str:
+    n = min(99, max(1, round(p * 100)))
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 def funding(s: WindowSlice) -> SignalResult:
@@ -59,13 +69,22 @@ def funding(s: WindowSlice) -> SignalResult:
         strength = clip(strength + 0.1, 0.0, 1.0)
         quadrant = f"crowded {crowded} being flushed"
 
+    funding_pct = percentile(s.funding_history, b.funding)
+    oi_pct = percentile(s.oi_history, abs(oi_chg)) if a and a.open_interest else None
+
     payer = "longs pay shorts" if apr >= 0 else "shorts pay longs"
     verb = {"up": "rose", "down": "fell", "neutral": "held"}[price_dir.value]
+    oi_rank = ("" if oi_pct is None else f" — the biggest {s.label} OI move on record" if oi_pct >= 0.995
+               else f" — bigger than {oi_pct:.0%} of {s.label} OI moves on record")
+    fund_rank = f"; {_ordinal(funding_pct)} percentile of the past week" if funding_pct is not None else ""
     summary = (
-        f"Open interest {oi_chg:+.2f}% while price {verb}: {quadrant}. "
+        f"Open interest {oi_chg:+.2f}% while price {verb}: {quadrant}{oi_rank}. "
         f"Funding {apr:+.1f}% APR ({payer}{', crowded' if crowded else ''}"
-        f"{f', {apr_chg:+.1f} pts' if abs(apr_chg) >= 0.5 else ''})."
+        f"{f', {apr_chg:+.1f} pts' if abs(apr_chg) >= 0.5 else ''}{fund_rank})."
     )
+    stat = f"OI {oi_chg:+.2f}%"
+    if oi_pct is not None and oi_pct >= TOP_SHARE:
+        stat += f" · top {max(1, round((1 - oi_pct) * 100))}%"
     sign = {Direction.UP: 1.0, Direction.DOWN: -1.0, Direction.NEUTRAL: 0.0}[price_dir]
     return SignalResult(
         NAME, LABEL,
@@ -74,7 +93,7 @@ def funding(s: WindowSlice) -> SignalResult:
         direction=price_dir,
         summary=summary,
         phrase=f"{quadrant} (OI {oi_chg:+.2f}%)",
-        stat=f"OI {oi_chg:+.2f}%",
+        stat=stat,
         metrics={
             "oi_change_pct": oi_chg,
             "open_interest": b.open_interest,
@@ -84,5 +103,7 @@ def funding(s: WindowSlice) -> SignalResult:
             "funding_hourly": b.funding,
             "crowded": 1.0 if crowded == "longs" else -1.0 if crowded == "shorts" else 0.0,
             "premium_bps": b.premium_bps,
+            "oi_pct": oi_pct,
+            "funding_pct": funding_pct,
         },
     )

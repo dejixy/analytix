@@ -10,6 +10,7 @@ Driven by the exchange clock (MarketState.now_ms), not a timer — so a replay
 at 50× produces exactly the same explanations as the live session did.
 """
 import math
+from dataclasses import replace
 
 from config import (
     ANALYSIS_INTERVAL_MS,
@@ -27,6 +28,7 @@ from engine.explainer import explain
 from engine.impact import ImpactModel, assess, fit_impact
 from engine.cascades import CascadeTracker
 from engine.levels import LevelTracker
+from engine.positioning import PositioningModel, fit_positioning
 from engine.walls import WallTracker
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
@@ -51,6 +53,7 @@ class Analyzer:
         self.baseline: Baseline | None = None
         self.bar_baseline: Baseline | None = None
         self.impact_model: ImpactModel | None = None
+        self.positioning = PositioningModel()
         self.levels = LevelTracker(state.coin)
         self.cascades = CascadeTracker(state.coin)
         self.walls = WallTracker()
@@ -78,7 +81,9 @@ class Analyzer:
             self._baseline_ms = now_ms
         if self.bar_baseline is None or now_ms - self._bar_baseline_ms >= BAR_BASELINE_REFRESH_MS:
             self.bar_baseline = self.compute_bar_baseline(self.baseline)
-            self.impact_model = fit_impact(list(st.bars), list(self.windows.values()))
+            bars = list(st.bars)
+            self.impact_model = fit_impact(bars, list(self.windows.values()))
+            self.positioning = fit_positioning(bars, list(self.windows.values()))
             self._bar_baseline_ms = now_ms
 
         self.cascades.update(st, self.baseline.sweep_threshold, now_ms)
@@ -99,6 +104,8 @@ class Analyzer:
                 sl = self.build_bar_slice(label, seconds, now_ms, baseline)
             if sl is None:
                 continue
+            sl = replace(sl, funding_history=self.positioning.funding_history(),
+                         oi_history=self.positioning.oi_history(seconds))
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
             flow = next((x for x in signals if x.name == "volume_imbalance"), None)

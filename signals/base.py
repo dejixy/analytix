@@ -90,6 +90,8 @@ class WindowSlice:
     flow_coverage: float = 1.0   # share of the window with live flow/depth/OI data
     cascades: tuple[CascadeInfo, ...] = ()   # tracked cascades with their OI check and recovery
     walls: WallStats | None = None           # how recent big resting orders behaved: real or pulled
+    funding_history: tuple[float, ...] = ()  # sorted hourly funding rates, past week (engine/positioning.py)
+    oi_history: tuple[float, ...] = ()       # sorted |ΔOI %| over this timeframe, from saved live bars
 
     @property
     def price_start(self) -> float | None:

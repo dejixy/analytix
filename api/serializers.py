@@ -9,6 +9,7 @@ from typing import Any
 
 from config import BOOK_LEVELS_SHOWN, CHART_POINTS, MAX_TICK_WINDOW_S, WINDOWS
 from models.explanationModel import Explanation, MoveEvent
+from engine.positioning import percentile
 from signals.liquidations import is_sweep
 
 
@@ -63,7 +64,8 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
         context = {"funding_hourly": c.funding, "funding_apr": c.funding_apr, "open_interest": c.open_interest,
                    "open_interest_usd": c.open_interest_usd, "mark_price": c.mark_price,
                    "oracle_price": c.oracle_price, "premium_bps": c.premium_bps, "day_volume": c.day_volume,
-                   "change_24h_pct": change_24h}
+                   "change_24h_pct": change_24h,
+                   "funding_pct": percentile(an.positioning.funding_history(), c.funding)}
 
     book_d = None
     if book:
