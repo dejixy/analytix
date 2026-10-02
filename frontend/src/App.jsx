@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSnapshot } from "./useSnapshot.js";
 import Header from "./components/Header.jsx";
 import ExplanationCard from "./components/ExplanationCard.jsx";
@@ -37,6 +37,15 @@ export default function App() {
   const [selected, setSelected] = useState("1m");
   const [pinned, setPinned] = useState(null); // a MoveEvent object, kept even after it scrolls out of the feed
   const railRef = useRef(null);
+
+  // Esc unpins: the quickest way back to the live explanation.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") setPinned(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   if (!snap) {
     return (
@@ -141,6 +150,7 @@ export default function App() {
           windowLabel={selected}
           pinned={pinned}
           onPick={pin}
+          onUnpin={() => setPinned(null)}
         />
         <DetailPanel ex={detail} pinned={pinned} onUnpin={() => setPinned(null)} />
       </section>
