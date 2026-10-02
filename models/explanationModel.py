@@ -52,6 +52,18 @@ class PriceMove:
 
 
 @dataclass(frozen=True, slots=True)
+class FlowImpact:
+    """How far price moved compared with what the window's net taker flow normally does (engine/impact.py)."""
+    net_flow: float          # USD, taker buys − taker sells
+    expected_bps: float      # the move that much net flow normally produces over this timeframe
+    actual_bps: float
+    ratio: float             # actual ÷ expected
+    verdict: str             # "against" | "absorbed" | "normal" | "outsized"
+    lam_bps_per_m: float     # normal impact: bps per $1M of net flow
+    source: str              # "measured" | "scaled from 1m"
+
+
+@dataclass(frozen=True, slots=True)
 class Explanation:
     window: str
     seconds: int
@@ -67,6 +79,7 @@ class Explanation:
     shape: str = ""         # "burst" | "grind" | "mixed" | "" — only for windows longer than a minute
     shape_label: str = ""   # human text for the shape, e.g. "one sharp 30-minute stretch"
     flow_coverage: float = 1.0
+    impact: FlowImpact | None = None
 
 
 @dataclass(slots=True)

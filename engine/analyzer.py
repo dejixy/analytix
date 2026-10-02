@@ -24,6 +24,7 @@ from config import (
 )
 from engine.eventLog import EventLog
 from engine.explainer import explain
+from engine.impact import ImpactModel, assess, fit_impact
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
 from models.explanationModel import Explanation
@@ -46,6 +47,7 @@ class Analyzer:
         self.events = EventLog()
         self.baseline: Baseline | None = None
         self.bar_baseline: Baseline | None = None
+        self.impact_model: ImpactModel | None = None
         self.runs = 0
         self._last_run_ms = 0
         self._baseline_ms = 0
@@ -70,6 +72,7 @@ class Analyzer:
             self._baseline_ms = now_ms
         if self.bar_baseline is None or now_ms - self._bar_baseline_ms >= BAR_BASELINE_REFRESH_MS:
             self.bar_baseline = self.compute_bar_baseline(self.baseline)
+            self.impact_model = fit_impact(list(st.bars), list(self.windows.values()))
             self._bar_baseline_ms = now_ms
 
         refreshed: dict[str, Explanation] = {}
@@ -87,7 +90,11 @@ class Analyzer:
                 continue
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
-            refreshed[label] = explain(st.coin, sl, move, signals)
+            flow = next((x for x in signals if x.name == "volume_imbalance"), None)
+            impact = assess(self.impact_model, seconds, flow.metrics.get("buy_notional", 0.0),
+                            flow.metrics.get("sell_notional", 0.0), move.move_bps, move.expected_bps,
+                            sl.flow_coverage) if flow and flow.metrics and sl.coverage >= 0.95 else None
+            refreshed[label] = explain(st.coin, sl, move, signals, impact)
             self._window_ms[label] = now_ms
         self.latest = {**self.latest, **refreshed}
         self.events.update(refreshed, now_ms)

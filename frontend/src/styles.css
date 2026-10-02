@@ -170,6 +170,7 @@ button { font: inherit; color: inherit; }
 .fill.neutral { background: var(--neutral-mark); }
 .align-icon { font-size: 11px; text-align: center; color: var(--muted); }
 .card-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted); }
+.card-foot .impact { color: var(--ink-2); cursor: help; }
 .shape-tag { color: var(--ink-2); }
 /* No red inside the timeframe cards: downward bars go grey, down moves stay white with ▼ */
 .card .fill.down { background: var(--grey-bar); }

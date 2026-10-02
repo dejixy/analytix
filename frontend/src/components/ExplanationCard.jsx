@@ -1,4 +1,4 @@
-import { arrow, fmtPct, headlineBody } from "../format.js";
+import { arrow, fmtPct, headlineBody, impactHelp, impactText } from "../format.js";
 
 const ALIGN_ICON = { supports: "✓", opposes: "✕", neutral: "–" };
 const ALIGN_TEXT = { supports: "supports the move", opposes: "pushed against the move", neutral: "not a factor" };
@@ -60,7 +60,12 @@ export default function ExplanationCard({ ex, window, selected, onSelect }) {
             ? `warming up · ${Math.round(ex.coverage * 100)}% of window`
             : ex.flow_coverage < 0.95
               ? `flow data: ${Math.round(ex.flow_coverage * 100)}% of window`
-              : `range ${(((move.high / move.low) - 1) * 100).toFixed(2)}%`}
+              : (
+                <>
+                  {ex.impact && <span className="impact" title={impactHelp(ex.impact, window)}>{impactText(ex.impact)} · </span>}
+                  {`range ${(((move.high / move.low) - 1) * 100).toFixed(2)}%`}
+                </>
+              )}
         </span>
       </div>
     </button>
