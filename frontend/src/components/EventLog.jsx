@@ -25,7 +25,7 @@ export default function EventLog({ events, marketEvents = [], pinned, onPick }) 
               <div key={ev.id} className="event static">
                 <span className="num muted">{fmtTime(ev.ts)}</span>
                 <span className="chip" style={{ justifySelf: "start" }}>{KIND_CHIP[ev.kind] || ev.kind.toUpperCase()}</span>
-                <span className={`num ${ev.direction}`} style={{ fontWeight: 600 }}>{arrow(ev.direction)} {ev.window}</span>
+                <span className={`num ${ev.direction}`} style={{ fontWeight: 600 }}>{arrow(ev.direction)} {ev.stat || ev.window}</span>
                 <span className="event-head">
                   {ev.title}
                   {ev.detail && <span className="muted"> · {ev.detail}</span>}

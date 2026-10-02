@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
 from models.orderModel import AggressiveOrder
-from models.tradeModel import Trade
+from models.tradeModel import Trade, TradeSide
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +42,20 @@ class SweepAgg:
 
 
 @dataclass(frozen=True, slots=True)
+class CascadeInfo:
+    """What happened around a tracked cascade (engine/cascades.py): the OI check and the recovery since."""
+    side: TradeSide
+    start_ms: int
+    end_ms: int
+    oi_change_usd: float | None      # None until OI has settled after the cascade
+    confirm_share: float | None      # OI drop as a share of the cascade's notional
+    verdict: str | None              # "likely" | "partly" | "unlikely" liquidations
+    move_bps: float                  # price before → the cascade's extreme
+    recovered: float | None          # share of that move price has won back since (can be < 0 or > 1)
+    since_end_s: float
+
+
+@dataclass(frozen=True, slots=True)
 class WindowSlice:
     label: str                   # "10m"
     seconds: int
@@ -66,6 +80,7 @@ class WindowSlice:
     flow: FlowAgg | None = None  # bar windows: pre-summed flow instead of trades
     sweep_agg: SweepAgg | None = None
     flow_coverage: float = 1.0   # share of the window with live flow/depth/OI data
+    cascades: tuple[CascadeInfo, ...] = ()   # tracked cascades with their OI check and recovery
 
     @property
     def price_start(self) -> float | None:

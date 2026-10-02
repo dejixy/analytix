@@ -180,5 +180,5 @@ def _break_event(ev_id: str, ts: int, levels: list[TrackedLevel]) -> MarketEvent
     return MarketEvent(
         id=ev_id, kind="level_break", ts=ts, direction=Direction.DOWN if down else Direction.UP,
         title=f"{noun} {where} {verb} absorbed {fmt_usd(absorbed)} of {'selling' if down else 'buying'}",
-        detail=f"{longest.window} level · held {_minutes(held)}", window=longest.window,
+        detail=f"{longest.window} level · held {_minutes(held)}", window=longest.window, stat=longest.window,
     )

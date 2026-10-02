@@ -25,6 +25,7 @@ from config import (
 from engine.eventLog import EventLog
 from engine.explainer import explain
 from engine.impact import ImpactModel, assess, fit_impact
+from engine.cascades import CascadeTracker
 from engine.levels import LevelTracker
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
@@ -50,6 +51,7 @@ class Analyzer:
         self.bar_baseline: Baseline | None = None
         self.impact_model: ImpactModel | None = None
         self.levels = LevelTracker(state.coin)
+        self.cascades = CascadeTracker(state.coin)
         self.runs = 0
         self._last_run_ms = 0
         self._baseline_ms = 0
@@ -77,6 +79,8 @@ class Analyzer:
             self.impact_model = fit_impact(list(st.bars), list(self.windows.values()))
             self._bar_baseline_ms = now_ms
 
+        self.cascades.update(st, self.baseline.sweep_threshold, now_ms)
+        cascades = tuple(self.cascades.infos(now_ms))
         refreshed: dict[str, Explanation] = {}
         for label, seconds in self.windows.items():
             every_ms = min(MAX_REFRESH_MS, max(self.interval_ms, seconds * 1000 // WINDOW_REFRESH_DIVISOR))
@@ -84,7 +88,7 @@ class Analyzer:
                 continue                                  # a 60m view doesn't change in one second
             if seconds <= TICK_WINDOW_MAX_S:
                 baseline = self.baseline
-                sl = self.build_slice(label, seconds, now_ms, baseline)
+                sl = self.build_slice(label, seconds, now_ms, baseline, cascades)
             else:
                 baseline = self.bar_baseline
                 sl = self.build_bar_slice(label, seconds, now_ms, baseline)
@@ -110,7 +114,7 @@ class Analyzer:
 
     def market_events(self) -> list:
         """Discrete events for the feed (broken levels, cascades), newest last."""
-        return list(self.levels.events)
+        return list(self.levels.events) + self.cascades.events
 
     # ── baselines: what does "normal" look like right now? ──────────────────
     def compute_baseline(self) -> Baseline:
@@ -152,7 +156,8 @@ class Analyzer:
                         sweep_threshold=tick.sweep_threshold, covered_s=float(sum(b.span_s for b in bars)))
 
     # ── slicing: tick windows ────────────────────────────────────────────────
-    def build_slice(self, label: str, seconds: int, now_ms: int, baseline: Baseline) -> WindowSlice | None:
+    def build_slice(self, label: str, seconds: int, now_ms: int, baseline: Baseline,
+                    cascades: tuple = ()) -> WindowSlice | None:
         st = self.state
         start_ms = now_ms - seconds * 1000
         book_end = st.books.latest_at(now_ms)
@@ -187,6 +192,7 @@ class Analyzer:
             burst_down_bps=bursts[1],
             burst_up_end_ms=bursts[2],
             burst_down_end_ms=bursts[3],
+            cascades=cascades,
         )
 
     # ── slicing: bar windows ─────────────────────────────────────────────────

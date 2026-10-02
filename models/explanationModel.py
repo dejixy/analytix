@@ -80,8 +80,9 @@ class MarketEvent:
     ts: int                  # exchange ms
     direction: Direction     # which way price went / was pushed
     title: str
-    detail: str = ""         # a short note shown on the right
-    window: str = ""
+    detail: str = ""         # a short note after the title
+    window: str = ""         # the timeframe it came from, if any
+    stat: str = ""           # the short figure shown beside the arrow (a timeframe, or the move)
 
 
 @dataclass(frozen=True, slots=True)
