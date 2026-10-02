@@ -32,6 +32,10 @@ def test_snapshot_shape(client):
     assert len(s["book"]["bids"]) > 0 and len(s["trades"]) == 40
     assert 300 <= len(s["series"]) <= 901      # 25-minute sample, one point per 4s
     assert s["events"], "expected the scripted moves in the event log"
+    # the absorption phase leaves bid levels that the long liquidation later breaks
+    breaks = [e for e in s["market_events"] if e["kind"] == "level_break"]
+    assert breaks and breaks[0]["direction"] == "down" and breaks[0]["title"].startswith("Bid level")
+    assert isinstance(s["levels"], list)
 
 
 def test_explain_endpoint_and_unknown_window(client):

@@ -102,3 +102,10 @@ def fmt_usd(x: float) -> str:
 
 def fmt_pct(x: float, digits: int = 1, sign: bool = True) -> str:
     return f"{x:+.{digits}f}%" if sign else f"{x:.{digits}f}%"
+
+
+def fmt_px(p: float) -> str:
+    """A price at a sensible precision: 2,650.40 · 0.8123 · 0.000123."""
+    if p >= 1:
+        return f"{p:,.2f}"
+    return f"{p:.4f}" if p >= 0.01 else f"{p:.6f}"

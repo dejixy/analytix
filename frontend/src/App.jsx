@@ -8,6 +8,7 @@ import OrderBook from "./components/OrderBook.jsx";
 import TradeTape from "./components/TradeTape.jsx";
 import Positioning from "./components/Positioning.jsx";
 import EventLog from "./components/EventLog.jsx";
+import Toasts from "./components/Toasts.jsx";
 
 export default function App() {
   const [coin, setCoin] = useState(null); // null = the server's default coin
@@ -94,6 +95,7 @@ export default function App() {
           series={snap.series}
           barSeries={snap.bar_series || []}
           events={snap.events}
+          levels={snap.levels || []}
           nowMs={snap.now_ms}
           tickSpanSeconds={snap.chart_span_s || 3600}
           windowSeconds={snap.windows[selected]}
@@ -110,7 +112,8 @@ export default function App() {
         <Positioning context={snap.context} explanations={snap.explanations} />
       </section>
 
-      <EventLog events={snap.events} pinned={pinned} onPick={pin} />
+      <EventLog events={snap.events} marketEvents={snap.market_events || []} pinned={pinned} onPick={pin} />
+      <Toasts coin={snap.coin} marketEvents={snap.market_events || []} />
     </div>
   );
 }

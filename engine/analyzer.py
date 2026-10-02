@@ -25,6 +25,7 @@ from config import (
 from engine.eventLog import EventLog
 from engine.explainer import explain
 from engine.impact import ImpactModel, assess, fit_impact
+from engine.levels import LevelTracker
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
 from models.explanationModel import Explanation
@@ -48,6 +49,7 @@ class Analyzer:
         self.baseline: Baseline | None = None
         self.bar_baseline: Baseline | None = None
         self.impact_model: ImpactModel | None = None
+        self.levels = LevelTracker(state.coin)
         self.runs = 0
         self._last_run_ms = 0
         self._baseline_ms = 0
@@ -98,9 +100,17 @@ class Analyzer:
             self._window_ms[label] = now_ms
         self.latest = {**self.latest, **refreshed}
         self.events.update(refreshed, now_ms)
+        for label, ex in refreshed.items():
+            if ex.level:
+                self.levels.observe(label, ex.level, now_ms, self.baseline.sweep_threshold, self.baseline.sigma_1s_bps)
+        self.levels.check(now_ms, st.mid, self.baseline.sigma_1s_bps)
         self._last_run_ms = now_ms
         self.runs += 1
         return self.latest
+
+    def market_events(self) -> list:
+        """Discrete events for the feed (broken levels, cascades), newest last."""
+        return list(self.levels.events)
 
     # ── baselines: what does "normal" look like right now? ──────────────────
     def compute_baseline(self) -> Baseline:

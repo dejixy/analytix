@@ -103,6 +103,9 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
         "chart_span_s": MAX_TICK_WINDOW_S,
         **({"bar_series": bar_series(st)} if include_bars else {}),
         "events": [event_dict(e) for e in an.events.recent(events_limit)],
+        "market_events": sorted(an.market_events(), key=lambda e: -e.ts)[:events_limit],
+        "levels": [{"side": t.side, "price": t.price, "absorbed": t.absorbed, "window": t.window,
+                    "created_ms": t.created_ms} for t in an.levels.active()],
         "engine": {"runs": an.runs, "dropped": st.dropped, "trades_buffered": len(st.trades)},
     })
 

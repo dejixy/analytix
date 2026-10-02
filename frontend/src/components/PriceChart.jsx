@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fmtPct, fmtPrice, fmtTime } from "../format.js";
+import { fmtPct, fmtPrice, fmtTime, fmtUsd } from "../format.js";
 
 const HEIGHT = 420;
 const M = { top: 12, right: 78, bottom: 26, left: 10 };
@@ -30,7 +30,7 @@ function nearest(points, t) {
   return Math.abs(points[lo][0] - t) <= Math.abs(points[hi][0] - t) ? points[lo] : points[hi];
 }
 
-export default function PriceChart({ series, barSeries, events, nowMs, tickSpanSeconds, windowSeconds, windowLabel, pinned, onPick }) {
+export default function PriceChart({ series, barSeries, events, levels = [], nowMs, tickSpanSeconds, windowSeconds, windowLabel, pinned, onPick }) {
   // ≤60m windows: tick-level mids over the last hour. Longer windows: minute-bar closes,
   // spanning 1.5× the window so the shaded window sits in some context.
   const long = windowSeconds > tickSpanSeconds;
@@ -124,6 +124,22 @@ export default function PriceChart({ series, barSeries, events, nowMs, tickSpanS
             ))}
             <line x1={M.left} x2={width - M.right} y1={M.top + geo.ih} y2={M.top + geo.ih} stroke="var(--axis)" strokeWidth="1" />
 
+            {/* defended levels: where passive orders absorbed the aggression and price held */}
+            {levels
+              .filter((lv) => geo.ys(lv.price) >= M.top && geo.ys(lv.price) <= M.top + geo.ih)
+              .map((lv) => {
+                const y = geo.ys(lv.price);
+                const color = lv.side === "bid" ? "var(--up)" : "var(--grey-bar)";
+                return (
+                  <g key={`${lv.side}-${lv.price}`} pointerEvents="none">
+                    <line x1={M.left} x2={width - M.right} y1={y} y2={y} stroke={color} strokeWidth="1" strokeDasharray="5 4" opacity="0.8" />
+                    <text x={M.left + 6} y={lv.side === "bid" ? y + 13 : y - 5} fontSize="10.5" fill={color} className="num">
+                      {lv.side === "bid" ? "bids held" : "offers held"} {fmtPrice(lv.price)} · {fmtUsd(lv.absorbed)} absorbed
+                    </text>
+                  </g>
+                );
+              })}
+
             {/* price */}
             <path d={geo.d} fill="none" stroke="var(--ink-2)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
             {last && (
@@ -174,6 +190,9 @@ export default function PriceChart({ series, barSeries, events, nowMs, tickSpanS
       <div className="legend-row">
         <span className="legend-item"><span className="dot" style={{ background: "var(--up)" }} /> up move</span>
         <span className="legend-item"><span className="dot" style={{ background: "var(--down)" }} /> down move</span>
+        {levels.length > 0 && (
+          <span className="legend-item"><span className="dash" /> defended level (breaks are logged below)</span>
+        )}
         <span className="legend-item muted">click a marker to pin its explanation</span>
       </div>
     </div>

@@ -248,6 +248,21 @@ tr.sweep td { font-weight: 700; color: var(--ink); background: var(--surface-2);
 .event:hover { background: var(--surface-2); }
 .event.pinned { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--up); }
 .event-head { font-size: 12px; }
+.event.static { cursor: default; }
+.event.static:hover { background: none; }
+.legend-item .dash { display: inline-block; width: 14px; border-top: 1px dashed var(--up); }
+
+/* ── Toasts ─────────────────────────────────────────────────────────────── */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: grid; gap: 8px; width: min(380px, calc(100vw - 32px)); }
+.toast {
+  background: var(--surface-3); border: 1px solid var(--axis); border-left: 2px solid var(--grey-bar);
+  border-radius: 2px; padding: 8px 10px; font-size: 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+.toast.up { border-left-color: var(--up); }
+.toast-head { display: flex; align-items: center; gap: 8px; font-size: 10.5px; margin-bottom: 4px; }
+.toast-x { margin-left: auto; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; }
+.toast-title { color: var(--ink); }
+.toast-detail { font-size: 10.5px; margin-top: 2px; }
 .empty { padding: 16px 12px; color: var(--muted); font-size: 12px; }
 .panel-body .empty { padding: 0; }
 @media (max-width: 820px) {
