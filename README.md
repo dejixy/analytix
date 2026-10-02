@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 48 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 55 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -83,7 +83,7 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 - **Each timeframe tells its own story.** Driver weights depend on the horizon. Sweeps and pulled liquidity explain seconds to minutes, so they lead the 1m thesis. Open interest and funding explain slower moves, so they lead the 60m thesis. Windows longer than a minute also report the move's *shape*: one sharp minute (a shock) or a steady grind (a trend).
 - **One socket, many coins.** Live mode subscribes every coin in `ANALYTIX_COINS` on a single WebSocket and routes each message to its coin's own pipeline. The browser picks a coin with `/ws?coin=BTC`.
 - **Two data tiers.** Windows up to an hour read every trade and book update. The 6h … 1w windows read one-minute bars rolled up as data arrives, because a week of raw trades for four coins wouldn't fit in memory. Price history for the long windows is backfilled from Hyperliquid's candles; order flow, depth and OI can't be (the API has no history of them), so each long card shows how much of its window that data covers.
-- **An outlook that grades itself.** The next-period lean combines book imbalance, who's aggressive, sweeps, momentum, crowded funding and absorption, weighted by horizon. It's deliberately humble: the lean moves the expected value by at most a quarter of a typical move (≈60% odds at most). Every lean is checked when its horizon ends, and the dashboard shows the hit rate beside it.
+- **An outlook that grades itself.** The next-period lean combines book imbalance, who's aggressive, sweeps, momentum, crowded funding and absorption, weighted by horizon. It's deliberately humble: the lean moves the expected value by at most a quarter of a typical move (≈60% odds at most). Every lean is checked when its horizon ends, and the dashboard shows the hit rate beside it, along with how often the price landed inside the stated range. Leans are sampled about ten times per horizon, so neighbouring samples share most of their price action; the count shown is independent periods, not samples, and the hit rate stays hidden until there are 30 of them. A flat price counts as a win for neither side.
 - **Hysteresis in the event log.** An episode opens at 2.5σ and stays open while the move is still ≥1.5σ. A move hovering at the threshold is logged once, not five times.
 
 ---

@@ -96,9 +96,8 @@ class Analyzer:
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
             ex = explain(st.coin, sl, move, signals)
 
-            hit_rate, scored = self.tracker.stats(label)
             outlook = make_outlook(ex, book_now.imbalance if book_now else None, baseline.sigma_1s_bps,
-                                   horizon(seconds), hit_rate, scored)
+                                   horizon(seconds), self.tracker.stats(label))
             self.tracker.record(label, now_ms, st.mid, outlook)
             refreshed[label] = replace(ex, outlook=outlook)
             self._window_ms[label] = now_ms

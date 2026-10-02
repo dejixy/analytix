@@ -1,8 +1,8 @@
 import math
 
-from engine.outlook import SKILL, make_outlook
-from engine.outlookTracker import OutlookTracker
-from models.explanationModel import Explanation, PriceMove, Significance
+from engine.outlook import SKILL, make_outlook, track_line
+from engine.outlookTracker import MIN_PERIODS, OutlookTracker, independent_periods
+from models.explanationModel import Explanation, PriceMove, Significance, TrackRecord
 from models.signalModel import Direction, SignalResult
 
 FLOW_UP = SignalResult("volume_imbalance", "Order flow", 0.6, 1.0, Direction.UP, "", "", "80% buy",
@@ -53,12 +53,62 @@ def test_crowded_funding_matters_more_on_long_horizons():
     assert long_.score < 0 and "crowded longs" in long_.line
 
 
+def _up_lean():
+    return make_outlook(ex(signals={"volume_imbalance": FLOW_UP}), 0.4, 1.0, "short")
+
+
 def test_tracker_scores_leans_after_the_horizon():
-    tr = OutlookTracker()
-    o = make_outlook(ex(signals={"volume_imbalance": FLOW_UP}), 0.4, 1.0, "short")
-    for i in range(12):                            # 12 up-leans, 6s apart, each followed by a rise
-        t = i * 6_000
+    tr, o = OutlookTracker(), _up_lean()
+    for i in range(MIN_PERIODS):                   # one up-lean per minute, each followed by a rise
+        t = i * 60_000
         tr.record("1m", t, 3000.0, o)
         tr.evaluate(t + 60_000, 3003.0)
-    rate, n = tr.stats("1m")
-    assert n == 12 and rate == 1.0
+    t = tr.stats("1m")
+    assert t.called == MIN_PERIODS and t.periods == MIN_PERIODS and t.hit_rate == 1.0
+
+
+def test_overlapping_samples_count_as_fewer_periods():
+    # A 1m lean sampled every 6s: ten samples share each minute of price action.
+    tr, o = OutlookTracker(), _up_lean()
+    for i in range(100):
+        tr.record("1m", i * 6_000, 3000.0, o)
+    tr.evaluate(10**9, 3003.0)
+    t = tr.stats("1m")
+    assert t.called == 100
+    assert abs(t.periods - 10.9) < 1e-9            # 1 + 99 × 0.1
+    assert t.hit_rate is None                      # 100 samples, but only ~11 independent minutes
+
+
+def test_a_gap_counts_as_a_fresh_period():
+    assert independent_periods([0, 6_000, 600_000], 60_000) == 1 + 0.1 + 1
+    assert independent_periods([], 60_000) == 0
+
+
+def test_flat_price_is_not_a_win_for_either_side():
+    tr = OutlookTracker()
+    flow_down = SignalResult("volume_imbalance", "Order flow", -0.6, 1.0, Direction.DOWN, "", "", "",
+                             {"imbalance": -0.6, "buy_notional": 2e5, "sell_notional": 8e5})
+    down = make_outlook(ex(signals={"volume_imbalance": flow_down}), -0.4, 1.0, "short")
+    assert down.lean is Direction.DOWN
+    tr.record("1m", 0, 3000.0, down)
+    tr.evaluate(60_000, 3000.0)                    # price didn't move
+    t = tr.stats("1m")
+    assert t.called == 0 and t.periods == 0
+
+
+def test_range_rate_counts_outcomes_inside_the_stated_range():
+    tr, o = OutlookTracker(), _up_lean()           # range ±√60 ≈ 7.7 bps around a small expected rise
+    for i in range(MIN_PERIODS):
+        t = i * 60_000
+        tr.record("1m", t, 3000.0, o)
+        tr.evaluate(t + 60_000, 3000.3 if i % 2 else 3015.0)   # +1 bp (inside) or +50 bps (outside)
+    assert tr.stats("1m").range_rate == 0.5
+
+
+def test_track_line_reports_periods_not_samples():
+    assert track_line("10m", TrackRecord()) == f"scoring… 0 of {MIN_PERIODS} separate 10m periods checked"
+    assert "~17 of" in track_line("10m", TrackRecord(called=173, periods=17.3))
+    full = track_line("10m", TrackRecord(hit_rate=0.55, called=400, periods=40.0, range_rate=0.71))
+    assert full == "called right 55% over ~40 separate 10m periods · inside range 71%"
+    o = make_outlook(ex(), 0.0, 1.0, "short", TrackRecord(called=12, periods=1.2))
+    assert o.scored == 12 and o.periods == 1.2 and o.track.startswith("scoring… ~1 of")
