@@ -179,7 +179,8 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
             <path d={geo.d} fill="none" stroke="var(--ink-2)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
             {last && (
               <g>
-                <circle cx={geo.xs(last[0])} cy={geo.ys(last[1])} r="4" fill="var(--up-bright)" stroke="var(--surface)" strokeWidth="2" />
+                {/* the live price: a hollow ring, so it's never mistaken for a (filled) move marker */}
+                <circle cx={geo.xs(last[0])} cy={geo.ys(last[1])} r="4" fill="var(--surface)" stroke="var(--up-bright)" strokeWidth="2" />
                 <rect x={width - M.right + 2} y={geo.ys(last[1]) - 10} width={M.right - 4} height="20" rx="2" fill="var(--up-deep)" stroke="var(--up)" strokeWidth="1" />
                 <text x={width - M.right + M.right / 2} y={geo.ys(last[1]) + 4} fontSize="10.5" fontWeight="700" fill="var(--ink)" textAnchor="middle" className="num">
                   {fmtPrice(last[1])}
@@ -240,6 +241,7 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
         )}
       </div>
       <div className="legend-row">
+        <span className="legend-item"><span className="dot ring" /> live price</span>
         <span className="legend-item"><span className="dot" style={{ background: "var(--up)" }} /> up move</span>
         <span className="legend-item"><span className="dot" style={{ background: "var(--down)" }} /> down move</span>
         {levels.length > 0 && (

@@ -272,6 +272,7 @@ tr.wall td { color: var(--ink); }
 .rank-tag { margin-left: 6px; font-size: 9.5px; color: var(--ink); border: 1px solid var(--axis); border-radius: 2px; padding: 0 4px; }
 .wall-stats { display: flex; justify-content: space-between; margin-top: 4px; cursor: help; }
 .event.static:hover { background: none; }
+.legend-item .dot.ring { background: var(--surface); box-shadow: inset 0 0 0 2px var(--up-bright); }
 .legend-item .dash { display: inline-block; width: 14px; border-top: 1px dashed var(--up); }
 
 /* ── Toasts ─────────────────────────────────────────────────────────────── */
