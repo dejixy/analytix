@@ -52,3 +52,17 @@ def test_websocket_sends_snapshot_on_connect(client):
     with client.websocket_connect("/ws") as ws:
         msg = ws.receive_json()
         assert msg["coin"] == "ETH" and "explanations" in msg
+
+
+def test_explain_any_moment_still_in_memory(client):
+    evs = client.get("/api/events", params={"window": "1m", "limit": 500}).json()
+    crash = min(evs, key=lambda e: e["explanation"]["move"]["move_pct"])          # the scripted long liquidation
+    r = client.get("/api/explain_at", params={"t": crash["peak_ms"], "window": "1m"}).json()
+    assert r["window"] == "1m" and r["note"] == "" and r["at_ms"] == crash["peak_ms"]
+    assert abs(r["explanation"]["move"]["move_pct"] - crash["explanation"]["move"]["move_pct"]) < 0.05
+    assert "cascade" in r["explanation"]["headline"]
+    # 60m ending mid-session isn't in memory (the session is 25 minutes): it falls back to a shorter timeframe
+    r60 = client.get("/api/explain_at", params={"t": crash["peak_ms"], "window": "60m"}).json()
+    assert r60["window"] == "10m" and r60["note"].startswith("60m isn't in memory that far back")
+    # before the data starts
+    assert client.get("/api/explain_at", params={"t": crash["peak_ms"] - 86_400_000}).status_code == 404

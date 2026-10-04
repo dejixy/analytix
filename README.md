@@ -169,6 +169,7 @@ Thresholds live in `config.py`.
 | `GET /api/snapshot?coin=BTC` | everything the dashboard shows for one coin |
 | `GET /api/explain/{1m\|10m\|60m\|6h\|12h\|24h\|1w}?coin=BTC` | one window's explanation, drivers and signals |
 | `GET /api/events?coin=BTC&window=1m&limit=20` | significant moves, newest first |
+| `GET /api/explain_at?t=<ms>&window=10m&coin=BTC` | "what happened at 14:32?": the explanation for the window ending at any moment still in memory (the last hour for 1m–60m, the last week for 6h+). Falls back to a shorter timeframe if the requested one reaches back past the data. This is what clicking the chart calls. |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.

@@ -125,6 +125,44 @@ class Analyzer:
         self.runs += 1
         return self.latest
 
+    def explain_at(self, label: str, at_ms: int) -> tuple[str, Explanation] | None:
+        """Explain the move in the window ending at a past moment — "what happened at 14:32?".
+
+        Uses the requested timeframe if its whole window is still in memory, otherwise the longest
+        shorter one that is (the raw tick buffer holds an hour; minute bars hold a week). Returns
+        (the timeframe used, its explanation), or None when that moment is outside the data.
+        """
+        st = self.state
+        if self.baseline is None or not st.now_ms or label not in self.windows:
+            return None
+        at_ms = min(at_ms, st.now_ms)
+        oldest_tick = st.books.oldest.timestamp if st.books.oldest else st.now_ms
+        oldest_bar = st.bars.oldest.timestamp if st.bars.oldest else st.now_ms
+        wanted = self.windows[label]
+        for name, seconds in sorted(self.windows.items(), key=lambda kv: -kv[1]):
+            if seconds > wanted:
+                continue
+            start = at_ms - seconds * 1000
+            tick = seconds <= TICK_WINDOW_MAX_S
+            if start < (oldest_tick if tick else oldest_bar):
+                continue
+            if tick:
+                sl = self.build_slice(name, seconds, at_ms, self.baseline, tuple(self.cascades.infos(st.now_ms)))
+            else:
+                sl = self.build_bar_slice(name, seconds, at_ms, self.bar_baseline or self.baseline)
+            if sl is None:
+                continue
+            sl = replace(sl, funding_history=self.positioning.funding_history(),
+                         oi_history=self.positioning.oi_history(seconds))
+            move = price_move(sl)
+            signals = [fn(sl) for fn in DRIVER_SIGNALS]
+            flow = next((x for x in signals if x.name == "volume_imbalance"), None)
+            impact = assess(self.impact_model, seconds, flow.metrics.get("buy_notional", 0.0),
+                            flow.metrics.get("sell_notional", 0.0), move.move_bps, move.expected_bps,
+                            sl.flow_coverage) if flow and flow.metrics else None
+            return name, explain(st.coin, sl, move, signals, impact)
+        return None
+
     def market_events(self) -> list:
         """Discrete events for the feed (broken levels, cascades), newest last."""
         return list(self.levels.events) + self.cascades.events
@@ -217,7 +255,8 @@ class Analyzer:
         before = st.bars.latest_at(start_ms)
         if not bars and before is None:
             return None
-        end_price = st.mid if st.mid is not None else bars[-1].close
+        live = now_ms >= st.now_ms - 1000           # explaining "now", or a moment in the past (explain_at)
+        end_price = st.mid if live and st.mid is not None else (bars[-1].close if bars else before.close)
         start_price = before.close if before else bars[0].open
         t_start = min(before.end_ms, start_ms) if before else bars[0].timestamp
         scope = ([before] if before else []) + bars
@@ -228,7 +267,7 @@ class Analyzer:
 
         # Depth, OI and flow exist only on live bars; use the earliest one inside the window.
         depth = [b for b in scope if b.bid_notional is not None]
-        live_book = st.books.newest
+        live_book = st.books.newest if live else None
         bid_end = live_book.bid_notional if live_book else (depth[-1].bid_notional if depth else 0.0)
         ask_end = live_book.ask_notional if live_book else (depth[-1].ask_notional if depth else 0.0)
         book_start = BookSummary(t_start, start_price, start_price, start_price, 0.0,
@@ -237,7 +276,7 @@ class Analyzer:
 
         oi = [b for b in scope if b.open_interest]
         fund = [b for b in scope if b.funding is not None]
-        ctx_end = st.context
+        ctx_end = st.context if live else None
         ctx_start = None
         if oi or fund:
             ctx_start = AssetContext(

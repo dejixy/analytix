@@ -51,6 +51,20 @@ def explain(window: str, request: Request, coin: str | None = None):
     return explanation_dict(ex)
 
 
+@router.get("/explain_at")
+async def explain_at(request: Request, t: int, window: str = "1m", coin: str | None = None):
+    """Explain the move in the window ending at moment t (exchange ms). Async on purpose: it reads the
+    same buffers the feed writes to, so it runs on the event loop rather than in a worker thread."""
+    if window not in WINDOWS:
+        raise HTTPException(404, f"Unknown window '{window}'. Choose from {list(WINDOWS)}")
+    found = _pipe(request, coin).analyzer.explain_at(window, t)
+    if found is None:
+        raise HTTPException(404, "That moment is outside the data in memory.")
+    used, ex = found
+    note = "" if used == window else f"{window} isn't in memory that far back, so this is the {used} up to that moment."
+    return {"window": used, "requested": window, "at_ms": ex.end_ms, "note": note, "explanation": explanation_dict(ex)}
+
+
 @router.get("/events")
 def events(request: Request, coin: str | None = None, window: str | None = None,
            limit: int = Query(50, ge=1, le=500)):
