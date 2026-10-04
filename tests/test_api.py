@@ -69,3 +69,17 @@ def test_explain_any_moment_still_in_memory(client):
     assert r60["window"] == "10m" and r60["note"].startswith("60m isn't in memory that far back")
     # before the data starts
     assert client.get("/api/explain_at", params={"t": crash["peak_ms"] - 86_400_000}).status_code == 404
+
+
+def test_plan_endpoint_answers_with_the_rough_model_in_a_short_replay(client):
+    r = client.get("/api/plan", params={"side": "long", "margin": 1000, "leverage": 5, "hours": 24})
+    assert r.status_code == 200, r.text
+    p = r.json()
+    assert p["notional"] == 5000 and p["side"] == 1 and p["model"]["kind"] == "rough"   # 25 minutes isn't history
+    assert p["liq_price"] < p["entry"] and 0 <= p["liq_prob"] <= 1
+    assert p["costs"]["fees"] == 4.5 and set(p["outcome"]) == {"p5", "p25", "p50", "p75", "p95"}
+    assert any(n.startswith("Rough estimate") for n in p["notes"])
+    short = client.get("/api/plan", params={"side": "short", "hours": 1}).json()
+    assert short["liq_price"] > short["entry"] and short["hours"] == 1
+    assert client.get("/api/plan", params={"side": "sideways"}).status_code == 400
+    assert client.get("/api/plan", params={"hours": 500}).status_code == 422

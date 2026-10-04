@@ -60,7 +60,7 @@ function FeedBadge({ feed, conn }) {
   );
 }
 
-export default function Header({ snap, conn, onCoin }) {
+export default function Header({ snap, conn, onCoin, onPlan }) {
   const { price, context, coin, feed } = snap;
   const chg = context?.change_24h_pct;
   return (
@@ -94,6 +94,9 @@ export default function Header({ snap, conn, onCoin }) {
       </div>
 
       <div className="header-right">
+        <button className="plan-open" onClick={onPlan} title="Liquidation odds, the path to expect, and costs — before you take a trade">
+          Plan a trade
+        </button>
         <FeedBadge feed={feed} conn={conn} />
         <span className="clock num" title="Exchange clock (your local time zone)">{fmtTime(snap.now_ms)}</span>
       </div>

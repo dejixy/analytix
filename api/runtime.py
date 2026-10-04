@@ -34,6 +34,7 @@ from config import (
     REPLAY_LOOP,
     REPLAY_SPEED,
 )
+from api.planner import PlannerService
 from ingestion.backfill import backfill
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
@@ -76,6 +77,7 @@ class Runtime:
         self.backfill_enabled = backfill_enabled and mode == "live"
         self.store: BarStore | None = None
         self._broadcasts = 0
+        self.planner = PlannerService(self)
 
     # ── pipelines ───────────────────────────────────────────────────────────
     def pipeline(self, coin: str | None = None) -> Pipeline:

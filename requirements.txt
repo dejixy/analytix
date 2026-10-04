@@ -1,6 +1,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 websockets>=13.0
+numpy>=1.26
 # tests
 pytest>=8.0
 httpx>=0.27
