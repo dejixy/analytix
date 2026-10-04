@@ -34,10 +34,12 @@ export default function DetailPanel({ ex, pinned, onUnpin }) {
       <div className="panel-body">
         {pinned && (
           <div className="pin-note">
-            <span className="chip">PINNED</span> Significant move at {fmtTime(pinned.peak_ms)}
+            <span className="chip">PINNED</span>
+            {pinned.custom ? `${pinned.window} up to ${fmtTime(pinned.peak_ms)}` : `Significant move at ${fmtTime(pinned.peak_ms)}`}
             <button className="unpin-btn" onClick={onUnpin} title="Back to the live explanation (Esc)">✕ Unpin</button>
           </div>
         )}
+        {pinned?.note && <p className="pin-fallback muted">{pinned.note}</p>}
         <p className="detail-headline">{ex.headline}</p>
         <ul className="narrative">
           {ex.narrative.map((line, i) => (

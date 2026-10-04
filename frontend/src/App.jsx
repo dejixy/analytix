@@ -36,7 +36,14 @@ export default function App() {
   const { snap, conn } = useSnapshot(coin);
   const [selected, setSelected] = useState("1m");
   const [pinned, setPinned] = useState(null); // a MoveEvent object, kept even after it scrolls out of the feed
+  const [notice, setNotice] = useState(null); // a short message under the chart, e.g. "that moment is outside the data"
   const railRef = useRef(null);
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   // Esc unpins: the quickest way back to the live explanation.
   useEffect(() => {
@@ -62,6 +69,23 @@ export default function App() {
   const agree = agreement(snap.explanations);
   const current = snap.explanations[selected];
   const detail = pinned ? pinned.explanation : current;
+
+  // Click anywhere on the chart: explain the selected timeframe's move up to that moment, and pin it.
+  const explainAt = async (t) => {
+    try {
+      const q = new URLSearchParams({ t: String(Math.round(t)), window: selected, coin: snap.coin });
+      const r = await fetch(`/api/explain_at?${q}`);
+      const d = await r.json();
+      if (!r.ok) {
+        setNotice(d.detail || "Nothing to explain there.");
+        return;
+      }
+      setNotice(null);
+      setPinned({ id: `at-${d.at_ms}`, window: d.window, peak_ms: d.at_ms, explanation: d.explanation, custom: true, note: d.note });
+    } catch {
+      setNotice("Couldn't reach the backend.");
+    }
+  };
 
   const pin = (ev) => {
     setPinned(pinned && pinned.id === ev.id ? null : ev);
@@ -151,6 +175,8 @@ export default function App() {
           pinned={pinned}
           onPick={pin}
           onUnpin={() => setPinned(null)}
+          onExplainAt={explainAt}
+          notice={notice}
         />
         <DetailPanel ex={detail} pinned={pinned} onUnpin={() => setPinned(null)} />
       </section>

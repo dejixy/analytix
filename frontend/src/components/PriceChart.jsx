@@ -31,7 +31,7 @@ function nearest(points, t) {
   return Math.abs(points[lo][0] - t) <= Math.abs(points[hi][0] - t) ? points[lo] : points[hi];
 }
 
-export default function PriceChart({ series, barSeries, events, levels = [], nowMs, tickSpanSeconds, windowSeconds, windowLabel, pinned, onPick, onUnpin }) {
+export default function PriceChart({ series, barSeries, events, levels = [], nowMs, tickSpanSeconds, windowSeconds, windowLabel, pinned, onPick, onUnpin, onExplainAt, notice }) {
   // ≤60m windows: tick-level mids over the last hour. Longer windows: minute-bar closes,
   // spanning 1.5× the window so the shaded window sits in some context.
   const long = windowSeconds > tickSpanSeconds;
@@ -78,7 +78,19 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
     return { xs, ys, yTicks, xTicks, xLabel, d, iw, ih, stepDigits: step < 1 ? 2 : step < 10 ? 1 : 0 };
   }, [pts, width, x0, nowMs, SPAN_MS]);
 
-  const shownEvents = events.filter((e) => e.window === windowLabel && e.peak_ms >= x0);
+  // Significant moves from every timeframe, so there's always something to pin — the selected timeframe's
+  // drawn larger. One big move often registers on several timeframes at the same moment: keep one marker,
+  // preferring the selected timeframe, then the shortest.
+  const preferred = (a, b) =>
+    (a.window === windowLabel) !== (b.window === windowLabel) ? a.window === windowLabel : a.explanation.seconds < b.explanation.seconds;
+  const shownEvents = [];
+  for (const ev of [...events].filter((e) => e.peak_ms >= x0).sort((a, b) => a.peak_ms - b.peak_ms)) {
+    const i = shownEvents.findIndex(
+      (o) => Math.abs(o.peak_ms - ev.peak_ms) <= 5000 && o.explanation.move.direction === ev.explanation.move.direction,
+    );
+    if (i < 0) shownEvents.push(ev);
+    else if (preferred(ev, shownEvents[i])) shownEvents[i] = ev;
+  }
   if (pinned && pinned.peak_ms >= x0 && !shownEvents.some((e) => e.id === pinned.id)) shownEvents.push(pinned);
 
   const markers = geo
@@ -113,9 +125,12 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
   };
   const onClick = () => {
     if (hover?.marker) onPick(hover.marker);
+    else if (hover && onExplainAt) onExplainAt(hover.t);   // anywhere else: explain the move up to that moment
   };
 
-  const winStart = nowMs - windowSeconds * 1000;
+  // The shaded span is exactly what the Why panel is explaining: the live window, or the pinned one.
+  const winStart = pinned ? pinned.explanation.start_ms : nowMs - windowSeconds * 1000;
+  const winEnd = pinned ? pinned.explanation.end_ms : nowMs;
   const startPx = geo && pts.length ? nearest(pts, winStart)[1] : null;
   const last = pts[pts.length - 1];
 
@@ -126,11 +141,14 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
         {pinned ? (
           <span className="pinned-bar">
             <span className="chip">PINNED</span>
-            <span className="num">{fmtTime(pinned.peak_ms)} · {pinned.window} {arrow(pinned.explanation.move.direction)} {fmtPct(pinned.explanation.move.move_pct)}</span>
+            <span className="num">
+              {pinned.custom ? `${pinned.window} to ${fmtTime(pinned.peak_ms)}` : `${fmtTime(pinned.peak_ms)} · ${pinned.window}`}{" "}
+              {arrow(pinned.explanation.move.direction)} {fmtPct(pinned.explanation.move.move_pct)}
+            </span>
             <button className="unpin-btn" onClick={onUnpin} title="Back to the live explanation (Esc)">✕ Unpin</button>
           </span>
         ) : (
-          <span className="panel-sub">shaded: {windowLabel} window · markers: {windowLabel} significant moves</span>
+          <span className="panel-sub">shaded: {windowLabel} window · click anywhere to explain that moment</span>
         )}
       </div>
       <div className="chart-wrap" ref={wrapRef}>
@@ -139,9 +157,9 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
         ) : (
           <svg height={HEIGHT} role="img" aria-label={`Mid price over the last 15 minutes, last ${fmtPrice(last?.[1])}`}>
             {/* selected window */}
-            <rect x={geo.xs(winStart)} y={M.top} width={geo.xs(nowMs) - geo.xs(winStart)} height={geo.ih} fill="var(--surface-2)" />
+            <rect x={geo.xs(Math.max(winStart, x0))} y={M.top} width={Math.max(0, geo.xs(winEnd) - geo.xs(Math.max(winStart, x0)))} height={geo.ih} fill="var(--surface-2)" />
             {startPx != null && (
-              <line x1={geo.xs(winStart)} x2={geo.xs(nowMs)} y1={geo.ys(startPx)} y2={geo.ys(startPx)} stroke="var(--axis)" strokeWidth="1" />
+              <line x1={geo.xs(Math.max(winStart, x0))} x2={geo.xs(winEnd)} y1={geo.ys(startPx)} y2={geo.ys(startPx)} stroke="var(--axis)" strokeWidth="1" />
             )}
             {/* grid + axes */}
             {geo.yTicks.map((v) => (
@@ -188,7 +206,7 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
               </g>
             )}
 
-            {/* pinned move: a guide line so it's obvious which marker is pinned */}
+            {/* pinned moment: a guide line so it's obvious what's pinned */}
             {markers.filter((m) => pinned && m.ev.id === pinned.id).map((m) => (
               <line key="pin-guide" x1={m.x} x2={m.x} y1={M.top} y2={M.top + geo.ih} stroke="var(--up)" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" pointerEvents="none" />
             ))}
@@ -198,10 +216,15 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
               const dir = ev.explanation.move.direction;
               const isPinned = pinned && pinned.id === ev.id;
               const isHot = hover?.marker?.id === ev.id;
+              const main = ev.window === windowLabel || isPinned;
               return (
-                <g key={ev.id} pointerEvents="none">
+                <g key={ev.id} pointerEvents="none" opacity={main || isHot ? 1 : 0.6}>
                   {(isPinned || isHot) && <circle cx={x} cy={y} r={isHot ? 11 : 9} fill="none" stroke={isPinned ? "var(--up-bright)" : "var(--ink-2)"} strokeWidth="2" />}
-                  <circle cx={x} cy={y} r={isHot ? 7 : 5.5} fill={dir === "down" ? "var(--down)" : "var(--up)"} stroke="var(--surface)" strokeWidth="2" />
+                  {ev.custom ? (
+                    <circle cx={x} cy={y} r={isHot ? 6 : 5} fill="var(--surface)" stroke="var(--up-bright)" strokeWidth="2" />
+                  ) : (
+                    <circle cx={x} cy={y} r={isHot ? 7 : main ? 5.5 : 3.5} fill={dir === "down" ? "var(--down)" : "var(--up)"} stroke="var(--surface)" strokeWidth="2" />
+                  )}
                 </g>
               );
             })}
@@ -237,6 +260,7 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
               {long ? new Date(hover.t).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }) : fmtTime(hover.t)}
               {" · "}{fmtPct((last[1] / hover.p - 1) * 100)} since
             </div>
+            {onExplainAt && <div className="muted">click: why it moved ({windowLabel} to here)</div>}
           </div>
         )}
       </div>
@@ -247,7 +271,13 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
         {levels.length > 0 && (
           <span className="legend-item"><span className="dash" /> defended level (breaks are logged below)</span>
         )}
-        <span className="legend-item muted">{pinned ? "click the pinned marker, ✕ Unpin or Esc to go back to live" : "hover near a marker and click to pin its explanation"}</span>
+        <span className={`legend-item ${notice ? "notice" : "muted"}`}>
+          {notice
+            ? notice
+            : pinned
+              ? "click the pinned marker, ✕ Unpin or Esc to go back to live"
+              : "click anywhere to explain that moment · hover near a marker to pin a significant move"}
+        </span>
       </div>
     </div>
   );
