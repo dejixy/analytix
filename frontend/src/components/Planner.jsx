@@ -44,6 +44,16 @@ function contextWindow(h) {
   return "1w";
 }
 
+/** One drawdown point: "−1.6% (−$81.68)", or the liquidation it would mean. */
+function Dd({ d }) {
+  return (
+    <>
+      <b>{pct(d.move_pct)}</b>{" "}
+      <span className="nowrap">({d.liquidated ? "liquidated" : usd(d.pnl, true)})</span>
+    </>
+  );
+}
+
 function RangeBar({ outcome, margin }) {
   // A box plot of P&L at exit: whiskers 5th–95th, box 25th–75th, tick at the median. Scale: ±max(|p5|,|p95|, margin/10).
   const lim = Math.max(Math.abs(outcome.p5), Math.abs(outcome.p95), margin / 10);
@@ -198,7 +208,7 @@ export default function Planner({ coin, mid, explanations, onClose }) {
               <h3>Before you exit · where price trades</h3>
               <table className="plan-table">
                 <thead>
-                  <tr><th>Price</th><th>Move</th><th>Your P&amp;L</th><th title="Chance price trades there at some point before you exit">Chance</th></tr>
+                  <tr><th>Price</th><th>Move</th><th>Your P&amp;L</th><th title="Chance price trades there at some point before you exit (for gains: while you're still in the trade, not liquidated first)">Chance</th></tr>
                 </thead>
                 <tbody>
                   {[...p.touches, { kind: "entry", price: p.entry, move_pct: 0, pnl: 0, prob: null }]
@@ -214,10 +224,7 @@ export default function Planner({ coin, mid, explanations, onClose }) {
                 </tbody>
               </table>
               <p className="plan-note">
-                Typical worst point before you exit: <b>{pct(p.drawdown_pct[0])}</b>{" "}
-                <span className="nowrap">({usd(p.notional * p.drawdown_pct[0] * p.side / 100, true)})</span>;
-                1 time in 4: <b>{pct(p.drawdown_pct[1])}</b>{" "}
-                <span className="nowrap">({usd(p.notional * p.drawdown_pct[1] * p.side / 100, true)})</span>.
+                Typical worst point before you exit: <Dd d={p.drawdown[0]} />; 1 time in 4: <Dd d={p.drawdown[1]} />.{" "}
                 A stop inside that range is likely to be hit by noise alone.
               </p>
             </section>
@@ -252,7 +259,11 @@ export default function Planner({ coin, mid, explanations, onClose }) {
                 <dd>{p.costs.funding >= 0 ? usd(p.costs.funding) : `${usd(-p.costs.funding)} received`}</dd>
                 <dt><b>Total</b></dt><dd><b>{usd(p.costs.total)}</b></dd>
               </dl>
-              <p className="plan-note">Price has to move {pct(p.breakeven_pct * (p.side > 0 ? 1 : -1), 2)} your way just to cover them.</p>
+              <p className="plan-note">
+                {p.breakeven_pct >= 0
+                  ? <>Price has to move {pct(p.breakeven_pct * p.side, 2)} your way just to cover them.</>
+                  : <>Funding pays you more than fees and slippage cost: if price doesn't move, you're up {usd(-p.costs.total)}.</>}
+              </p>
             </section>
 
             {ctx.length > 0 && (
@@ -272,7 +283,7 @@ export default function Planner({ coin, mid, explanations, onClose }) {
               {p.model.kind === "fhs" ? (
                 <>
                   {p.paths_n.toLocaleString()} simulated paths from {p.model.candles.toLocaleString()} {p.model.step_s === 3600 ? "hourly" : "5-minute"} candles
-                  ({p.model.days} days), wicks included. Volatility now {p.model.vol_ratio.toFixed(2)}× its usual
+                  ({p.model.days} days), wicks included. Volatility now {p.vol_ratio.toFixed(2)}× its usual for this hour
                   {p.model.half_life_h ? `; shocks fade with a half-life of ~${p.model.half_life_h}h` : ""}.
                 </>
               ) : (

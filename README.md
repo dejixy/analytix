@@ -71,6 +71,7 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 | `engine/` (trading reads) | `summary.py` (the card rows), `engineFlow.py` (TWAP slices vs liquidations from engine-executed fills), `impact.py` (flow efficiency), `levels.py` (defended levels and breaks), `cascades.py` (OI check and recovery), `walls.py` (real vs pulled walls), `positioning.py` (funding/OI percentiles). See "The timeframe cards" below. |
 | `pipeline.py` | One definition of "process a message", shared by the API, the scripts and the tests. |
 | `api/` | FastAPI: REST routes, the `/ws` push, the runtime (source and broadcaster) and serializers. |
+| `api/planner.py` | serves `GET /api/plan`: candles, max leverage, fitted models (refit every 15 minutes) and cached paths. |
 | `scripts/` | `record.py` (always-on recording to hourly files), `replayReport.py` (print every significant move in a recording), `study.py` (what price did after each signal) and `generateSample.py`. |
 | `frontend/` | React + Vite dashboard. |
 
@@ -143,6 +144,26 @@ The four signals say *what happened*. These reads turn them into things a trader
 | **Walls: real or pulled** | order book `wall` tags and `real · pulled` counts; Book depth summary | Levels ≥ 4× the median visible level and ≥ 2 sweeps' worth of USD, followed until they go. Eaten = at least half of what vanished was traded; pulled = vanished unfilled with price within 10 bps. | "Asks +94%" may be bait. If the stacking side keeps pulling its walls, the Book depth summary says so. Hyperliquid shows 20 levels a side, so this only sees walls near the touch. |
 | **Percentiles** | card stat: `OI −1.40% · top 5%`; Positioning panel | Funding vs the past week's hourly readings; each window's OI change vs every OI move over the same timeframe in the saved live bars. | Normal for one coin is extreme for another. A percentile says whether this move is unusual for *this* coin. |
 | **Timeframe agreement** | ▲/▼ on each tab; `Flow aligned ▲ 1m–60m` beside them | Which way aggressive flow leans (strength ≥ 0.25) on 1m, 10m, 60m. | Aligned flow is a trend; short-term flow pushing against the 60m is a pullback or a turn. |
+
+### Plan a trade
+
+The **Plan a trade** button opens the position planner. Pick long or short, margin, leverage and how long you'll hold (15m … 1w). It answers, before you click buy:
+
+- **Chance of liquidation before you exit**, the liquidation price (Hyperliquid's isolated-margin formula, maintenance = half the initial margin at the coin's max leverage), and a ladder of the same odds at 1×, 2×, 3×, 5×, 10× …
+- **Safe leverage**: the most leverage that keeps that chance under 1% / 5% for this hold.
+- **Where price trades before you exit**: round levels above and below with the chance price touches each, so you can see where a stop would be hit by noise and where a target is realistic.
+- **When you close**: P&L percentiles (5th … 95th) after fees, slippage on the live book and funding, and the chance of being in profit.
+- **Costs**: fees (0.045% in and out), slippage now, and funding expected over the hold (today's rate drifting back to the week's average).
+
+How the odds are made — filtered historical simulation, the method risk desks use for VaR (`engine/planner.py`):
+
+1. The coin's own candles from Hyperliquid: hourly (~200 days) for holds over 6h, 5-minute (~17 days) for shorter ones. Each candle gives three moves from the previous close: to the close, the low and the high — wicks are what liquidate people.
+2. Time of day and weekends are taken out (measured on the ~200 days of hourly candles, reused for the 5-minute model).
+3. A GARCH(1,1) gives each candle's expected volatility; dividing by it leaves the coin's shape of surprise (fat tails, lopsided wicks) without the regime. How long volatility lingers is uncertain, so each path draws its own GARCH parameters from how well they fit.
+4. Volatility is brought up to the moment through every candle since the fit and the move so far, so a crash ten minutes ago counts.
+5. 20,000 paths draw random historical candles scaled to the volatility expected at each step; each path's worst point, best point and exit are read off.
+
+No direction is assumed: historical drift is removed, so it sizes the room a trade needs, not which way price goes. Checked in `tests/test_planner.py` against brute-force simulation of known processes (touch odds within ~15% at 4h–3d; a 1-week 1-in-100 tail within 3×, the limit of what 200 days of data can tell). Assumptions shown with every plan: isolated margin; liquidation costs the whole margin plus entry costs; candle wicks are last-trade prices while liquidation uses the mark price, so wicks slightly overstate the risk. In replay mode, or before the candles load, it falls back to a rough fat-tailed walk and says so.
 
 ### Does any of it work? Measure it
 
@@ -225,6 +246,7 @@ Thresholds live in `config.py`.
 | `GET /api/explain/{1m\|10m\|60m\|6h\|12h\|24h\|1w}?coin=BTC` | one window's explanation, drivers and signals |
 | `GET /api/events?coin=BTC&window=1m&limit=20` | significant moves, newest first |
 | `GET /api/explain_at?t=<ms>&window=10m&coin=BTC` | "what happened at 14:32?": the explanation for the window ending at any moment still in memory (the last hour for 1m–60m, the last week for 6h+). Falls back to a shorter timeframe if the requested one reaches back past the data. This is what clicking the chart calls. |
+| `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, and the model behind them. |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.

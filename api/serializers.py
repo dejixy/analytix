@@ -42,7 +42,7 @@ def plan_dict(plan) -> dict:
     out["costs"]["total"] = round(plan.costs.total, 6)
     out["model"] = {
         "kind": m.kind, "step_s": m.step_s, "candles": m.n, "days": round(m.span_days, 1),
-        "alpha": round(m.alpha, 3), "beta": round(m.beta, 3), "vol_ratio": round(m.vol_ratio, 3),
+        "alpha": round(m.alpha, 3), "beta": round(m.beta, 3),
         "half_life_h": round(math.log(0.5) / math.log(m.alpha + m.beta) * m.step_s / 3600, 1)
         if 0 < m.alpha + m.beta < 1 else None,
     }

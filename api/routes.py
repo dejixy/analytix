@@ -77,7 +77,7 @@ async def plan(request: Request, side: str = "long", margin: float = Query(1_000
     try:
         p = await _rt(request).planner.plan(pipe.coin, 1 if side == "long" else -1, margin, leverage, hours)
     except PlanError as exc:
-        raise HTTPException(400 if "allows" in str(exc) else 503, str(exc)) from exc
+        raise HTTPException(exc.status, str(exc)) from exc
     return plan_dict(p)
 
 
