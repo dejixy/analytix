@@ -71,7 +71,7 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 | `engine/` (trading reads) | `summary.py` (the card rows), `engineFlow.py` (TWAP slices vs liquidations from engine-executed fills), `impact.py` (flow efficiency), `levels.py` (defended levels and breaks), `cascades.py` (OI check and recovery), `walls.py` (real vs pulled walls), `positioning.py` (funding/OI percentiles). See "The timeframe cards" below. |
 | `pipeline.py` | One definition of "process a message", shared by the API, the scripts and the tests. |
 | `api/` | FastAPI: REST routes, the `/ws` push, the runtime (source and broadcaster) and serializers. |
-| `scripts/` | `record.py` (capture live sessions), `replayReport.py` (print every significant move in a recording), `study.py` (what price did after each signal) and `generateSample.py`. |
+| `scripts/` | `record.py` (always-on recording to hourly files), `replayReport.py` (print every significant move in a recording), `study.py` (what price did after each signal) and `generateSample.py`. |
 | `frontend/` | React + Vite dashboard. |
 
 ### Design decisions worth defending in an interview
@@ -146,27 +146,52 @@ The four signals say *what happened*. These reads turn them into things a trader
 
 ### Does any of it work? Measure it
 
-`scripts/study.py` replays recordings and, using only what the engine knew at each moment, logs every time one of these reads fires and the direction it implies. Then it checks the price 1, 5, 15 and 60 minutes later:
+`scripts/study.py` replays recordings and, using only what the engine knew at each moment, logs every time one of these reads fires and the direction it implies. It also logs every card tag on the 1m, 10m and 60m cards that leans one way ("absorbed", "TWAP", "stretched", "uptrend", "liq flush"…), in the direction the row leans. Then it checks the price 1, 5, 15 and 60 minutes later:
 
 ```bash
-python -m scripts.record --minutes 720                       # record half a day (repeat over several days)
-python -m scripts.study data/recordings/*.jsonl --coin ETH --csv study.csv
+python -m scripts.record                 # leave it running: days, not hours
+python -m scripts.study                  # every coin in data/recordings
+python -m scripts.study data/recordings --coin ETH --min-n 30 --csv study.csv
 ```
 
 ```
+14 session(s) · 212.5 hours · ETH, BTC, SOL, HYPE
+
 signal                                     n  │ 1m  hit   avg    t  │ 5m  hit   avg    t  …
 absorption (10m)                          41  │     58%  +2.1  +1.9 │     55%  +3.4  +1.2 …
+card vwap: stretched (10m)                88  │     44%  -0.9  -1.4 │     41%  -2.6  -2.2 …
 ```
 
-`hit` is the share that went the implied way, `avg` the mean move that way in bps, `t` the average ÷ its standard error. Under ~30 occurrences or with |t| < 2, it isn't known yet. Keep the reads that hold up across days and coins, and drop the ones that don't. (The numbers above are illustrative. The synthetic session is far too short to say anything.)
+`hit` is the share that went the implied way, `avg` the mean move that way in bps, `t` the average ÷ its standard error. A card tag with a negative `avg` means fading it worked (above: price stretched above VWAP tended to come back). Under ~30 occurrences or with |t| < 2, it isn't known yet. Keep the reads that hold up across days and coins, and drop the ones that don't. (The numbers above are illustrative. The synthetic session is far too short to say anything.)
+
+### Recording for the study
+
+The recorder writes one file per hour to `data/recordings/`. The hour being written is plain JSONL, so a crash or power cut loses only the last moment; finished hours are gzipped in the background. Hourly files from one run are stitched back into one continuous session by the study; a gap of more than 10 minutes starts a fresh session. Recording pauses (and logs it) when free disk drops below 2 GB.
+
+- **On your laptop:** `python -m scripts.record`, and keep the machine awake. Run it again after any interruption and it carries on. Or start the dashboard with `ANALYTIX_RECORD=1` and it records while you watch.
+- **On a small Linux server** (any $4–6/month VPS, Ubuntu 22.04+), so it runs 24/7:
+
+```bash
+sudo apt install -y git python3-venv
+sudo git clone https://github.com/dejixy/analytix /opt/analytix
+cd /opt/analytix && sudo python3 -m venv .venv && sudo .venv/bin/pip install -r requirements.txt
+sudo useradd -r -s /usr/sbin/nologin analytix && sudo chown -R analytix /opt/analytix
+sudo cp deploy/analytix-recorder.service /etc/systemd/system/
+sudo systemctl enable --now analytix-recorder
+journalctl -u analytix-recorder -f          # one status line a minute
+```
+
+  Copy the recordings to your laptop for the study with `scp -r user@server:/opt/analytix/data/recordings data/` (or `rsync -av` to fetch only new hours).
+
+The recorder prints how many MB the current hour has taken, so you can see your disk use per day after the first few hours.
 
 ### Honest limitations
 
-- **Liquidations are inferred, not confirmed.** Hyperliquid's public feed doesn't label liquidations, because a market liquidation executes as an ordinary taker order. Analytix detects liquidation-*style* cascades from sweep footprints, then checks them against open interest ("likely liquidations" when OI fell with them). If you know liquidator addresses, set `ANALYTIX_LIQUIDATORS=0xabc…,0xdef…` and matching trades are flagged as confirmed.
+- **Liquidations are classified, not labelled.** Hyperliquid's public feed doesn't say "liquidation". Fills the engine executes itself (no transaction hash) are TWAP slices, liquidations or auto-deleveraging, and `engine/engineFlow.py` tells them apart by Hyperliquid's own rules: TWAPs slice at a fixed interval in similar sizes; liquidations hit many accounts at once, or come as a 20% chunk then the rest within 30 s. Anything that fits neither is left unclassified. Sweeps by ordinary traders are checked against open interest ("likely liquidations" when OI fell with them). If you know liquidator addresses, set `ANALYTIX_LIQUIDATORS=0xabc…,0xdef…` and matching trades are flagged as confirmed.
 - **None of the reads is a proven edge yet.** They are built on standard microstructure ideas (price impact, absorption, forced flow, spoofing), but whether each one predicts anything on Hyperliquid is an empirical question. `scripts/study.py` is how to answer it.
 - **Long windows are only as complete as the app's uptime.** Price is backfilled, but order flow, depth and OI for the 6h … 1w windows build up while the app runs (saved across restarts). Long windows refresh every 15 seconds.
 - **Older moves are kept in memory only.** They live on in the event log (the last 200 events). Persisting them is on the roadmap.
-- **The synthetic session is a toy market.** It is scripted so the tests have known answers. Record real sessions with `python -m scripts.record --minutes 60` and replay those.
+- **The synthetic session is a toy market.** It is scripted so the tests have known answers. Record real sessions with `python -m scripts.record` and replay those.
 - **The live client was written against the documented message formats**, and the parsers are tested against those shapes. Watch the first live run for surprises (see the checklist below).
 
 ---
@@ -181,7 +206,9 @@ absorption (10m)                          41  │     58%  +2.1  +1.9 │     55
 | `ANALYTIX_REPLAY_FILE` | `data/sampleSession.jsonl` | a recording from `scripts/record.py` |
 | `ANALYTIX_REPLAY_SPEED` | `4` | playback multiplier |
 | `ANALYTIX_REPLAY_LOOP` | `1` | `0` to stop at the end |
-| `ANALYTIX_RECORD_FILE` | — | in live mode, also record raw messages here |
+| `ANALYTIX_RECORD` | `0` | `1`: in live mode, also record the feed to hourly files (for the study) |
+| `ANALYTIX_RECORD_DIR` | `data/recordings` | where those files go |
+| `ANALYTIX_RECORD_FILE` | — | in live mode, also record raw messages to this one file |
 | `ANALYTIX_LIQUIDATORS` | — | comma-separated addresses |
 | `ANALYTIX_BACKFILL` | `1` | `0` to skip downloading price candles on start |
 | `ANALYTIX_BARS_DB` | `data/bars.sqlite` | where live minute bars are saved (live mode only) |
