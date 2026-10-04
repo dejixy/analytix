@@ -35,6 +35,20 @@ def explanation_dict(ex: Explanation) -> dict:
     return d
 
 
+def plan_dict(plan) -> dict:
+    """The planner's result. The fitted model is summarised, not shipped (it holds the residual pool)."""
+    m = plan.model
+    out = {f.name: to_jsonable(getattr(plan, f.name)) for f in fields(plan) if f.name != "model"}
+    out["costs"]["total"] = round(plan.costs.total, 6)
+    out["model"] = {
+        "kind": m.kind, "step_s": m.step_s, "candles": m.n, "days": round(m.span_days, 1),
+        "alpha": round(m.alpha, 3), "beta": round(m.beta, 3),
+        "half_life_h": round(math.log(0.5) / math.log(m.alpha + m.beta) * m.step_s / 3600, 1)
+        if 0 < m.alpha + m.beta < 1 else None,
+    }
+    return out
+
+
 def event_dict(ev: MoveEvent) -> dict:
     return {
         "id": ev.id,

@@ -9,6 +9,7 @@ import TradeTape from "./components/TradeTape.jsx";
 import Positioning from "./components/Positioning.jsx";
 import EventLog from "./components/EventLog.jsx";
 import Toasts from "./components/Toasts.jsx";
+import Planner from "./components/Planner.jsx";
 
 const FLOW_MIN_STRENGTH = 0.25;
 
@@ -37,6 +38,7 @@ export default function App() {
   const [selected, setSelected] = useState("1m");
   const [pinned, setPinned] = useState(null); // a MoveEvent object, kept even after it scrolls out of the feed
   const [notice, setNotice] = useState(null); // a short message under the chart, e.g. "that moment is outside the data"
+  const [planning, setPlanning] = useState(false);
   const railRef = useRef(null);
 
   useEffect(() => {
@@ -113,6 +115,7 @@ export default function App() {
           setPinned(null);
           setCoin(c);
         }}
+        onPlan={() => setPlanning(true)}
       />
 
       <section className="rail-wrap" aria-label="Explanations by timeframe">
@@ -189,6 +192,7 @@ export default function App() {
 
       <EventLog events={snap.events} marketEvents={snap.market_events || []} pinned={pinned} onPick={pin} />
       <Toasts coin={snap.coin} nowMs={snap.now_ms} marketEvents={snap.market_events || []} />
+      {planning && <Planner coin={snap.coin} mid={snap.price?.mid} explanations={snap.explanations} onClose={() => setPlanning(false)} />}
     </div>
   );
 }

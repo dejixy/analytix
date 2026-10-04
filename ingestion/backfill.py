@@ -60,3 +60,24 @@ async def backfill(coin: str, seconds: int, url: str = HL_INFO_URL, interval: st
     bars = candles_to_bars(candles, funding)
     log.info("backfilled %d %s candles for %s", len(bars), interval, coin)
     return bars
+
+
+async def fetch_candles(coin: str, interval: str, n: int = 5000, url: str = HL_INFO_URL) -> list[dict[str, Any]]:
+    """The most recent `n` candles (Hyperliquid serves up to 5000), raw rows."""
+    span = _INTERVAL_S.get(interval, 3600) * 1000
+    end = int(time.time() * 1000)
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(url, json={"type": "candleSnapshot",
+                                         "req": {"coin": coin, "interval": interval, "startTime": end - n * span,
+                                                 "endTime": end}})
+        r.raise_for_status()
+        return r.json()
+
+
+async def fetch_max_leverage(url: str = HL_INFO_URL) -> dict[str, float]:
+    """Each perp's max leverage from Hyperliquid's `meta` (it sets the maintenance margin: half the initial
+    margin at max leverage)."""
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(url, json={"type": "meta"})
+        r.raise_for_status()
+        return {a["name"]: float(a["maxLeverage"]) for a in r.json().get("universe", []) if a.get("maxLeverage")}

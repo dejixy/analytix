@@ -105,5 +105,8 @@ MODE = os.getenv("ANALYTIX_MODE", "live")            # "live" | "replay"
 REPLAY_FILE = Path(os.getenv("ANALYTIX_REPLAY_FILE", ROOT / "data" / "sampleSession.jsonl"))
 REPLAY_SPEED = float(os.getenv("ANALYTIX_REPLAY_SPEED", "4"))
 REPLAY_LOOP = os.getenv("ANALYTIX_REPLAY_LOOP", "1") == "1"
-RECORD_FILE = os.getenv("ANALYTIX_RECORD_FILE")      # live mode: also record raw messages here
+RECORD_FILE = os.getenv("ANALYTIX_RECORD_FILE")      # live mode: also record raw messages to this one file
+RECORD = os.getenv("ANALYTIX_RECORD", "0") == "1"    # live mode: also record to hourly files in RECORD_DIR
+RECORD_DIR = Path(os.getenv("ANALYTIX_RECORD_DIR", str(ROOT / "data" / "recordings")))
+RECORD_MIN_FREE_GB = float(os.getenv("ANALYTIX_RECORD_MIN_FREE_GB", "2"))   # pause recording below this much free disk
 FRONTEND_DIST = ROOT / "frontend" / "dist"

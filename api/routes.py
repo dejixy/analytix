@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from api.serializers import event_dict, explanation_dict
+from api.planner import PlanError
+from api.serializers import event_dict, explanation_dict, plan_dict
 from config import WINDOWS
 
 router = APIRouter(prefix="/api")
@@ -63,6 +64,21 @@ async def explain_at(request: Request, t: int, window: str = "1m", coin: str | N
     used, ex = found
     note = "" if used == window else f"{window} isn't in memory that far back, so this is the {used} up to that moment."
     return {"window": used, "requested": window, "at_ms": ex.end_ms, "note": note, "explanation": explanation_dict(ex)}
+
+
+@router.get("/plan")
+async def plan(request: Request, side: str = "long", margin: float = Query(1_000, gt=0, le=1e8),
+               leverage: float = Query(5, ge=1, le=100), hours: float = Query(24, ge=0.25, le=168),
+               coin: str | None = None):
+    """What to expect from a position before taking it: liquidation odds, path, exit spread, costs."""
+    if side not in ("long", "short"):
+        raise HTTPException(400, "side must be 'long' or 'short'")
+    pipe = _pipe(request, coin)
+    try:
+        p = await _rt(request).planner.plan(pipe.coin, 1 if side == "long" else -1, margin, leverage, hours)
+    except PlanError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    return plan_dict(p)
 
 
 @router.get("/events")
