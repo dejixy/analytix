@@ -78,7 +78,19 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
     return { xs, ys, yTicks, xTicks, xLabel, d, iw, ih, stepDigits: step < 1 ? 2 : step < 10 ? 1 : 0 };
   }, [pts, width, x0, nowMs, SPAN_MS]);
 
-  const shownEvents = events.filter((e) => e.window === windowLabel && e.peak_ms >= x0);
+  // Significant moves from every timeframe, so there's always something to pin — the selected timeframe's
+  // drawn larger. One big move often registers on several timeframes at the same moment: keep one marker,
+  // preferring the selected timeframe, then the shortest.
+  const preferred = (a, b) =>
+    (a.window === windowLabel) !== (b.window === windowLabel) ? a.window === windowLabel : a.explanation.seconds < b.explanation.seconds;
+  const shownEvents = [];
+  for (const ev of [...events].filter((e) => e.peak_ms >= x0).sort((a, b) => a.peak_ms - b.peak_ms)) {
+    const i = shownEvents.findIndex(
+      (o) => Math.abs(o.peak_ms - ev.peak_ms) <= 5000 && o.explanation.move.direction === ev.explanation.move.direction,
+    );
+    if (i < 0) shownEvents.push(ev);
+    else if (preferred(ev, shownEvents[i])) shownEvents[i] = ev;
+  }
   if (pinned && pinned.peak_ms >= x0 && !shownEvents.some((e) => e.id === pinned.id)) shownEvents.push(pinned);
 
   const markers = geo
@@ -130,7 +142,7 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
             <button className="unpin-btn" onClick={onUnpin} title="Back to the live explanation (Esc)">✕ Unpin</button>
           </span>
         ) : (
-          <span className="panel-sub">shaded: {windowLabel} window · markers: {windowLabel} significant moves</span>
+          <span className="panel-sub">shaded: {windowLabel} window · markers: significant moves ({windowLabel} larger)</span>
         )}
       </div>
       <div className="chart-wrap" ref={wrapRef}>
@@ -198,10 +210,11 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
               const dir = ev.explanation.move.direction;
               const isPinned = pinned && pinned.id === ev.id;
               const isHot = hover?.marker?.id === ev.id;
+              const main = ev.window === windowLabel || isPinned;
               return (
-                <g key={ev.id} pointerEvents="none">
+                <g key={ev.id} pointerEvents="none" opacity={main || isHot ? 1 : 0.6}>
                   {(isPinned || isHot) && <circle cx={x} cy={y} r={isHot ? 11 : 9} fill="none" stroke={isPinned ? "var(--up-bright)" : "var(--ink-2)"} strokeWidth="2" />}
-                  <circle cx={x} cy={y} r={isHot ? 7 : 5.5} fill={dir === "down" ? "var(--down)" : "var(--up)"} stroke="var(--surface)" strokeWidth="2" />
+                  <circle cx={x} cy={y} r={isHot ? 7 : main ? 5.5 : 3.5} fill={dir === "down" ? "var(--down)" : "var(--up)"} stroke="var(--surface)" strokeWidth="2" />
                 </g>
               );
             })}
@@ -247,7 +260,13 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
         {levels.length > 0 && (
           <span className="legend-item"><span className="dash" /> defended level (breaks are logged below)</span>
         )}
-        <span className="legend-item muted">{pinned ? "click the pinned marker, ✕ Unpin or Esc to go back to live" : "hover near a marker and click to pin its explanation"}</span>
+        <span className="legend-item muted">
+          {pinned
+            ? "click the pinned marker, ✕ Unpin or Esc to go back to live"
+            : markers.length
+              ? "hover near a marker and click to pin its explanation"
+              : "no significant moves in view yet — a marker appears when a move reaches 2.5× its normal size"}
+        </span>
       </div>
     </div>
   );
