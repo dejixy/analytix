@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fmtPct, fmtPrice, fmtTime, fmtUsd } from "../format.js";
+import { arrow, fmtPct, fmtPrice, fmtTime, fmtUsd, headlineBody } from "../format.js";
 
 const HEIGHT = 420;
 const M = { top: 12, right: 78, bottom: 26, left: 10 };
 const TICK_MINUTES = [1, 2, 3, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
+const SNAP_PX = 28; // the cursor snaps to a move marker within this distance — no need to hit the dot exactly
 
 function tickLabel(t, tickMs) {
   const d = new Date(t);
@@ -30,7 +31,7 @@ function nearest(points, t) {
   return Math.abs(points[lo][0] - t) <= Math.abs(points[hi][0] - t) ? points[lo] : points[hi];
 }
 
-export default function PriceChart({ series, barSeries, events, levels = [], nowMs, tickSpanSeconds, windowSeconds, windowLabel, pinned, onPick }) {
+export default function PriceChart({ series, barSeries, events, levels = [], nowMs, tickSpanSeconds, windowSeconds, windowLabel, pinned, onPick, onUnpin }) {
   // ≤60m windows: tick-level mids over the last hour. Longer windows: minute-bar closes,
   // spanning 1.5× the window so the shaded window sits in some context.
   const long = windowSeconds > tickSpanSeconds;
@@ -80,12 +81,38 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
   const shownEvents = events.filter((e) => e.window === windowLabel && e.peak_ms >= x0);
   if (pinned && pinned.peak_ms >= x0 && !shownEvents.some((e) => e.id === pinned.id)) shownEvents.push(pinned);
 
+  const markers = geo
+    ? shownEvents.map((ev) => {
+        const p = nearest(pts, ev.peak_ms);
+        return { ev, x: geo.xs(p[0]), y: geo.ys(p[1]) };
+      })
+    : [];
+
   const onMove = (e) => {
     if (!geo) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const t = x0 + ((e.clientX - rect.left - M.left) / geo.iw) * SPAN_MS;
+    const mx = M.left + (e.clientX - rect.left);
+    const my = M.top + (e.clientY - rect.top);
+    let snap = null;
+    let best = SNAP_PX;
+    for (const m of markers) {
+      const d = Math.hypot(m.x - mx, m.y - my);
+      if (d <= best) {
+        best = d;
+        snap = m.ev;
+      }
+    }
+    if (snap) {
+      const p = nearest(pts, snap.peak_ms);
+      setHover({ t: p[0], p: p[1], marker: snap });
+      return;
+    }
+    const t = x0 + ((mx - M.left) / geo.iw) * SPAN_MS;
     const p = nearest(pts, t);
-    setHover({ t: p[0], p: p[1] });
+    setHover({ t: p[0], p: p[1], marker: null });
+  };
+  const onClick = () => {
+    if (hover?.marker) onPick(hover.marker);
   };
 
   const winStart = nowMs - windowSeconds * 1000;
@@ -96,7 +123,15 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Mid price · {long ? `${windowLabel} view` : `${Math.round(tickSpanSeconds / 60)}m`}</h2>
-        <span className="panel-sub">shaded: {windowLabel} window · markers: {windowLabel} significant moves</span>
+        {pinned ? (
+          <span className="pinned-bar">
+            <span className="chip">PINNED</span>
+            <span className="num">{fmtTime(pinned.peak_ms)} · {pinned.window} {arrow(pinned.explanation.move.direction)} {fmtPct(pinned.explanation.move.move_pct)}</span>
+            <button className="unpin-btn" onClick={onUnpin} title="Back to the live explanation (Esc)">✕ Unpin</button>
+          </span>
+        ) : (
+          <span className="panel-sub">shaded: {windowLabel} window · markers: {windowLabel} significant moves</span>
+        )}
       </div>
       <div className="chart-wrap" ref={wrapRef}>
         {!geo ? (
@@ -144,7 +179,8 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
             <path d={geo.d} fill="none" stroke="var(--ink-2)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
             {last && (
               <g>
-                <circle cx={geo.xs(last[0])} cy={geo.ys(last[1])} r="4" fill="var(--up-bright)" stroke="var(--surface)" strokeWidth="2" />
+                {/* the live price: a hollow ring, so it's never mistaken for a (filled) move marker */}
+                <circle cx={geo.xs(last[0])} cy={geo.ys(last[1])} r="4" fill="var(--surface)" stroke="var(--up-bright)" strokeWidth="2" />
                 <rect x={width - M.right + 2} y={geo.ys(last[1]) - 10} width={M.right - 4} height="20" rx="2" fill="var(--up-deep)" stroke="var(--up)" strokeWidth="1" />
                 <text x={width - M.right + M.right / 2} y={geo.ys(last[1]) + 4} fontSize="10.5" fontWeight="700" fill="var(--ink)" textAnchor="middle" className="num">
                   {fmtPrice(last[1])}
@@ -152,32 +188,49 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
               </g>
             )}
 
-            {/* hover layer */}
-            <rect x={M.left} y={M.top} width={geo.iw} height={geo.ih} fill="transparent" onMouseMove={onMove} onMouseLeave={() => setHover(null)} />
-            {hover && (
+            {/* pinned move: a guide line so it's obvious which marker is pinned */}
+            {markers.filter((m) => pinned && m.ev.id === pinned.id).map((m) => (
+              <line key="pin-guide" x1={m.x} x2={m.x} y1={M.top} y2={M.top + geo.ih} stroke="var(--up)" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" pointerEvents="none" />
+            ))}
+
+            {/* significant-move markers: drawn under the hover layer; the layer snaps to the nearest one */}
+            {markers.map(({ ev, x, y }) => {
+              const dir = ev.explanation.move.direction;
+              const isPinned = pinned && pinned.id === ev.id;
+              const isHot = hover?.marker?.id === ev.id;
+              return (
+                <g key={ev.id} pointerEvents="none">
+                  {(isPinned || isHot) && <circle cx={x} cy={y} r={isHot ? 11 : 9} fill="none" stroke={isPinned ? "var(--up-bright)" : "var(--ink-2)"} strokeWidth="2" />}
+                  <circle cx={x} cy={y} r={isHot ? 7 : 5.5} fill={dir === "down" ? "var(--down)" : "var(--up)"} stroke="var(--surface)" strokeWidth="2" />
+                </g>
+              );
+            })}
+
+            {/* hover layer: crosshair, marker snapping and clicks */}
+            {hover && !hover.marker && (
               <g pointerEvents="none">
                 <line x1={geo.xs(hover.t)} x2={geo.xs(hover.t)} y1={M.top} y2={M.top + geo.ih} stroke="var(--axis)" strokeWidth="1" />
                 <circle cx={geo.xs(hover.t)} cy={geo.ys(hover.p)} r="4" fill="var(--ink-2)" stroke="var(--surface)" strokeWidth="2" />
               </g>
             )}
-
-            {/* significant-move markers (clickable) */}
-            {shownEvents.map((ev) => {
-              const p = nearest(pts, ev.peak_ms);
-              const dir = ev.explanation.move.direction;
-              const isPinned = pinned && pinned.id === ev.id;
-              return (
-                <g key={ev.id} style={{ cursor: "pointer" }} onClick={() => onPick(ev)}>
-                  <title>{`${fmtTime(ev.peak_ms)} · ${ev.explanation.headline}`}</title>
-                  <circle cx={geo.xs(p[0])} cy={geo.ys(p[1])} r="12" fill="transparent" />
-                  {isPinned && <circle cx={geo.xs(p[0])} cy={geo.ys(p[1])} r="9" fill="none" stroke="var(--accent)" strokeWidth="2" />}
-                  <circle cx={geo.xs(p[0])} cy={geo.ys(p[1])} r="5.5" fill={dir === "down" ? "var(--down)" : "var(--up)"} stroke="var(--surface)" strokeWidth="2" />
-                </g>
-              );
-            })}
+            <rect
+              x={M.left} y={M.top} width={geo.iw} height={geo.ih} fill="transparent"
+              style={{ cursor: hover?.marker ? "pointer" : "crosshair" }}
+              onMouseMove={onMove} onMouseLeave={() => setHover(null)} onClick={onClick}
+            />
           </svg>
         )}
-        {hover && geo && (
+        {hover && geo && hover.marker && (
+          <div className={`tooltip marker-tip ${geo.ys(hover.p) < 150 ? "below" : ""}`} style={{ left: geo.xs(hover.t), top: geo.ys(hover.p) }}>
+            <div className="num" style={{ fontWeight: 600 }}>
+              {fmtTime(hover.marker.peak_ms)} · {hover.marker.window} {arrow(hover.marker.explanation.move.direction)}{" "}
+              {fmtPct(hover.marker.explanation.move.move_pct)}
+            </div>
+            <div className="marker-tip-body">{headlineBody(hover.marker.explanation.headline)}</div>
+            <div className="muted">{pinned && pinned.id === hover.marker.id ? "click to unpin" : "click to pin its explanation"}</div>
+          </div>
+        )}
+        {hover && geo && !hover.marker && (
           <div className="tooltip" style={{ left: geo.xs(hover.t), top: geo.ys(hover.p) }}>
             <div className="num" style={{ fontWeight: 600 }}>{fmtPrice(hover.p)}</div>
             <div className="muted num">
@@ -188,12 +241,13 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
         )}
       </div>
       <div className="legend-row">
+        <span className="legend-item"><span className="dot ring" /> live price</span>
         <span className="legend-item"><span className="dot" style={{ background: "var(--up)" }} /> up move</span>
         <span className="legend-item"><span className="dot" style={{ background: "var(--down)" }} /> down move</span>
         {levels.length > 0 && (
           <span className="legend-item"><span className="dash" /> defended level (breaks are logged below)</span>
         )}
-        <span className="legend-item muted">click a marker to pin its explanation</span>
+        <span className="legend-item muted">{pinned ? "click the pinned marker, ✕ Unpin or Esc to go back to live" : "hover near a marker and click to pin its explanation"}</span>
       </div>
     </div>
   );

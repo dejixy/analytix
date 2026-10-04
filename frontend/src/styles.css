@@ -201,6 +201,16 @@ button { font: inherit; color: inherit; }
 .narrative li::before { content: ">"; position: absolute; left: 0; color: var(--up); }
 .pin-note { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-2); margin-bottom: 10px; }
 .link-btn { background: none; border: none; color: var(--up-bright); cursor: pointer; padding: 0; font-size: 11.5px; text-decoration: underline; }
+.unpin-btn {
+  margin-left: auto; background: var(--surface-3); border: 1px solid var(--up); color: var(--ink); border-radius: 2px;
+  padding: 2px 8px; font: inherit; font-size: 11px; cursor: pointer;
+}
+.unpin-btn:hover { background: var(--up-deep); }
+.pinned-bar { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-2); }
+.pinned-bar .unpin-btn { margin-left: 4px; }
+.marker-tip { width: 260px; white-space: normal; }
+.tooltip.below { transform: translate(-50%, 0); margin-top: 14px; }
+.marker-tip-body { margin: 3px 0; color: var(--ink); font-size: 11.5px; }
 .signal { display: grid; gap: 3px; padding: 8px 0; border-top: 1px solid var(--grid); }
 .signal-row { display: flex; align-items: center; gap: 10px; }
 .signal-name { font-weight: 600; font-size: 12px; width: 110px; flex: none; }
@@ -262,6 +272,7 @@ tr.wall td { color: var(--ink); }
 .rank-tag { margin-left: 6px; font-size: 9.5px; color: var(--ink); border: 1px solid var(--axis); border-radius: 2px; padding: 0 4px; }
 .wall-stats { display: flex; justify-content: space-between; margin-top: 4px; cursor: help; }
 .event.static:hover { background: none; }
+.legend-item .dot.ring { background: var(--surface); box-shadow: inset 0 0 0 2px var(--up-bright); }
 .legend-item .dash { display: inline-block; width: 14px; border-top: 1px dashed var(--up); }
 
 /* ── Toasts ─────────────────────────────────────────────────────────────── */
