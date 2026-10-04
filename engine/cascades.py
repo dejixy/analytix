@@ -129,7 +129,7 @@ class CascadeTracker:
         self._next = 1
 
     def update(self, st, sweep_threshold: float, now_ms: int) -> None:
-        twaps = st.engine.twap_wallets
+        twaps = st.engine.twaps
         sweeps = [o for o in st.orders.window(SCAN_S, now_ms) if is_sweep(o, sweep_threshold, twaps)]
         for c in find_cascades(sweeps):
             t = next((t for t in self._items if t.side is c.side and c.start_ms <= t.end_ms + CASCADE_MAX_GAP_MS

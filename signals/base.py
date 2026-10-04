@@ -92,7 +92,7 @@ class WindowSlice:
     cascades: tuple[CascadeInfo, ...] = ()   # tracked cascades with their OI check and recovery
     walls: WallStats | None = None           # how recent big resting orders behaved: real or pulled
     path: tuple[tuple[int, float], ...] = ()  # (time, price) through the window: mids (tick) or bar closes
-    twap_wallets: frozenset[str] = frozenset()                 # wallets running a TWAP (engine/engineFlow.py)
+    twaps: dict | None = None                                  # (wallet, side) → (last slice ms, slice USD): running TWAPs
     forced_keys: frozenset[tuple[int, str]] = frozenset()      # (time, wallet) of engine orders judged forced
     vwap: float | None = None                # volume-weighted average price of the window's trades
     funding_history: tuple[float, ...] = ()  # sorted hourly funding rates, past week (engine/positioning.py)

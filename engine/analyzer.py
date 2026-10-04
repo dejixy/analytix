@@ -110,7 +110,7 @@ class Analyzer:
             if sl is None:
                 continue
             sl = replace(sl, funding_history=self.positioning.funding_history(),
-                         oi_history=self.positioning.oi_history(seconds), twap_wallets=twaps, forced_keys=forced)
+                         oi_history=self.positioning.oi_history(seconds), twaps=twaps, forced_keys=forced)
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
             flow = next((x for x in signals if x.name == "volume_imbalance"), None)
@@ -166,7 +166,7 @@ class Analyzer:
                 continue
             twaps, forced = st.engine.view()
             sl = replace(sl, funding_history=self.positioning.funding_history(),
-                         oi_history=self.positioning.oi_history(seconds), twap_wallets=twaps, forced_keys=forced)
+                         oi_history=self.positioning.oi_history(seconds), twaps=twaps, forced_keys=forced)
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
             flow = next((x for x in signals if x.name == "volume_imbalance"), None)

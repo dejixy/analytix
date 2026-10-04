@@ -96,7 +96,7 @@ def liquidations(s: WindowSlice) -> SignalResult:
     if total <= 0:
         return SignalResult(NAME, LABEL, 0.0, 0.0, Direction.NEUTRAL, "No trades in this window.", stat="—")
 
-    sweeps = [o for o in orders if is_sweep(o, s.baseline.sweep_threshold, s.twap_wallets)]
+    sweeps = [o for o in orders if is_sweep(o, s.baseline.sweep_threshold, s.twaps)]
     # Engine-executed orders judged forced (engine/engineFlow.py): liquidations/ADL seen directly in the feed.
     engine_forced = [o for o in orders if o.engine and (o.timestamp, o.taker) in s.forced_keys]
     forced_usd = sum(o.notional for o in engine_forced)

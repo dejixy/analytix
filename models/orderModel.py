@@ -63,10 +63,19 @@ def group_orders(trades: Iterable[Trade], liquidators: frozenset[str] | set[str]
     return orders
 
 
-def is_sweep(o: AggressiveOrder, threshold: float, twap_wallets: frozenset[str] | dict = frozenset()) -> bool:
+def is_twap_slice(o: AggressiveOrder, twaps: dict | None) -> bool:
+    """A slice of a running TWAP: an engine order from a (wallet, side) known to be TWAPing, and slice-sized —
+    a much bigger engine order from the same wallet is something else (a liquidation) and isn't excused."""
+    if not twaps or not o.engine or not o.taker:
+        return False
+    known = twaps.get((o.taker, o.side))
+    return known is not None and o.notional <= 3.5 * known[1]
+
+
+def is_sweep(o: AggressiveOrder, threshold: float, twaps: dict | None = None) -> bool:
     """Large versus recent orders, or walking several levels with real size, or a known liquidation.
     TWAP slices are never sweeps: they're scheduled pieces of a planned order, not forced flow."""
-    if o.engine and o.taker in twap_wallets and not o.confirmed_liquidation:
+    if is_twap_slice(o, twaps) and not o.confirmed_liquidation:
         return False
     return (
         o.confirmed_liquidation

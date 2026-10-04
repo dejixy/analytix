@@ -28,6 +28,7 @@ export function DriverBars({ ex, limit = 4 }) {
 const HOT = new Set([
   "TWAP", "whale", "absorbed", "outsized", "stretched", "thin", "bait?", "liq flush", "one trader",
   "crowded longs", "crowded shorts", "chop", "uptrend", "downtrend", "short squeeze", "long flush",
+  "against flow", "liquidations",
 ]);
 
 /** The card's rows: one per metric chosen for this timeframe (engine/summary.py). Hover a row for the working. */
@@ -45,7 +46,7 @@ export function SummaryRows({ ex }) {
           <div className={`metric ${partial ? "partial" : ""}`} key={m.key} title={tip}>
             <span className="metric-label">{m.label}</span>
             <span className="metric-value">{m.value}</span>
-            <div className="track">
+            <div className="track mtrack">
               {m.kind === "position" ? (
                 <span className="pos-mark" style={{ left: `calc(${Math.min(100, Math.max(0, m.bar * 100))}% - 1px)` }} />
               ) : (

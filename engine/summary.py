@@ -10,21 +10,25 @@ how it was worked out:
     60m   session       Trend · VWAP · Flow · Who · Positioning
     6h+   swing         Trend · VWAP · Positioning · Funding · Flow
 
-  Flow         aggressive buying vs selling, net $, and what it *did* (impact vs normal)
+  Flow         aggressive buying vs selling, net $, and what it *did*: price impact vs what
+               that much net flow normally buys (absorbed / against flow / outsized)
   Who          how concentrated the aggressive side is — one wallet, a TWAP algo, or many
-               traders. Hyperliquid prints the wallet behind every trade; TWAP slices are
-               fills with no transaction hash.
-  Forced       sweeps and cascades, checked against open interest
+               traders. Hyperliquid prints the wallet behind every trade; engine-executed
+               fills (no tx hash) are split into TWAP slices and liquidations (engineFlow.py)
+  Forced       sweeps, cascades and engine-executed liquidations, checked against OI
   Book         resting depth near the price now, how it changed, and whether walls are real
-  Liquidity    what a large market order would pay right now, vs its usual cost
-  Trend        efficiency ratio (net move ÷ distance travelled over 30 equal steps — 0.18 is
-               a random walk) and where price sits in the window's range
-  VWAP         price vs the window's volume-weighted average price, in normal moves
-  Positioning  open-interest change, ranked against history, and who it says is moving
+  Liquidity    slippage of a large market order right now, vs its usual cost
+  Trend        efficiency ratio (net move ÷ distance travelled over 30 equal steps) and
+               position in the range. On simulated random walks: mean 0.18; "trend" fires
+               on ~4% of noise windows and catches ~93% of real drifts; "chop" ~4% of noise
+  VWAP         price vs the window's VWAP, scored in units of how far a random market sits
+               from its own VWAP (σ√T/√3): "stretched" is beyond ~95% of random moments
+  Positioning  open-interest change, ranked against every OI move of the same timeframe
   Funding      the rate, what holding this long costs, and whether one side is crowded
+               (mid-rank percentile vs the past week, and meaningfully above the floor)
 
-Everything here is computed from the window slice the explainer already built, so a card
-costs a few milliseconds even for 60m (one pass over the orders and the price path).
+Everything comes from the window slice the explainer already built: one pass over the
+orders and the price path, a few milliseconds even for 60m.
 """
 import math
 from collections import deque
@@ -32,6 +36,7 @@ from dataclasses import dataclass
 
 from models.bookModel import BookLevel, OrderBook
 from models.explanationModel import FlowImpact, Metric, PriceMove
+from models.orderModel import is_twap_slice
 from models.signalModel import Direction, SignalResult
 from models.tradeModel import TradeSide
 from signals.base import WindowSlice, fmt_px, fmt_usd
@@ -50,6 +55,8 @@ AT_VALUE_SD, STRETCHED_SD = 0.5, 2.0
 RANGE_PER_SIGMA = math.sqrt(8 / math.pi)   # expected high–low range of a random walk, in σ·√T (Parkinson)
 MIN_ORDERS_FOR_WHO = 8
 FLOW_LEAN = 0.25
+
+CROWDED_LONG_APR = 15.0            # Hyperliquid's floor is ~11% APR: "crowded" has to be meaningfully above it
 
 LAYOUTS = {
     "execution": ("flow", "who", "forced", "book", "liquidity"),
@@ -87,6 +94,12 @@ def _dur(seconds: float) -> str:
     if seconds < 172_800:
         return f"{seconds / 3600:.1f} h"
     return f"{seconds / 86400:.1f} days"
+
+
+def _ordinal(p: float) -> str:
+    n = min(99, max(1, round(p * 100)))
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 def _short(addr: str) -> str:
@@ -156,9 +169,9 @@ class LiquidityTracker:
     def update(self, book: OrderBook | None, now_ms: int, sweep_threshold: float) -> None:
         if book is None or book.mid is None or now_ms - self._last < self.every_ms:
             return
-        size = nice_size(sweep_threshold)
-        if size != self.size:                       # a different yardstick: start the history again
-            self.size, self._samples = size, deque()
+        if not self.size or not 0.5 <= sweep_threshold / self.size <= 2.0:   # hysteresis: no flip-flopping
+            self.size, self._samples = nice_size(sweep_threshold), deque()
+        size = self.size
         buy, sell = slippage_bps(book.asks, size, book.mid), slippage_bps(book.bids, size, book.mid)
         if buy is not None and sell is not None:
             self._samples.append((now_ms, (buy + sell) / 2))
@@ -177,7 +190,9 @@ class LiquidityTracker:
 def flow_row(s: WindowSlice, signals: dict[str, SignalResult], impact: FlowImpact | None) -> Metric:
     f = signals.get("volume_imbalance")
     help_ = ("Aggressive buying vs selling: who crossed the spread, and the net dollars. The tag says what that "
-             "flow did. Absorbed = price barely moved (or went the other way): passive orders soaked it up. "
+             "flow did. Absorbed = price moved far less than this flow normally pushes it: passive orders soaked "
+             "it up. Against flow = price went the other way: something else (other exchanges, a bigger player) "
+             "is driving it. "
              "Outsized = price moved much further than this flow normally pushes it: a thin book, or a move led "
              "from other exchanges. Otherwise the pace of trading vs normal.")
     if not f or not f.metrics or f.metrics.get("buy_notional", 0) + f.metrics.get("sell_notional", 0) <= 0:
@@ -194,7 +209,8 @@ def flow_row(s: WindowSlice, signals: dict[str, SignalResult], impact: FlowImpac
     if partial:
         tag = "partial"
     elif impact:
-        tag = {"against": "absorbed", "absorbed": "absorbed", "outsized": "outsized", "normal": "normal impact"}[impact.verdict]
+        tag = {"against": "against flow", "absorbed": "absorbed", "outsized": "outsized",
+               "normal": "normal impact"}[impact.verdict]
     else:
         tag = "heavy" if activity >= 1.8 else "light" if activity <= 0.5 else "steady"
     detail = f"Buys {fmt_usd(buy)} · sells {fmt_usd(sell)} · {activity:.1f}× normal pace."
@@ -215,14 +231,14 @@ def who_row(s: WindowSlice) -> Metric:
     if len(orders) < MIN_ORDERS_FOR_WHO:
         return Metric("who", "Who", f"only {len(orders)} trades", "quiet", Direction.NEUTRAL, 0.0, help=help_)
     BUY, SELL = TradeSide.BUY, TradeSide.SELL
-    twaps = s.twap_wallets
+    twaps = s.twaps or {}
     tot = {BUY: 0.0, SELL: 0.0}
     twap = {BUY: 0.0, SELL: 0.0}
     usd: dict[TradeSide, dict[str, float]] = {BUY: {}, SELL: {}}
     for o in orders:                       # one lean pass: per-wallet dollars only
         side, n = o.side, o.notional
         tot[side] += n
-        if o.engine and o.taker in twaps:
+        if o.engine and is_twap_slice(o, twaps):
             twap[side] += n
         t = o.taker
         if t is not None:
@@ -252,27 +268,36 @@ def who_row(s: WindowSlice) -> Metric:
     top_addr, top_usd = max(wallets.items(), key=lambda kv: kv[1])
     top_ts = [o.timestamp for o in orders if o.taker == top_addr and o.side is dom]   # second pass: one wallet
     top_n = len(top_ts)
-    top_twap = sum(o.notional for o in orders if o.taker == top_addr and o.side is dom and o.engine) \
-        if top_addr in twaps else 0.0
+    top_twap = sum(o.notional for o in orders
+                   if o.taker == top_addr and o.side is dom and is_twap_slice(o, twaps))
     top_share = top_usd / tot[dom]
     twap_share = twap[dom] / tot[dom]
     top_is_twap = top_twap >= 0.5 * top_usd
     n_buy, n_sell = len(usd[BUY]), len(usd[SELL])
     if top_share >= 0.35:
         value = f"1 {'TWAP' if top_is_twap else 'wallet'} = {top_share:.0%} of {word}"
+        tag = "TWAP" if top_is_twap else "whale" if top_share >= 0.5 else "concentrated"
     elif twap_share >= 0.3:
         value = f"TWAPs = {twap_share:.0%} of {word}"
+        tag = "TWAP"
     else:
         value = f"{n_sell} sellers · {n_buy} buyers"
-    tag = ("TWAP" if twap_share >= 0.3 else "whale" if top_share >= 0.5
-           else "concentrated" if top_share >= 0.35 else "broad")
+        tag = "broad"
     cadence = rate = ""
     if top_n >= 4 and (top_share >= 0.2 or top_is_twap):        # a pattern worth describing
         ts = sorted(top_ts)
         gaps = sorted(b - a for a, b in zip(ts, ts[1:]))
         cadence = f", about every {gaps[len(gaps) // 2] / 1000:.0f}s"
-        span_h = max(1 / 60, (ts[-1] - ts[0]) / 3_600_000)
-        rate = f" — a pace of about {fmt_usd(top_usd / span_h)} an hour"
+        span_s = (ts[-1] - ts[0]) / 1000
+        if top_is_twap or span_s >= 300:                          # a pace needs a real stretch of time behind it
+            rate = f" — a pace of about {fmt_usd(top_usd / span_s * 3600)} an hour"
+        else:
+            rate = f" within {span_s:.0f}s"
+    plan = twaps.get((top_addr, dom)) if top_is_twap else None
+    if plan and len(plan) >= 3 and plan[2] > 0:                  # the classifier knows the TWAP's schedule
+        per_hour = plan[1] * 3_600_000 / plan[2]
+        cadence = f", slicing about {fmt_usd(plan[1])} every {plan[2] / 1000:.0f}s"
+        rate = f" — about {fmt_usd(per_hour)} an hour"
     who = "buyer" if dom is TradeSide.BUY else "seller"
     detail = (f"Top {who} {_short(top_addr)}{' (TWAP)' if top_is_twap else ''}: {fmt_usd(top_usd)} in {top_n} "
               f"order{'s' if top_n != 1 else ''}{cadence}{rate}. {n_sell} wallets sold, {n_buy} bought. "
@@ -340,8 +365,9 @@ def liquidity_row(ctx: SummaryContext) -> Metric:
     fmt = lambda x: "beyond book" if x is None else f"{x:.1f}"   # noqa: E731
     value = f"{fmt_usd(size)}: {fmt(buy)} / {fmt(sell)} bps"
     if buy is None or sell is None:
-        return Metric("liquidity", "Liquidity", value, "thin", Direction.NEUTRAL, 1.0, help=help_,
-                      detail="The visible book (20 levels a side) can't fill this size on one side.")
+        return Metric("liquidity", "Liquidity", value, "beyond view", Direction.NEUTRAL, 1.0, help=help_,
+                      detail="The feed shows 20 price levels a side, and they can't fill this size on one side — "
+                             "the real book may be deeper.")
     now = (buy + sell) / 2
     usual = ctx.liquidity_usual_bps
     if usual is None or usual <= 0:
@@ -353,7 +379,7 @@ def liquidity_row(ctx: SummaryContext) -> Metric:
                   detail=f"Average {now:.1f} bps vs {usual:.1f} usual ({ratio:.1f}×).")
 
 
-def trend_row(s: WindowSlice, move: PriceMove, range_ratio: float | None) -> Metric:
+def trend_row(s: WindowSlice, move: PriceMove) -> Metric:
     help_ = ("Efficiency = net move ÷ total distance travelled, measured over 30 equal steps. A random market "
              "scores about 0.18. Trend = efficiency ≥ 0.45 and a move of at least 1.5 normal moves — on a "
              "random market that happens under 5% of the time, so it's real: breakouts and pullback entries "
@@ -366,7 +392,10 @@ def trend_row(s: WindowSlice, move: PriceMove, range_ratio: float | None) -> Met
     hi, lo = move.high, move.low
     last = s.path[-1][1] if s.path else move.end_price
     pos = _clip((last - lo) / (hi - lo)) if hi > lo else 0.5
-    rr = range_ratio if range_ratio is not None else 1.0
+    # Judge the range against the same yardstick as the z-score (recent volatility): on a busy day the
+    # week-based ratio would call ordinary noise "chop".
+    rng_bps = (hi / lo - 1) * 10_000 if lo > 0 else 0.0
+    rr = rng_bps / (RANGE_PER_SIGMA * move.expected_bps) if move.expected_bps > 0 else 1.0
     if er >= TREND_ER and abs(move.z) >= TREND_Z:
         tag = "uptrend" if move.move_bps > 0 else "downtrend"
         lean = Direction.UP if move.move_bps > 0 else Direction.DOWN
@@ -377,7 +406,8 @@ def trend_row(s: WindowSlice, move: PriceMove, range_ratio: float | None) -> Met
     else:
         tag, lean = "two-way", Direction.NEUTRAL
     value = f"efficiency {er:.2f} · {pos:.0%} of range"
-    detail = (f"Random market ≈ {RANDOM_WALK_ER:.2f}. Range {fmt_px(lo)}–{fmt_px(hi)} ({rr:.1f}× usual); "
+    detail = (f"Random market ≈ {RANDOM_WALK_ER:.2f}. Range {fmt_px(lo)}–{fmt_px(hi)} ({rr:.1f}× a normal range "
+              f"for recent volatility); "
               f"price {fmt_px(last)} is {pos:.0%} of the way up it. Net move {move.z:+.1f} normal moves.")
     return Metric("trend", "Trend", value, tag, lean, _clip(er / 0.6), help=help_, detail=detail,
                   partial=s.coverage < 0.95)
@@ -454,10 +484,11 @@ def funding_row(s: WindowSlice, signals: dict[str, SignalResult]) -> Metric:
     payer = "longs" if hourly >= 0 else "shorts"
     value = f"{apr:+.1f}% APR · {cost:.3f}% per {s.label}"
     if pct is not None:
-        tag = "crowded longs" if pct >= 0.9 and apr > 0 else "crowded shorts" if pct <= 0.1 and apr < 0 else "normal"
+        tag = ("crowded longs" if pct >= 0.9 and apr >= CROWDED_LONG_APR
+               else "crowded shorts" if pct <= 0.1 and apr < 0 else "normal")
         bar, kind = pct, "position"
         detail = (f"{payer.capitalize()} pay: holding a position for {s.label} costs {cost:.3f}% of its size. "
-                  f"Higher than {pct:.0%} of the past week's hourly readings. "
+                  f"{_ordinal(pct)} percentile of the past week's hourly readings. "
                   f"Perp premium {f.metrics.get('premium_bps', 0):+.1f} bps over the oracle.")
     else:
         tag = "crowded longs" if apr >= 20 else "crowded shorts" if apr <= -20 else "normal"
@@ -487,7 +518,7 @@ def summarize(s: WindowSlice, move: PriceMove, signals: list[SignalResult], impa
         elif key == "liquidity":
             rows.append(liquidity_row(ctx))
         elif key == "trend":
-            rows.append(trend_row(s, move, range_ratio))
+            rows.append(trend_row(s, move))
         elif key == "vwap":
             rows.append(vwap_row(s, move))
         elif key == "positioning":

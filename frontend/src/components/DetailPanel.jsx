@@ -50,7 +50,7 @@ export default function DetailPanel({ ex, pinned, onUnpin }) {
           <div className="snapshot">
             <div className="snapshot-head">At a glance · {ex.window}</div>
             {ex.summary.map((m) => (
-              <div className="snap-row" key={m.key}>
+              <div className={`snap-row ${m.partial || ex.coverage < 0.95 ? "partial" : ""}`} key={m.key}>
                 <div className="snap-line">
                   <span className="snap-label" title={m.help}>{m.label}</span>
                   <span className="snap-value">{m.value}</span>

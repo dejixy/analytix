@@ -59,14 +59,15 @@ def test_efficiency_only_measures_the_part_of_the_window_with_data():
 def test_trend_tags_need_both_efficiency_and_a_real_move():
     line = tuple((T0 + i * S, 3000 + i * 0.05) for i in range(600))
     s = replace(make_slice(seconds=600), path=line)
-    up = trend_row(s, _move(bps=100, z=3.0, high=3030, low=3000), range_ratio=2.0)
+    up = trend_row(s, _move(bps=100, z=3.0, high=3030, low=3000))
     assert up.tag == "uptrend" and up.lean is Direction.UP and up.value.startswith("efficiency 1.00 · 100% of range")
-    weak = trend_row(s, _move(bps=3, z=0.5, high=3030, low=3000), range_ratio=2.0)
+    weak = trend_row(s, _move(bps=3, z=0.5, high=3030, low=3000))
     assert weak.tag == "two-way"                                    # efficient but tiny: not a trend
     zig = tuple((T0 + i * S, 3001.5 + 1.5 * math.sin(i / 4.3)) for i in range(600))   # swings, goes nowhere
-    chop = trend_row(replace(make_slice(seconds=600), path=zig), _move(high=3003, low=3000), range_ratio=1.4)
+    # chop: going nowhere while swinging more than a normal range for recent volatility (10 bps normal move)
+    chop = trend_row(replace(make_slice(seconds=600), path=zig), _move(high=3006, low=3000))
     assert chop.tag == "chop"
-    assert trend_row(replace(make_slice(seconds=600), path=zig), _move(high=3003, low=3000), 0.3).tag == "quiet range"
+    assert trend_row(replace(make_slice(seconds=600), path=zig), _move(high=3001, low=3000)).tag == "quiet range"
 
 
 # ── VWAP ───────────────────────────────────────────────────────────────────
@@ -87,7 +88,7 @@ def test_who_spots_one_twap_working_the_selling():
     orders += [_order(T0 + i * 7 * S + 3, TradeSide.SELL, 5_000, f"0xs{i}") for i in range(40)]
     orders += [_order(T0 + i * 9 * S + 5, TradeSide.BUY, 4_000, f"0xb{i}") for i in range(30)]
     m = who_row(replace(make_slice(seconds=600), orders=sorted(orders, key=lambda o: o.timestamp),
-                        twap_wallets=frozenset({"0xtwap"})))
+                        twaps={("0xtwap", TradeSide.SELL): (T0, 60_000.0)}))
     assert m.value == "1 TWAP = 75% of selling" and m.tag == "TWAP" and m.lean is Direction.DOWN
     assert "about every 30s" in m.detail and "0xtwap" in m.detail and "TWAP fills: 75%" in m.detail
 
@@ -119,7 +120,7 @@ def _flow(buy, sell, strength=0.8, activity=1.0):
 def test_flow_row_reports_net_dollars_and_what_the_flow_did():
     im = FlowImpact(-5e6, -20.0, 3.0, -0.15, "against", 4.0, "measured")
     m = flow_row(make_slice(seconds=600), {"volume_imbalance": _flow(1e6, 6e6)}, im)
-    assert m.value == "86% sell · net −$5.00M" and m.tag == "absorbed" and m.lean is Direction.DOWN
+    assert m.value == "86% sell · net −$5.00M" and m.tag == "against flow" and m.lean is Direction.DOWN
     assert "normally moves price -0.20%; it moved +0.03%" in m.detail
     assert flow_row(make_slice(), {"volume_imbalance": _flow(5e6, 1e6, activity=2.5)}, None).tag == "heavy"
 
@@ -181,3 +182,18 @@ def test_liquidity_row_compares_with_the_usual_cost():
     assert liquidity_row(SummaryContext(False, None, 1.0, 100e3, usual)).value == "live only"
     tr.update(_book(), T0 + 200 * S, sweep_threshold=600_000)                   # a new yardstick restarts it
     assert tr.size == 500e3 and tr.usual() is None
+
+
+def test_flow_absorbed_is_only_for_flow_that_barely_moved_price():
+    im = FlowImpact(-5e6, -20.0, -3.0, 0.15, "absorbed", 4.0, "measured")
+    assert flow_row(make_slice(seconds=600), {"volume_imbalance": _flow(1e6, 6e6)}, im).tag == "absorbed"
+
+
+def test_funding_at_the_floor_is_not_crowded():
+    from engine.positioning import percentile
+    week = tuple(sorted([0.0000125] * 140 + [0.000005] * 28))      # a quiet week: mostly exactly at the floor
+    pct = percentile(week, 0.0000125)
+    assert 0.55 < pct < 0.65                                        # mid-rank, not "100th percentile"
+    day = replace(make_slice(seconds=86400), label="24h")
+    m = funding_row(day, {"funding": _funding("x", pct=0.97, apr=10.95)})
+    assert m.tag == "normal"                                        # top of the week, but only at the floor rate

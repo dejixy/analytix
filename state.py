@@ -156,7 +156,7 @@ class MarketState:
         else:
             acc.sell += o.notional
         acc.fills += o.fills
-        if is_sweep(o, self.sweep_threshold, self.engine.twap_wallets):
+        if is_sweep(o, self.sweep_threshold, self.engine.twaps):
             if buy:
                 acc.sw_b += 1
                 acc.swn_b += o.notional
