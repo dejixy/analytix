@@ -287,3 +287,41 @@ def test_season_buckets_split_weekday_and_weekend_hours():
         sat_3am += 86_400_000
     assert season_bucket(sat_3am + 3 * 3_600_000) == 24 + 3
     assert season_bucket(sat_3am - 86_400_000 + 3 * 3_600_000) == 3      # Friday
+
+
+def _bracket_plan(m, side, stop, target, leverage=3, hours=72):
+    from engine.planner import bracket_distances
+    dist = liq_distance(100.0, side, leverage, maintenance_rate(40))
+    paths = simulate(m, hours, liq=(side, dist), bracket=bracket_distances(side, stop, target))
+    return make_plan(coin="X", side=side, margin=1_000, leverage=leverage, hours=hours, entry=100.0, paths=paths,
+                     model=m, max_leverage=40, entry_slip_bps=1, exit_slip_bps=1, funding_now=0.0, funding_avg=0.0,
+                     stop_pct=stop, target_pct=target)
+
+
+@pytest.mark.parametrize("side", [1, -1])
+def test_a_bracket_without_an_edge_wins_in_proportion_to_its_distances(market, side):
+    """No directional view: a 2% stop with a 4% target should be won about a third of the decided trades
+    (the gambler's-ruin odds), a 3%/3% bracket about half, and the average result is just minus the costs."""
+    _, _, m = market
+    b = _bracket_plan(m, side, 2.0, 4.0).bracket
+    assert b.p_target + b.p_stop + b.p_liq + b.p_time == pytest.approx(1.0)
+    decided = b.p_target / (b.p_target + b.p_stop)
+    assert 0.29 < decided < 0.37, decided
+    assert b.breakeven_win == pytest.approx(-b.pnl_stop / (b.pnl_target - b.pnl_stop))
+    assert b.breakeven_win > decided - 0.02                    # no edge: the odds don't beat break-even
+    costs = 2 * 0.00045 * 3_000 + 2 * 1e-4 * 3_000
+    assert abs(b.ev + costs) < 0.15 * 3_000 * 0.02             # within noise of "you pay the costs"
+    sym = _bracket_plan(m, side, 3.0, 3.0).bracket
+    assert 0.44 < sym.p_target / (sym.p_target + sym.p_stop) < 0.53     # a tie, minus the cautious wick rule
+    assert b.stop_price == pytest.approx(100.0 * (0.98 if side > 0 else 1.02))
+    assert b.target_price == pytest.approx(100.0 * (1.04 if side > 0 else 0.96))
+
+
+def test_a_stop_past_liquidation_never_fires_and_the_plan_says_so(market):
+    _, _, m = market
+    plan = _bracket_plan(m, 1, 30.0, 5.0, leverage=10, hours=168)     # liquidation ~9.8% below, stop at 30%
+    b = plan.bracket
+    assert b.stop_beyond_liq and b.p_stop == 0 and b.p_liq > 0 and b.pnl_stop is None
+    assert any("past the liquidation price" in n for n in plan.notes)
+    alone = _bracket_plan(m, 1, None, 5.0)                             # a target with no stop
+    assert alone.bracket.p_stop == 0 and alone.bracket.p_target > 0

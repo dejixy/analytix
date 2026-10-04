@@ -364,6 +364,14 @@ tr.wall td { color: var(--ink); }
 }
 .plan-chip.on { color: var(--ink); border-color: var(--up); background: var(--up-deep); }
 .plan-sum { font-size: 11px; }
+.plan-brk { display: flex; gap: 6px; }
+.plan-brk .plan-input.small { width: 50%; flex: 1; }
+.plan-brk input::placeholder { color: var(--muted); }
+.plan-brk-bar { display: flex; height: 10px; border-radius: 2px; overflow: hidden; margin: 2px 0 10px; background: var(--surface-2); }
+.plan-brk-bar .seg.target { background: var(--up); }
+.plan-brk-bar .seg.stop { background: var(--down); }
+.plan-brk-bar .seg.liq { background: #8f2d36; }
+.plan-brk-bar .seg.time { background: var(--neutral-mark); }
 .plan-busy { color: var(--muted); }
 .plan-error { margin: 10px 12px 0; padding: 8px 10px; border: 1px solid var(--warning); color: var(--warning); font-size: 11.5px; border-radius: 2px; }
 .plan-body { display: grid; }
@@ -373,7 +381,7 @@ tr.wall td { color: var(--ink); }
 .plan-risk { font-size: 28px; font-weight: 700; line-height: 1.1; }
 .plan-band { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 6px; border: 1px solid; border-radius: 2px; }
 .plan-risk.up, .plan-band.up { color: var(--up-bright); }
-.plan-risk.warn, .plan-band.warn { color: var(--warning); }
+.plan-risk.mid, .plan-band.mid { color: var(--ink-2); }
 .plan-risk.down, .plan-band.down { color: var(--down); }
 .plan-ladder { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; margin-top: 4px; }
 .plan-rung {
@@ -381,7 +389,7 @@ tr.wall td { color: var(--ink); }
   cursor: pointer; border-radius: 2px; font-size: 10.5px; color: var(--ink-2);
 }
 .plan-rung span:first-child { font-weight: 600; color: var(--ink); }
-.plan-rung.warn span:last-child { color: var(--warning); }
+.plan-rung.mid span:last-child { color: var(--ink-2); }
 .plan-rung.down span:last-child { color: var(--down); }
 .plan-rung.up span:last-child { color: var(--up-bright); }
 .plan-rung.on { border-color: var(--ink-2); background: var(--surface-3); }
@@ -393,7 +401,8 @@ tr.wall td { color: var(--ink); }
 .plan-table th:first-child, .plan-table td:first-child { text-align: left; }
 .plan-table td { text-align: right; padding: 3px 0; border-top: 1px solid var(--grid); }
 .plan-row.entry td { color: var(--muted); border-top: 1px dashed var(--axis); border-bottom: 1px dashed var(--axis); }
-.plan-row.liq td { color: var(--down); }
+.plan-table td.loss { color: var(--ink-2); }          /* this table is green, white and grey only */
+.plan-row.liq td { color: var(--muted); }
 .plan-note { margin: 8px 0 0; font-size: 11.5px; color: var(--ink-2); line-height: 1.55; }
 .plan-range { position: relative; height: 18px; margin: 4px 0; }
 .plan-range-zero { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--axis); }

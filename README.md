@@ -154,6 +154,7 @@ The **Plan a trade** button opens the position planner. Pick long or short, marg
 - **Where price trades before you exit**: round levels above and below with the chance price touches each, so you can see where a stop would be hit by noise and where a target is realistic.
 - **When you close**: P&L percentiles (5th … 95th) after fees, slippage on the live book and funding, and the chance of being in profit.
 - **Costs**: fees (0.045% in and out), slippage now, and funding expected over the hold (today's rate drifting back to the week's average).
+- **Stop and take-profit** (optional, % from entry): the chance each closes the trade first, or that neither does before you exit; what each is worth after costs; how long each typically takes; and the average result. If one candle reaches both, the loss is taken as first. A stop past the liquidation price is flagged, since liquidation would come first. With no directional view the average is roughly minus the costs whatever the bracket — it changes the shape of your results, not the average.
 
 How the odds are made — filtered historical simulation, the method risk desks use for VaR (`engine/planner.py`):
 
@@ -246,7 +247,7 @@ Thresholds live in `config.py`.
 | `GET /api/explain/{1m\|10m\|60m\|6h\|12h\|24h\|1w}?coin=BTC` | one window's explanation, drivers and signals |
 | `GET /api/events?coin=BTC&window=1m&limit=20` | significant moves, newest first |
 | `GET /api/explain_at?t=<ms>&window=10m&coin=BTC` | "what happened at 14:32?": the explanation for the window ending at any moment still in memory (the last hour for 1m–60m, the last week for 6h+). Falls back to a shorter timeframe if the requested one reaches back past the data. This is what clicking the chart calls. |
-| `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, and the model behind them. |
+| `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&stop=2&target=4&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, the model behind them, and (with `stop`/`target`, % from entry) the bracket's odds. |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.
