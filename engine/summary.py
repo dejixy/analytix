@@ -284,20 +284,19 @@ def who_row(s: WindowSlice) -> Metric:
         value = f"{n_sell} sellers · {n_buy} buyers"
         tag = "broad"
     cadence = rate = ""
-    if top_n >= 4 and (top_share >= 0.2 or top_is_twap):        # a pattern worth describing
+    plan = twaps.get((top_addr, dom)) if top_is_twap else None
+    if plan and len(plan) >= 3 and plan[2] > 0:                  # the classifier knows the TWAP's schedule
+        cadence = f", slicing about {fmt_usd(plan[1])} every {plan[2] / 1000:.0f}s"
+        rate = f" — about {fmt_usd(plan[1] * 3_600_000 / plan[2])} an hour"
+    elif top_n >= 4 and top_share >= 0.2:                        # a pattern worth describing
         ts = sorted(top_ts)
         gaps = sorted(b - a for a, b in zip(ts, ts[1:]))
         cadence = f", about every {gaps[len(gaps) // 2] / 1000:.0f}s"
         span_s = (ts[-1] - ts[0]) / 1000
-        if top_is_twap or span_s >= 300:                          # a pace needs a real stretch of time behind it
+        if span_s >= 300:                                         # a pace needs a real stretch of time behind it
             rate = f" — a pace of about {fmt_usd(top_usd / span_s * 3600)} an hour"
-        else:
+        elif span_s > 0:
             rate = f" within {span_s:.0f}s"
-    plan = twaps.get((top_addr, dom)) if top_is_twap else None
-    if plan and len(plan) >= 3 and plan[2] > 0:                  # the classifier knows the TWAP's schedule
-        per_hour = plan[1] * 3_600_000 / plan[2]
-        cadence = f", slicing about {fmt_usd(plan[1])} every {plan[2] / 1000:.0f}s"
-        rate = f" — about {fmt_usd(per_hour)} an hour"
     who = "buyer" if dom is TradeSide.BUY else "seller"
     detail = (f"Top {who} {_short(top_addr)}{' (TWAP)' if top_is_twap else ''}: {fmt_usd(top_usd)} in {top_n} "
               f"order{'s' if top_n != 1 else ''}{cadence}{rate}. {n_sell} wallets sold, {n_buy} bought. "

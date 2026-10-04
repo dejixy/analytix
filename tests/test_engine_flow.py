@@ -89,3 +89,37 @@ def test_a_partial_liquidation_needs_a_real_first_chunk_and_a_lone_fill_is_not_g
     small.observe(_eng(T0, "0xt", usd=4_000))
     small.observe(_eng(T0 + 30 * S, "0xt", usd=36_000))
     assert not small.view()[1]
+
+
+def test_two_twaps_from_one_wallet_are_not_called_liquidations_for_long():
+    ef = EngineFlow()
+    for i in range(6):                                           # $25K and $100K TWAPs interleaved, 15s apart
+        usd = 25_000 if i % 2 == 0 else 100_000
+        ef.observe(_eng(T0 + i * 15 * S, "0xtwo", usd))
+    assert not ef.view()[1]
+
+
+def test_a_liquidation_of_a_known_twap_does_not_drag_its_last_slice_in():
+    ef = EngineFlow()
+    for i in range(3):
+        ef.observe(_eng(T0 + i * 30 * S, "0xtwap", 30_000))
+    ef.observe(_eng(T0 + 70 * S, "0xtwap", 500_000))             # far beyond a slice: not excused…
+    assert (T0 + 60 * S, "0xtwap") not in ef.view()[1]           # …but the previous slice isn't "liquidated"
+
+
+def test_the_largest_legitimate_catch_up_is_still_a_slice():
+    ef = EngineFlow()
+    for i in range(3):
+        ef.observe(_eng(T0 + i * 30 * S, "0xtwap", 30_000))
+    twaps, _ = ef.view()
+    assert is_twap_slice(_eng(T0 + 90 * S, "0xtwap", 108_000), twaps)   # 1.2 × 3 catch-up
+
+
+def test_who_survives_a_wallet_whose_orders_share_one_timestamp():
+    from dataclasses import replace
+    from engine.summary import who_row
+    from tests.helpers import make_slice
+    orders = [_eng(T0, "0xw", 40_000)] + [_eng(T0, "0xw", 5_000, engine=False) for _ in range(3)]
+    orders += [_eng(T0 + i * S, f"0xo{i}", 1_000, side=BUY, engine=False) for i in range(6)]
+    m = who_row(replace(make_slice(seconds=60), orders=orders, twaps={("0xw", SELL): (T0, 40_000.0, 30_000)}))
+    assert m.value.startswith("1 TWAP =")

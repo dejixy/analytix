@@ -69,7 +69,7 @@ def is_twap_slice(o: AggressiveOrder, twaps: dict | None) -> bool:
     if not twaps or not o.engine or not o.taker:
         return False
     known = twaps.get((o.taker, o.side))
-    return known is not None and o.notional <= 3.5 * known[1]
+    return known is not None and o.notional <= 4.5 * known[1]    # ±20% randomised × 3× catch-up
 
 
 def is_sweep(o: AggressiveOrder, threshold: float, twaps: dict | None = None) -> bool:
