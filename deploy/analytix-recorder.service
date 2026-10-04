@@ -1,0 +1,17 @@
+# Always-on recorder for a Linux server (Ubuntu/Debian). Setup steps: README → "Recording for the study".
+[Unit]
+Description=Analytix recorder (Hyperliquid feed → data/recordings)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=analytix
+WorkingDirectory=/opt/analytix
+ExecStart=/opt/analytix/.venv/bin/python -m scripts.record
+Restart=always
+RestartSec=10
+# Stopping sends SIGTERM: the recorder flushes and exits cleanly.
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

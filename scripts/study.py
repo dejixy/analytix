@@ -13,9 +13,17 @@ signal fires, with the direction it implies. Then it looks up the price 1, 5,
 Only what the engine knew at the time is used: a cascade is logged when its OI
 check comes in, a level when it breaks, a wall when it goes.
 
-    python -m scripts.record --minutes 720                      # record half a day first
-    python -m scripts.study data/recordings/*.jsonl --coin ETH
-    python -m scripts.study data/recordings/*.jsonl --csv study.csv
+Card tags are scored too: every time a 1m/10m/60m card row shows a tag that leans
+one way ("absorbed", "TWAP", "stretched", "uptrend", "liq flush"…), it's logged in
+the direction the row leans. A positive avg means following the lean worked; a
+negative one means fading it did.
+
+    python -m scripts.record                                    # leave it running for days
+    python -m scripts.study                                     # every coin in data/recordings
+    python -m scripts.study data/recordings --coin ETH --csv study.csv
+
+Hourly files from one recorder run are stitched into one continuous session; a
+gap of more than 10 minutes starts a fresh one (no stitching across real gaps).
 
 Read it honestly: a few hours of one coin is a handful of independent samples.
 Promote a signal to "trust it" only when it holds across days and coins.
@@ -27,14 +35,17 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from config import COIN, REPLAY_FILE
-from ingestion.replay import replay_sync
+from config import RECORD_DIR, REPLAY_FILE
+from ingestion.parsers import coin_of
+from ingestion.replay import coins_in, read_recordings, recording_files
 from ingestion.synthetic import generate_session
+from models.signalModel import Direction
 from pipeline import Pipeline
 
 HORIZONS_S = (60, 300, 900, 3600)
 TICK_WINDOWS = ("1m", "10m", "60m")
 FLOW_MIN_STRENGTH = 0.25
+UNSCORED_TAGS = {"—", "partial", "measuring", "quiet"}
 
 
 @dataclass(slots=True)
@@ -44,6 +55,7 @@ class Occurrence:
     direction: int       # +1 the signal implies up, −1 down
     price: float
     forward: dict[int, float | None] = field(default_factory=dict)   # horizon s → signed move in bps
+    coin: str = ""
 
 
 class Collector:
@@ -72,12 +84,13 @@ class Collector:
         self._walls(now, st.mid)
 
     def _log(self, signal: str, now: int, direction: int, price: float, every_s: int) -> None:
-        last = self._last_seen.get(signal)
+        key = f"{signal}|{direction}"                # a flip to the other side is a new episode
+        last = self._last_seen.get(key)
         if last is not None and now - last < every_s * 1000:
-            self._last_seen[signal] = now          # still the same episode: extend it, don't count it again
+            self._last_seen[key] = now             # still the same episode: extend it, don't count it again
             return
-        self._last_seen[signal] = now
-        self.occurrences.append(Occurrence(signal, now, direction, price))
+        self._last_seen[key] = now
+        self.occurrences.append(Occurrence(signal, now, direction, price, coin=self.pipe.coin))
 
     def _windows(self, now: int, mid: float) -> None:
         latest = self.pipe.analyzer.latest
@@ -93,6 +106,10 @@ class Collector:
                 self._log(f"impact {im.verdict}: fade the flow ({w})", now, -1 if im.net_flow > 0 else 1, mid, every)
             elif im and im.verdict == "outsized":
                 self._log(f"impact outsized: follow the move ({w})", now, 1 if im.actual_bps > 0 else -1, mid, every)
+            for m in ex.summary:                                # the card's rows, in the direction each leans
+                if m.partial or m.tag in UNSCORED_TAGS or m.lean is Direction.NEUTRAL:
+                    continue
+                self._log(f"card {m.key}: {m.tag} ({w})", now, 1 if m.lean is Direction.UP else -1, mid, every)
         dirs = []
         for w in TICK_WINDOWS:
             ex = latest.get(w)
@@ -169,14 +186,49 @@ def summarize(occ: list[Occurrence], horizons_s: tuple[int, ...] = HORIZONS_S) -
     return rows
 
 
-def run(paths: list[str], coin: str) -> tuple[list[Occurrence], list[Row]]:
+@dataclass(slots=True)
+class Coverage:
+    sessions: int = 0
+    hours: float = 0.0
+    coins: tuple[str, ...] = ()
+
+
+def run(paths: list[str], coins: str | list[str] | None = None
+        ) -> tuple[list[Occurrence], list[Row], Coverage]:
+    """Replay every recording (stitched into continuous sessions) for each coin, and score every signal."""
+    files = recording_files(paths)
+    if isinstance(coins, str):
+        coins = [coins]
+    if not coins:
+        found: dict[str, None] = {}
+        for f in files:
+            for c in coins_in(f, max_lines=5_000):
+                found.setdefault(c)
+        coins = list(found)
     occ: list[Occurrence] = []
-    for path in paths:                       # each file is its own session: fresh state, no stitching across gaps
-        c = Collector(Pipeline(coin))
-        replay_sync(path, c.on_message)
-        attach_forward_returns(c.occurrences, c.mids)
-        occ += c.occurrences
-    return occ, summarize(occ)
+    cov = Coverage(coins=tuple(coins))
+    collectors: dict[str, Collector] = {}
+    first = last = None
+
+    def finish() -> None:
+        for c in collectors.values():
+            attach_forward_returns(c.occurrences, c.mids)
+            occ.extend(c.occurrences)
+        if first is not None:
+            cov.hours += (last - first) / 3_600_000
+
+    for fresh, recv, msg in read_recordings(files):
+        if fresh:                            # the recorder was off: fresh state, no stitching across the gap
+            finish()
+            collectors = {c: Collector(Pipeline(c)) for c in coins}
+            cov.sessions += 1
+            first = recv
+        last = recv
+        col = collectors.get(coin_of(msg) or "")
+        if col:
+            col.on_message(msg)
+    finish()
+    return occ, summarize(occ), cov
 
 
 def _label(h: int) -> str:
@@ -185,14 +237,21 @@ def _label(h: int) -> str:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("paths", nargs="*", default=[str(REPLAY_FILE)])
-    p.add_argument("--coin", default=COIN)
+    p.add_argument("paths", nargs="*", help="recordings or folders (default: data/recordings, else the demo session)")
+    p.add_argument("--coin", default=None, help="comma separated (default: every coin in the recordings)")
+    p.add_argument("--min-n", type=int, default=1, help="hide signals seen fewer times than this")
     p.add_argument("--csv", default=None, help="also write every occurrence with its forward moves")
     args = p.parse_args()
-    if args.paths == [str(REPLAY_FILE)] and not Path(REPLAY_FILE).exists():
+    paths = args.paths
+    if not paths:
+        paths = [str(RECORD_DIR)] if recording_files([RECORD_DIR]) else [str(REPLAY_FILE)]
+    if paths == [str(REPLAY_FILE)] and not Path(REPLAY_FILE).exists():
         generate_session(REPLAY_FILE)
+    coins = [c.strip() for c in args.coin.split(",") if c.strip()] if args.coin else None
 
-    occ, rows = run(args.paths, args.coin)
+    occ, rows, cov = run(paths, coins)
+    rows = [r for r in rows if r.n >= args.min_n]
+    print(f"{cov.sessions} session(s) · {cov.hours:.1f} hours · {', '.join(cov.coins) or 'no coins'}\n")
     head = f"{'signal':<52}{'n':>4}" + "".join(f"{'│ ' + _label(h):>9}{'hit':>6}{'avg':>7}{'t':>6}" for h in HORIZONS_S)
     print(head)
     print("─" * len(head))
@@ -207,14 +266,15 @@ def main() -> None:
                 line += f"{'│':>9}{s[1]:>6.0%}{s[2]:>+7.1f}{t}"
         print(line)
     print("\nhit = share that moved the implied way · avg = mean move that way, bps · t = avg ÷ standard error")
+    print("Card tags are scored in the direction the row leans: negative avg = fading it worked.")
     print("Under ~30 occurrences or |t| < 2, treat it as not yet known.")
 
     if args.csv:
         with open(args.csv, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow(["signal", "ts", "direction", "price"] + [f"fwd_{_label(h)}_bps" for h in HORIZONS_S])
+            w.writerow(["signal", "coin", "ts", "direction", "price"] + [f"fwd_{_label(h)}_bps" for h in HORIZONS_S])
             for o in occ:
-                w.writerow([o.signal, o.ts, o.direction, o.price] + [o.forward.get(h) for h in HORIZONS_S])
+                w.writerow([o.signal, o.coin, o.ts, o.direction, o.price] + [o.forward.get(h) for h in HORIZONS_S])
         print(f"\nwrote {len(occ)} occurrences to {args.csv}")
 
 

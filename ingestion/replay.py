@@ -5,25 +5,91 @@ Pacing uses the recorded receive times divided by `speed`. speed=inf replays
 as fast as possible (used by tests and scripts/replayReport.py).
 """
 import asyncio
+import gzip
 import json
 import logging
 import math
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from ingestion.feedStatus import FeedStatus
+from ingestion.parsers import coin_of
 
 log = logging.getLogger("analytix.replay")
 
 
+STITCH_GAP_MS = 600_000      # recordings closer than this are one continuous session
+
+
+def _open(path: Path):
+    return gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else path.open(encoding="utf-8")
+
+
 def read_session(path: str | Path) -> Iterator[tuple[int, dict[str, Any]]]:
-    with Path(path).open(encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            yield int(row["recv_ms"]), row["msg"]
+    """(recv_ms, raw message) for each line of a .jsonl or .jsonl.gz recording.
+
+    A line cut off by a crash or power loss (always the last one written) is skipped, not fatal."""
+    path = Path(path)
+    try:
+        with _open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    log.warning("skipping a damaged line in %s", path.name)
+                    continue
+                yield int(row["recv_ms"]), row["msg"]
+    except (EOFError, gzip.BadGzipFile):
+        log.warning("%s ends early (cut off mid-write); using what's there", path.name)
+
+
+def coins_in(path: str | Path, max_lines: int = 20_000) -> list[str]:
+    """Coins present in a recording, in order of first appearance."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    seen: dict[str, None] = {}
+    for i, (_, msg) in enumerate(read_session(path)):
+        if i >= max_lines:
+            break
+        coin = coin_of(msg) if isinstance(msg, dict) else None
+        if coin:
+            seen.setdefault(coin)
+    return list(seen)
+
+
+def recording_files(paths: Iterable[str | Path]) -> list[Path]:
+    """Expand folders to the recordings inside them (.jsonl and .jsonl.gz), oldest first."""
+    out: dict[Path, None] = {}
+    for p in map(Path, paths):
+        if p.is_dir():
+            for f in sorted([*p.glob("*.jsonl"), *p.glob("*.jsonl.gz")]):
+                out.setdefault(f)
+        elif p.exists():
+            out.setdefault(p)
+    return sorted(out, key=lambda f: (_first_recv(f) or 0, f.name))
+
+
+def _first_recv(path: Path) -> int | None:
+    return next((recv for recv, _ in read_session(path)), None)
+
+
+def read_recordings(paths: Iterable[str | Path], max_gap_ms: int = STITCH_GAP_MS
+                    ) -> Iterator[tuple[bool, int, dict[str, Any]]]:
+    """(starts_new_session, recv_ms, msg) across many recordings in time order.
+
+    Hourly files from one recorder run join into one continuous session, so the 60m window
+    doesn't restart its warm-up every hour. A silence longer than max_gap_ms — the recorder
+    was off — starts a fresh session."""
+    last: int | None = None
+    for path in recording_files(paths):
+        for recv, msg in read_session(path):
+            fresh = last is None or recv - last > max_gap_ms or recv < last - max_gap_ms
+            last = recv
+            yield fresh, recv, msg
 
 
 class ReplaySource:

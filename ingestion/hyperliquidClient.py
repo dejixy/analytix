@@ -17,7 +17,7 @@ import websockets
 from config import HL_WS_URL, PING_INTERVAL_S
 from ingestion.feedStatus import FeedStatus
 from ingestion.parsers import subscriptions
-from ingestion.recorder import JsonlRecorder
+from ingestion.recorder import HourlyRecorder, JsonlRecorder
 
 log = logging.getLogger("analytix.ingestion")
 
@@ -31,7 +31,7 @@ class HyperliquidClient:
         on_message: OnMessage,
         status: FeedStatus,
         url: str = HL_WS_URL,
-        recorder: JsonlRecorder | None = None,
+        recorder: JsonlRecorder | HourlyRecorder | None = None,
     ):
         self.coins = coins
         self.on_message = on_message

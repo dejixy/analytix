@@ -21,7 +21,7 @@ def test_summary_reports_hit_rate_mean_and_t():
 def test_study_runs_over_the_synthetic_session(tmp_path):
     from ingestion.synthetic import generate_session
     path = generate_session(tmp_path / "s.jsonl")
-    occ, rows = run([str(path)], "ETH")
+    occ, rows, cov = run([str(path)], "ETH")
     signals = {r.signal for r in rows}
     assert "cascade, likely liquidations: fade it" in signals     # the scripted long liquidation
     assert "level broke: follow the break" in signals             # which breaks the absorption-phase bids

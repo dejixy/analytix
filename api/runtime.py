@@ -26,7 +26,10 @@ from config import (
     BROADCAST_INTERVAL_S,
     COIN,
     COINS,
+    RECORD,
+    RECORD_DIR,
     RECORD_FILE,
+    RECORD_MIN_FREE_GB,
     REPLAY_FILE,
     REPLAY_LOOP,
     REPLAY_SPEED,
@@ -35,8 +38,8 @@ from ingestion.backfill import backfill
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
 from ingestion.parsers import coin_of
-from ingestion.recorder import JsonlRecorder
-from ingestion.replay import ReplaySource
+from ingestion.recorder import HourlyRecorder, JsonlRecorder
+from ingestion.replay import ReplaySource, coins_in
 from ingestion.synthetic import generate_session
 from pipeline import Pipeline
 from storage.barStore import BarStore
@@ -49,7 +52,7 @@ log = logging.getLogger("analytix.runtime")
 class Runtime:
     def __init__(self, mode: str, coins: list[str] | None = None, default_coin: str = COIN,
                  replay_file: Path = REPLAY_FILE, speed: float = REPLAY_SPEED, loop: bool = REPLAY_LOOP,
-                 record_file: str | None = RECORD_FILE, broadcast_interval_s: float = BROADCAST_INTERVAL_S,
+                 record_file: str | None = RECORD_FILE, record: bool = RECORD, broadcast_interval_s: float = BROADCAST_INTERVAL_S,
                  bars_db: Path | None = BARS_DB, backfill_enabled: bool = BACKFILL_ENABLED):
         if mode not in ("live", "replay"):
             raise ValueError(f"ANALYTIX_MODE must be 'live' or 'replay', got {mode!r}")
@@ -61,12 +64,13 @@ class Runtime:
         self.speed = speed
         self.loop = loop
         self.record_file = record_file
+        self.record = record
         self.broadcast_interval_s = broadcast_interval_s
         self.pipelines: dict[str, Pipeline] = {c: Pipeline(c) for c in self.coins}
         self.status = FeedStatus(mode=mode)
         self.clients: dict[WebSocket, str] = {}      # browser → the coin it's watching
         self._tasks: list[asyncio.Task] = []
-        self._recorder: JsonlRecorder | None = None
+        self._recorder: JsonlRecorder | HourlyRecorder | None = None
         # History persistence and backfill are live-only: a replay must never write into the live history.
         self.bars_db = bars_db if mode == "live" else None
         self.backfill_enabled = backfill_enabled and mode == "live"
@@ -99,6 +103,9 @@ class Runtime:
         else:
             if self.record_file:
                 self._recorder = JsonlRecorder(self.record_file)
+            elif self.record:
+                self._recorder = HourlyRecorder(RECORD_DIR, recording_prefix(self.coins), min_free_gb=RECORD_MIN_FREE_GB)
+                log.info("recording the live feed to %s", RECORD_DIR)
             self._load_history()
             source = HyperliquidClient(self.coins, self.on_message, self.status, recorder=self._recorder)
         self._tasks = [asyncio.create_task(source.run(), name="source"),
@@ -171,19 +178,9 @@ class Runtime:
         return "max" if math.isinf(self.speed) else f"{self.speed:g}×"
 
 
-def _coins_in(path: Path, max_lines: int = 20_000) -> list[str]:
-    """Coins present in a recording, in order of first appearance."""
-    if not path.exists():
-        return []
-    seen: dict[str, None] = {}
-    with path.open(encoding="utf-8") as fh:
-        for i, line in enumerate(fh):
-            if i >= max_lines:
-                break
-            try:
-                coin = coin_of(json.loads(line)["msg"])
-            except (ValueError, KeyError, TypeError):
-                continue
-            if coin:
-                seen.setdefault(coin)
-    return list(seen)
+def recording_prefix(coins: list[str]) -> str:
+    return "-".join(coins).lower()
+
+
+def _coins_in(path: Path) -> list[str]:
+    return coins_in(path)
