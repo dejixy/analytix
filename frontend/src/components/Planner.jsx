@@ -30,7 +30,7 @@ function oneIn(p) {
 }
 function riskBand(p) {
   if (p < 0.01) return ["low", "up"];
-  if (p < 0.05) return ["moderate", "warn"];
+  if (p < 0.05) return ["moderate", "mid"];
   if (p < 0.2) return ["high", "down"];
   return ["very high", "down"];
 }
@@ -287,7 +287,7 @@ export default function Planner({ coin, mid, explanations, onClose }) {
                       <tr key={`${t.kind}-${t.price}`} className={`plan-row ${t.kind}`}>
                         <td className="num">{fmtPrice(t.price)}{t.kind === "liq" ? " liq" : t.kind === "entry" ? " entry" : ""}</td>
                         <td className="num">{t.kind === "entry" ? "—" : pct(t.move_pct, Math.abs(t.move_pct) < 1 ? 2 : 1)}</td>
-                        <td className={`num ${t.pnl > 0 ? "up" : t.pnl < 0 ? "down" : ""}`}>{t.kind === "entry" ? "—" : usd(t.pnl, true)}</td>
+                        <td className={`num ${t.pnl > 0 ? "up" : t.pnl < 0 ? "loss" : ""}`}>{t.kind === "entry" ? "—" : usd(t.pnl, true)}</td>
                         <td className="num">{t.kind === "entry" ? "" : chance(t.prob)}</td>
                       </tr>
                     ))}
