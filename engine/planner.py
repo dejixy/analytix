@@ -348,12 +348,18 @@ class Paths:
     best_alive: np.ndarray | None   # best move in the position's favour before it would have been liquidated
     steps: int
     step_s: int
+    exit_kind: np.ndarray | None = None   # with a bracket: 0 still open at the end, 1 target, 2 stop, 3 liquidated
+    exit_step: np.ndarray | None = None   # the candle it closed in (steps if it ran to the end)
 
 
 def simulate(m: RiskModel, hours: float, v0: float | None = None, start_ms: int = 0, n_paths: int = N_PATHS,
-             seed: int = 11, liq: tuple[int, float] | None = None) -> Paths:
+             seed: int = 11, liq: tuple[int, float] | None = None,
+             bracket: tuple[float | None, float | None] | None = None) -> Paths:
     """Simulate the hold. `liq` = (side, log distance to liquidation) also tracks, per path, the best
-    price reached while the position was still open."""
+    price reached while the position was still open. `bracket` = (stop, target) log distances (needs `liq`'s
+    side; either may be None) also records which closes the trade first and when. If one candle reaches both
+    the stop (or liquidation) and the target, the loss is taken as first — the cautious reading of a wick.
+    The random draws are the same with or without a bracket, so its odds match the rest of the plan."""
     steps = max(1, math.ceil(hours * 3600 / m.step_s))
     n_paths = int(min(n_paths, max(2_000, MAX_PATH_STEPS // steps)))
     rng = np.random.default_rng(seed)
@@ -376,6 +382,14 @@ def simulate(m: RiskModel, hours: float, v0: float | None = None, start_ms: int 
         side, dist = liq
         best = np.zeros(n_paths)
         dead = np.zeros(n_paths, bool)
+    if bracket is not None:
+        if not track:
+            raise ValueError("a bracket needs the side: pass liq=(side, distance or inf)")
+        stop, target = bracket
+        if stop is not None and stop >= dist:
+            stop = None                                  # liquidation comes first: the stop never fires
+        kind = np.zeros(n_paths, np.int8)
+        exit_step = np.full(n_paths, steps, np.int32)
     for i in range(steps):
         k = rng.integers(0, len(zc), n_paths)
         sd = np.sqrt(var)
@@ -383,17 +397,27 @@ def simulate(m: RiskModel, hours: float, v0: float | None = None, start_ms: int 
         step_low = cum + zl[k] * s
         step_high = cum + zh[k] * s
         if track:
-            hit = (-step_low >= dist) if side > 0 else (step_high >= dist)
+            adv = -step_low if side > 0 else step_high
+            fav = step_high if side > 0 else -step_low
+            hit = adv >= dist
             alive = ~dead & ~hit                        # liquidated in this candle: its best price came too late
-            np.maximum(best, np.where(alive, step_high if side > 0 else -step_low, best), out=best)
+            np.maximum(best, np.where(alive, fav, best), out=best)
             dead |= hit
+            if bracket is not None:
+                open_ = kind == 0
+                stopped = open_ & (adv >= stop) if stop is not None else np.zeros(n_paths, bool)
+                liqd = open_ & hit & ~stopped
+                won = open_ & (fav >= target) & ~stopped & ~hit if target is not None else np.zeros(n_paths, bool)
+                kind[stopped], kind[liqd], kind[won] = 2, 3, 1
+                exit_step[stopped | liqd | won] = i + 1
         np.minimum(low, step_low, out=low)
         np.maximum(high, step_high, out=high)
         shock = zc[k] * sd                               # deseasonalised move drives the GARCH
         cum += zc[k] * s
         if m.alpha or m.beta:
             var = np.minimum(omega + alpha * shock * shock + beta * var, cap)
-    return Paths(cum, low, high, best if track else None, steps, m.step_s)
+    return Paths(cum, low, high, best if track else None, steps, m.step_s,
+                 kind if bracket is not None else None, exit_step if bracket is not None else None)
 
 
 # ── the plan ─────────────────────────────────────────────────────────────────
@@ -480,6 +504,64 @@ class Drawdown:
 
 
 @dataclass(frozen=True, slots=True)
+class Bracket:
+    """A stop and a take-profit: which closes the trade first, and what that's worth after costs."""
+    stop_pct: float | None           # distance from entry, % (positive)
+    stop_price: float | None
+    target_pct: float | None
+    target_price: float | None
+    stop_beyond_liq: bool            # the stop sits past liquidation, so it can never fire
+    p_target: float                  # target reached first
+    p_stop: float                    # stop reached first
+    p_liq: float                     # liquidated first (only without a working stop)
+    p_time: float                    # neither: closed at the end of the hold
+    pnl_target: float | None         # P&L when the target fills, after costs
+    pnl_stop: float | None
+    ev: float                        # average P&L over all paths, after costs
+    p_profit: float
+    breakeven_win: float | None      # share of target-vs-stop outcomes you need to win to break even
+    hours_target: float | None       # median time to the target when it's hit
+    hours_stop: float | None
+
+
+def bracket_distances(side: int, stop_pct: float | None, target_pct: float | None) -> tuple[float | None, float | None]:
+    """Percent distances from entry → positive log distances (a long's stop is below, a short's above)."""
+    def d(pct, toward):
+        if pct is None:
+            return None
+        move = toward * pct / 100
+        return abs(math.log1p(move)) if move > -1 else None
+    return d(stop_pct, -side), d(target_pct, side)
+
+
+def _bracket(paths: Paths, side: int, entry: float, notional: float, stop_pct, target_pct, liq_dist,
+             fees: float, entry_slip: float, exit_slip: float, funding: float, liquidated_pnl: float) -> Bracket:
+    stop_d, target_d = bracket_distances(side, stop_pct, target_pct)
+    beyond = stop_d is not None and liq_dist is not None and stop_d >= liq_dist
+    kind, step = paths.exit_kind, paths.exit_step
+    held = step / paths.steps                                       # share of the hold spent in the trade
+    costs = fees + entry_slip + exit_slip + funding * held          # funding only for the time held
+    pnl_t = _pnl(notional, side, side * target_d) if target_d is not None else 0.0
+    pnl_s = _pnl(notional, side, -side * stop_d) if stop_d is not None and not beyond else 0.0
+    pnl = np.select([kind == 1, kind == 2, kind == 3],
+                    [pnl_t - costs, pnl_s - costs, np.full(len(kind), liquidated_pnl)],
+                    _pnl(notional, side, paths.final) - costs)
+    full = fees + entry_slip + exit_slip
+    win = float(pnl_t - full - funding * 0.5) if target_d is not None else None     # funding: about half the hold
+    loss = float(pnl_s - full - funding * 0.5) if stop_d is not None and not beyond else None
+    be = (-loss / (win - loss)) if win is not None and loss is not None and win > 0 > loss else None
+    hours = lambda mask: float(np.median(step[mask]) * paths.step_s / 3600) if mask.any() else None
+    price = lambda d, toward: None if d is None else entry * math.exp(toward * d)
+    return Bracket(
+        stop_pct=stop_pct, stop_price=price(stop_d, -side), target_pct=target_pct, target_price=price(target_d, side),
+        stop_beyond_liq=beyond,
+        p_target=float(np.mean(kind == 1)), p_stop=float(np.mean(kind == 2)), p_liq=float(np.mean(kind == 3)),
+        p_time=float(np.mean(kind == 0)), pnl_target=win, pnl_stop=loss, ev=float(pnl.mean()),
+        p_profit=float(np.mean(pnl > 0)), breakeven_win=be,
+        hours_target=hours(kind == 1), hours_stop=hours(kind == 2))
+
+
+@dataclass(frozen=True, slots=True)
 class Plan:
     coin: str
     side: int
@@ -509,6 +591,7 @@ class Plan:
     vol_ratio: float                     # volatility expected now vs the coin's long-run average
     paths_n: int
     notes: tuple[str, ...] = field(default_factory=tuple)
+    bracket: Bracket | None = None       # with a stop and/or target
 
 
 def _pnl(notional: float, side: int, log_move: np.ndarray | float):
@@ -529,7 +612,8 @@ def _safe_leverage(paths, side, entry, maint, max_lev, threshold, adverse) -> fl
 def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: float, entry: float,
               paths: Paths, model: RiskModel, max_leverage: float | None, entry_slip_bps: float | None,
               exit_slip_bps: float | None, funding_now: float | None, funding_avg: float | None,
-              vol_ratio: float = 1.0, book_seen: bool = True) -> Plan:
+              vol_ratio: float = 1.0, book_seen: bool = True, stop_pct: float | None = None,
+              target_pct: float | None = None) -> Plan:
     known = max_leverage is not None
     max_lev = float(max_leverage or DEFAULT_MAX_LEVERAGE)
     maint = maintenance_rate(max_lev)
@@ -612,6 +696,13 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
         notes.append(f"Funding of about ${funding:,.0f} comes out of your margin over this hold, which moves "
                      f"liquidation a little closer than shown.")
 
+    bracket = None
+    if (stop_pct is not None or target_pct is not None) and paths.exit_kind is not None:
+        bracket = _bracket(paths, side, entry, notional, stop_pct, target_pct, liq_dist, fees, entry_slip,
+                           slippage - entry_slip, funding, liquidated_pnl)
+        if bracket.stop_beyond_liq:
+            notes.append("Your stop is past the liquidation price, so liquidation would close the trade first.")
+
     return Plan(
         coin=coin, side=side, margin=margin, leverage=leverage, notional=notional, hours=hours, entry=entry,
         max_leverage=max_lev, max_leverage_known=known, maint=maint, liq_price=liq,
@@ -633,4 +724,5 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
         vol_ratio=vol_ratio,
         paths_n=len(paths.final),
         notes=tuple(notes),
+        bracket=bracket,
     )

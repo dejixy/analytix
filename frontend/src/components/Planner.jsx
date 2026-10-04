@@ -54,6 +54,59 @@ function Dd({ d }) {
   );
 }
 
+/** Stop and target: which closes the trade first, what each is worth, and whether the odds beat break-even. */
+function BracketSection({ b, side, hl }) {
+  const parts = [
+    ["target", b.p_target, "Target first"],
+    ["stop", b.p_stop, "Stop first"],
+    ["liq", b.p_liq, "Liquidated"],
+    ["time", b.p_time, `Neither by ${hl}`],
+  ].filter(([, v]) => v > 0);
+  const decided = b.p_target + b.p_stop;
+  const winShare = decided > 0 ? b.p_target / decided : null;
+  return (
+    <section className="plan-sec">
+      <h3>With your stop and target</h3>
+      <div className="plan-brk-bar" aria-hidden="true">
+        {parts.map(([k, v]) => <div key={k} className={`seg ${k}`} style={{ width: `${v * 100}%` }} />)}
+      </div>
+      <dl className="plan-costs num">
+        {b.target_price != null && (
+          <><dt>Target first <span className="muted">at {fmtPrice(b.target_price)}{b.hours_target != null ? `, typically within ${fmtHours(b.hours_target)}` : ""}</span></dt>
+            <dd><b>{chance(b.p_target)}</b> <span className="up">{usd(b.pnl_target, true)}</span></dd></>
+        )}
+        {b.stop_price != null && !b.stop_beyond_liq && (
+          <><dt>Stop first <span className="muted">at {fmtPrice(b.stop_price)}{b.hours_stop != null ? `, typically within ${fmtHours(b.hours_stop)}` : ""}</span></dt>
+            <dd><b>{chance(b.p_stop)}</b> <span className="down">{usd(b.pnl_stop, true)}</span></dd></>
+        )}
+        {b.p_liq > 0 && (<><dt>Liquidated first</dt><dd><b>{chance(b.p_liq)}</b></dd></>)}
+        <dt>Neither — closed at the end of {hl}</dt><dd><b>{chance(b.p_time)}</b></dd>
+        <dt><b>Average result</b> <span className="muted">after costs</span></dt>
+        <dd><b className={b.ev >= 0 ? "up" : "down"}>{usd(b.ev, true)}</b></dd>
+      </dl>
+      <p className="plan-note">
+        In profit {Math.round(b.p_profit * 100)}% of the time. With no view on direction, the average result is roughly
+        minus your costs whatever the stop and target: they change the shape of your results (many small losses and
+        fewer larger wins, or the reverse), not the average. An edge has to come from your read of the market.
+        {b.breakeven_win != null && winShare != null && b.p_time < 0.25 && (
+          <>
+            {" "}To break even, the target has to come first in <b>{Math.round(b.breakeven_win * 100)}%</b> of trades;
+            with no edge it does in about <b>{Math.round(winShare * 100)}%</b>.
+          </>
+        )}
+        {b.p_time >= 0.25 && (
+          <>
+            {" "}{Math.round(b.p_time * 100)}% of trades reach neither before your {hl} exit, so judge this by the average
+            result rather than the win rate.
+          </>
+        )}
+      </p>
+    </section>
+  );
+}
+
+const fmtHours = (h) => (h < 1 ? `${Math.max(1, Math.round(h * 60))}m` : h < 48 ? `${h.toFixed(h < 10 ? 1 : 0)}h` : `${(h / 24).toFixed(1)}d`);
+
 function RangeBar({ outcome, margin }) {
   // A box plot of P&L at exit: whiskers 5th–95th, box 25th–75th, tick at the median. Scale: ±max(|p5|,|p95|, margin/10).
   const lim = Math.max(Math.abs(outcome.p5), Math.abs(outcome.p95), margin / 10);
@@ -73,6 +126,8 @@ export default function Planner({ coin, mid, explanations, onClose }) {
   const [margin, setMargin] = useState(1000);
   const [leverage, setLeverage] = useState(5);
   const [hours, setHours] = useState(24);
+  const [stop, setStop] = useState("");     // % from entry, against you ("" = none)
+  const [target, setTarget] = useState(""); // % from entry, your way
   const [plan, setPlan] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -91,6 +146,8 @@ export default function Planner({ coin, mid, explanations, onClose }) {
       setBusy(true);
       try {
         const q = new URLSearchParams({ coin, side, margin: String(margin), leverage: String(leverage), hours: String(hours) });
+        if (Number(stop) > 0) q.set("stop", String(Number(stop)));
+        if (Number(target) > 0) q.set("target", String(Number(target)));
         const r = await fetch(`/api/plan?${q}`);
         const d = await r.json();
         if (id !== seq.current) return;
@@ -112,7 +169,7 @@ export default function Planner({ coin, mid, explanations, onClose }) {
       clearTimeout(t);
       clearInterval(every);
     };
-  }, [coin, side, margin, leverage, hours]);
+  }, [coin, side, margin, leverage, hours, stop, target]);
 
   const maxLev = plan?.max_leverage || 50;
   const p = plan && plan.coin === coin ? plan : null;
@@ -161,6 +218,17 @@ export default function Planner({ coin, mid, explanations, onClose }) {
               ))}
             </div>
           </div>
+          <div className="plan-field">
+            <span title="Optional stop-loss and take-profit, in % from entry">Stop/TP</span>
+            <span className="plan-brk">
+              <span className="plan-input small" title="Stop-loss: how far against you, in % from entry (optional)">
+                −<input type="number" min="0" step="0.5" placeholder="stop" value={stop} onChange={(e) => setStop(e.target.value)} />%
+              </span>
+              <span className="plan-input small" title="Take-profit: how far your way, in % from entry (optional)">
+                +<input type="number" min="0" step="0.5" placeholder="target" value={target} onChange={(e) => setTarget(e.target.value)} />%
+              </span>
+            </span>
+          </div>
           <div className="plan-sum muted">
             {usd(margin * leverage)} position · market entry ≈ {fmtPrice(mid)}
             {busy && <span className="plan-busy"> · updating…</span>}
@@ -203,6 +271,8 @@ export default function Planner({ coin, mid, explanations, onClose }) {
                 {p.safe_leverage["1"] >= p.max_leverage ? " (any leverage Hyperliquid allows)" : ""}.
               </div>
             </section>
+
+            {p.bracket && <BracketSection b={p.bracket} side={p.side} hl={hl} />}
 
             <section className="plan-sec">
               <h3>Before you exit · where price trades</h3>

@@ -364,6 +364,14 @@ tr.wall td { color: var(--ink); }
 }
 .plan-chip.on { color: var(--ink); border-color: var(--up); background: var(--up-deep); }
 .plan-sum { font-size: 11px; }
+.plan-brk { display: flex; gap: 6px; }
+.plan-brk .plan-input.small { width: 50%; flex: 1; }
+.plan-brk input::placeholder { color: var(--muted); }
+.plan-brk-bar { display: flex; height: 10px; border-radius: 2px; overflow: hidden; margin: 2px 0 10px; background: var(--surface-2); }
+.plan-brk-bar .seg.target { background: var(--up); }
+.plan-brk-bar .seg.stop { background: var(--down); }
+.plan-brk-bar .seg.liq { background: #8f2d36; }
+.plan-brk-bar .seg.time { background: var(--neutral-mark); }
 .plan-busy { color: var(--muted); }
 .plan-error { margin: 10px 12px 0; padding: 8px 10px; border: 1px solid var(--warning); color: var(--warning); font-size: 11.5px; border-radius: 2px; }
 .plan-body { display: grid; }

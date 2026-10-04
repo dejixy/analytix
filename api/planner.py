@@ -21,6 +21,7 @@ from config import DEFAULT_SIGMA_1S_BPS
 from engine.planner import (
     DEFAULT_MAX_LEVERAGE,
     SHORT_HOLD_H,
+    bracket_distances,
     Paths,
     Plan,
     RiskModel,
@@ -112,22 +113,25 @@ class PlannerService:
         return rough_model(base.sigma_1s_bps if base else DEFAULT_SIGMA_1S_BPS, 300, pipe.state.now_ms)
 
     async def paths(self, coin: str, model: RiskModel, hours: float, v0: float, start_ms: int,
-                    side: int, dist: float | None) -> Paths:
+                    side: int, dist: float | None, bracket: tuple[float | None, float | None] | None = None) -> Paths:
         """Paths for this model, starting volatility, time of day, side and liquidation distance. Kept until
         any of those move: the volatility by ~1%, the clock by one candle."""
         key = (coin, id(model), hours, round(math.log(v0), 2), start_ms // (model.step_s * 1000), side,
-               None if dist is None else round(dist, 5))
+               None if dist is None else round(dist, 5),
+               None if bracket is None else tuple(None if x is None else round(x, 6) for x in bracket))
         hit = self._paths.get(key)
         if hit is not None:
             return hit
-        p = await asyncio.to_thread(simulate, model, hours, v0, start_ms, liq=None if dist is None else (side, dist))
+        liq = (side, math.inf if dist is None else dist) if bracket is not None else (None if dist is None else (side, dist))
+        p = await asyncio.to_thread(simulate, model, hours, v0, start_ms, liq=liq, bracket=bracket)
         if len(self._paths) > 64:
             self._paths.clear()
         self._paths[key] = p
         return p
 
     # ── the plan ───────────────────────────────────────────────────────────
-    async def plan(self, coin: str, side: int, margin: float, leverage: float, hours: float) -> Plan:
+    async def plan(self, coin: str, side: int, margin: float, leverage: float, hours: float,
+                   stop_pct: float | None = None, target_pct: float | None = None) -> Plan:
         pipe = self.rt.pipeline(coin)
         if pipe.state.mid is None:
             raise PlanError("No price yet — the feed is still connecting.", 503)
@@ -157,12 +161,13 @@ class PlannerService:
         hist = pipe.analyzer.positioning.funding
         funding_avg = sum(hist) / len(hist) if hist else None
 
-        paths = await self.paths(coin, model, hours, v0, now_ms, side, liq_distance(mid, side, leverage, maint))
+        bracket = bracket_distances(side, stop_pct, target_pct) if stop_pct or target_pct else None
+        paths = await self.paths(coin, model, hours, v0, now_ms, side, liq_distance(mid, side, leverage, maint), bracket)
         return await asyncio.to_thread(
             make_plan, coin=coin, side=side, margin=margin, leverage=leverage, hours=hours, entry=mid,
             paths=paths, model=model, max_leverage=max_lev, entry_slip_bps=entry_slip, exit_slip_bps=exit_slip,
             funding_now=funding_now, funding_avg=funding_avg, vol_ratio=model.vol_ratio(v0, now_ms),
-            book_seen=book is not None)
+            book_seen=book is not None, stop_pct=stop_pct, target_pct=target_pct)
 
     def _lock(self, key) -> asyncio.Lock:
         return self._locks.setdefault(key, asyncio.Lock())
