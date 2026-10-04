@@ -440,3 +440,23 @@ tr.wall td { color: var(--ink); }
   .plan-rung { font-size: 9.5px; }
   .planner { width: 100%; border-left: 0; }
 }
+
+/* planner: summary, margin type, cone, history check */
+.plan-summary { margin: 0; padding: 12px 12px 0; font-size: 12.5px; line-height: 1.55; color: var(--ink); }
+.plan-input.acct { width: auto; flex: 1; min-width: 120px; }
+.plan-cone svg { width: 100%; height: auto; display: block; cursor: crosshair; }
+.cone-outer { fill: rgba(162, 178, 171, 0.10); }
+.cone-inner { fill: rgba(162, 178, 171, 0.20); }
+.cone-median { fill: none; stroke: var(--ink-2); stroke-width: 1.5; }
+.cone-line line { stroke-width: 1; stroke-dasharray: 3 3; }
+.cone-line text { font-size: 10px; fill: var(--ink-2); }
+.cone-line.entry line { stroke: var(--muted); }
+.cone-line.target line { stroke: var(--up); }
+.cone-line.stop line { stroke: var(--ink-2); }
+.cone-line.liq line { stroke: var(--down); }
+.cone-axis { font-size: 10px; fill: var(--muted); }
+.cone-cross { stroke: var(--axis); stroke-width: 1; }
+.plan-cone-tip { font-size: 11px; color: var(--ink-2); min-height: 17px; margin-top: 2px; }
+.plan-calib { margin-top: 6px; }
+.plan-calib td, .plan-calib th { text-align: right; }
+.plan-calib td:first-child, .plan-calib th:first-child { text-align: left; }

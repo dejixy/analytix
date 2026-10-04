@@ -70,17 +70,18 @@ async def explain_at(request: Request, t: int, window: str = "1m", coin: str | N
 async def plan(request: Request, side: str = "long", margin: float = Query(1_000, gt=0, le=1e8),
                leverage: float = Query(5, ge=1, le=100), hours: float = Query(24, ge=0.25, le=168),
                stop: float | None = Query(None, gt=0, lt=100), target: float | None = Query(None, gt=0, le=1000),
-               coin: str | None = None):
-    """What to expect from a position before taking it: liquidation odds, path, exit spread, costs."""
+               account: float | None = Query(None, gt=0, le=1e9), coin: str | None = None):
+    """What to expect from a position before taking it: liquidation odds, path, exit spread, costs.
+    `account` switches to cross margin with that account balance (≥ margin)."""
     if side not in ("long", "short"):
         raise HTTPException(400, "side must be 'long' or 'short'")
     pipe = _pipe(request, coin)
     try:
-        p = await _rt(request).planner.plan(pipe.coin, 1 if side == "long" else -1, margin, leverage, hours,
-                                            stop, target)
+        p, pending = await _rt(request).planner.plan(pipe.coin, 1 if side == "long" else -1, margin, leverage,
+                                                     hours, stop, target, account)
     except PlanError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
-    return plan_dict(p)
+    return {**plan_dict(p), "calibration_pending": pending}
 
 
 @router.get("/events")

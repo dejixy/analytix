@@ -79,6 +79,11 @@ def test_plan_endpoint_answers_with_the_rough_model_in_a_short_replay(client):
     assert p["liq_price"] < p["entry"] and 0 <= p["liq_prob"] <= 1
     assert p["costs"]["fees"] == 4.5 and set(p["outcome"]) == {"p5", "p25", "p50", "p75", "p95"}
     assert any(n.startswith("Rough estimate") for n in p["notes"])
+    assert p["calibration_pending"] is False and p["calibration"] is None      # no history to check in a replay
+    assert len(p["fan"]) >= 2 and set(p["tail"]) == {"p1", "es5", "p_lose_half"} and p["margin_mode"] == "isolated"
+    cross = client.get("/api/plan", params={"margin": 1000, "leverage": 5, "account": 3000}).json()
+    assert cross["margin_mode"] == "cross" and cross["liq_price"] < p["liq_price"]
+    assert client.get("/api/plan", params={"margin": 1000, "account": 500}).status_code == 400
     short = client.get("/api/plan", params={"side": "short", "hours": 1}).json()
     assert short["liq_price"] > short["entry"] and short["hours"] == 1
     assert client.get("/api/plan", params={"side": "sideways"}).status_code == 400

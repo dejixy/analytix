@@ -154,6 +154,11 @@ The **Plan a trade** button opens the position planner. Pick long or short, marg
 - **Where price trades before you exit**: round levels above and below with the chance price touches each, so you can see where a stop would be hit by noise and where a target is realistic.
 - **When you close**: P&L percentiles (5th … 95th) after fees, slippage on the live book and funding, and the chance of being in profit.
 - **Costs**: fees (0.045% in and out), slippage now, and funding expected over the hold (today's rate drifting back to the week's average).
+- **Plain summary first**: one sentence on what the trade means ("5× long for 24h: liquidation is very unlikely. Expect about ±2.8% of movement, and to be 1.6% against you at some point (−$82). Costs $6."), and the leverage to drop to if the risk is over 1%.
+- **Isolated or cross margin.** In cross (Hyperliquid's default), your whole account balance backs the position: liquidation is where the account runs out, and a liquidation takes the account.
+- **The price cone**: where half and 90% of simulated paths are at each moment of the hold, with entry, stop, target and liquidation drawn on it; hover for the numbers and the chance of liquidation by then.
+- **Bad cases**: the worst 1-in-100 result, the average of the worst 5% (expected shortfall), and the chance of losing half your margin or more.
+- **Slippage beyond the visible book**: sizes the 20 visible levels can't fill are costed with the square-root impact law (≈ 0.7 × daily volatility × √(size ÷ 24h volume)) instead of being left out.
 - **Stop and take-profit** (optional, % from entry): the chance each closes the trade first, or that neither does before you exit; what each is worth after costs; how long each typically takes; and the average result. If one candle reaches both, the loss is taken as first. A stop past the liquidation price is flagged, since liquidation would come first. With no directional view the average is roughly minus the costs whatever the bracket — it changes the shape of your results, not the average.
 
 How the odds are made — filtered historical simulation, the method risk desks use for VaR (`engine/planner.py`):
@@ -163,6 +168,8 @@ How the odds are made — filtered historical simulation, the method risk desks 
 3. A GARCH(1,1) gives each candle's expected volatility; dividing by it leaves the coin's shape of surprise (fat tails, lopsided wicks) without the regime. How long volatility lingers is uncertain, so each path draws its own GARCH parameters from how well they fit.
 4. Volatility is brought up to the moment through every candle since the fit and the move so far, so a crash ten minutes ago counts.
 5. 20,000 paths draw random historical candles scaled to the volatility expected at each step; each path's worst point, best point and exit are read off.
+
+**Checked on the coin's own history, every time.** For each coin and hold, the planner refits itself on the older 60% of the candles and walks through the newer 40% it never saw: at up to 200 past moments it predicts the chance of price reaching levels ½ to 3 typical moves away before the hold ends, then checks the candles. The drawer shows what it said against what happened ("it said 5.5%, it happened 4.7%"), how often its 90% range held, and the same check for a plain bell-curve model. If the model is wrong for a coin, you see it there.
 
 No direction is assumed: historical drift is removed, so it sizes the room a trade needs, not which way price goes. Checked in `tests/test_planner.py` against brute-force simulation of known processes (touch odds within ~15% at 4h–3d; a 1-week 1-in-100 tail within 3×, the limit of what 200 days of data can tell). Assumptions shown with every plan: isolated margin; liquidation costs the whole margin plus entry costs; candle wicks are last-trade prices while liquidation uses the mark price, so wicks slightly overstate the risk. In replay mode, or before the candles load, it falls back to a rough fat-tailed walk and says so.
 
@@ -247,7 +254,7 @@ Thresholds live in `config.py`.
 | `GET /api/explain/{1m\|10m\|60m\|6h\|12h\|24h\|1w}?coin=BTC` | one window's explanation, drivers and signals |
 | `GET /api/events?coin=BTC&window=1m&limit=20` | significant moves, newest first |
 | `GET /api/explain_at?t=<ms>&window=10m&coin=BTC` | "what happened at 14:32?": the explanation for the window ending at any moment still in memory (the last hour for 1m–60m, the last week for 6h+). Falls back to a shorter timeframe if the requested one reaches back past the data. This is what clicking the chart calls. |
-| `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&stop=2&target=4&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, the model behind them, and (with `stop`/`target`, % from entry) the bracket's odds. |
+| `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&stop=2&target=4&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, the model behind them, and (with `stop`/`target`, % from entry) the bracket's odds. Add `account=3000` for cross margin. The first answer for a coin and hold starts the history check (`calibration_pending: true`); it's included a moment later. |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.

@@ -63,6 +63,9 @@ TOUCH_LEVELS_PCT = (0.25, 0.5, 1, 2, 3, 5, 7.5, 10, 15, 20, 30, 50)
 TOUCH_TARGETS = (0.6, 0.35, 0.15, 0.05)
 CURVE_LEVERAGES = (1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0)
 DAY_MS = 86_400_000
+FAN_POINTS = 48                  # the price cone is sampled at up to this many moments over the hold
+FAN_Q = (5, 25, 50, 75, 95)
+IMPACT_Y = 0.7                   # square-root impact: cost ≈ Y·σ_day·√(size / day's volume); Y ≈ 0.5–1 in studies
 MAX_NOWCAST_STEPS = 5_000
 
 
@@ -350,6 +353,8 @@ class Paths:
     step_s: int
     exit_kind: np.ndarray | None = None   # with a bracket: 0 still open at the end, 1 target, 2 stop, 3 liquidated
     exit_step: np.ndarray | None = None   # the candle it closed in (steps if it ran to the end)
+    fan: np.ndarray | None = None         # (k, 6): hours, then the 5/25/50/75/95th percentile log move by then
+    liq_curve: np.ndarray | None = None   # (k, 2): hours, share of paths liquidated by then
 
 
 def simulate(m: RiskModel, hours: float, v0: float | None = None, start_ms: int = 0, n_paths: int = N_PATHS,
@@ -390,6 +395,9 @@ def simulate(m: RiskModel, hours: float, v0: float | None = None, start_ms: int 
             stop = None                                  # liquidation comes first: the stop never fires
         kind = np.zeros(n_paths, np.int8)
         exit_step = np.full(n_paths, steps, np.int32)
+    fan_every = max(1, math.ceil(steps / FAN_POINTS))
+    fan = [(0.0,) + (0.0,) * len(FAN_Q)]
+    liq_curve = [(0.0, 0.0)]
     for i in range(steps):
         k = rng.integers(0, len(zc), n_paths)
         sd = np.sqrt(var)
@@ -416,8 +424,14 @@ def simulate(m: RiskModel, hours: float, v0: float | None = None, start_ms: int 
         cum += zc[k] * s
         if m.alpha or m.beta:
             var = np.minimum(omega + alpha * shock * shock + beta * var, cap)
+        if (i + 1) % fan_every == 0 or i == steps - 1:
+            h = (i + 1) * m.step_s / 3600
+            fan.append((h, *np.percentile(cum, FAN_Q).tolist()))
+            if track:
+                liq_curve.append((h, float(dead.mean())))
     return Paths(cum, low, high, best if track else None, steps, m.step_s,
-                 kind if bracket is not None else None, exit_step if bracket is not None else None)
+                 kind if bracket is not None else None, exit_step if bracket is not None else None,
+                 np.array(fan), np.array(liq_curve) if track else None)
 
 
 # ── the plan ─────────────────────────────────────────────────────────────────
@@ -426,17 +440,18 @@ def maintenance_rate(max_leverage: float) -> float:
     return 1 / (2 * max_leverage)
 
 
-def liquidation_price(entry: float, side: int, leverage: float, maint: float) -> float | None:
-    """Isolated margin. Hyperliquid's liq_price = price − side·margin_available/size/(1 − l·side) with
-    margin_available = margin − maintenance at entry, which simplifies to entry·(1 − side/L)/(1 − side·m).
-    None for a 1× long, which can't be liquidated."""
-    p = entry * (1 - side / leverage) / (1 - side * maint)
+def liquidation_price(entry: float, side: int, leverage: float, maint: float, ratio: float = 1.0) -> float | None:
+    """Hyperliquid's liq_price = price − side·margin_available/size/(1 − l·side), margin_available = the equity
+    backing the position − maintenance at entry. That simplifies to entry·(1 − side·c)/(1 − side·m), where c is
+    equity per unit of notional: 1/L for isolated margin; account balance ÷ notional for cross margin (one
+    position), i.e. ratio/L with ratio = account ÷ margin. None when it can't be liquidated (e.g. a 1× long)."""
+    p = entry * (1 - side * ratio / leverage) / (1 - side * maint)
     return p if p > 0 else None
 
 
-def liq_distance(entry: float, side: int, leverage: float, maint: float) -> float | None:
+def liq_distance(entry: float, side: int, leverage: float, maint: float, ratio: float = 1.0) -> float | None:
     """Log distance from entry to liquidation, positive; None if it can't be liquidated."""
-    liq = liquidation_price(entry, side, leverage, maint)
+    liq = liquidation_price(entry, side, leverage, maint, ratio)
     if liq is None:
         return None
     return math.log(entry / liq) if side > 0 else math.log(liq / entry)
@@ -452,8 +467,8 @@ def _favourable(paths: Paths, side: int) -> np.ndarray:
 
 
 def liq_probability(paths: Paths, side: int, entry: float, leverage: float, maint: float,
-                    adverse: np.ndarray | None = None) -> float:
-    dist = liq_distance(entry, side, leverage, maint)
+                    adverse: np.ndarray | None = None, ratio: float = 1.0) -> float:
+    dist = liq_distance(entry, side, leverage, maint, ratio)
     if dist is None:
         return 0.0
     adverse = _adverse(paths, side) if adverse is None else adverse
@@ -468,6 +483,7 @@ class Costs:
     funding: float               # positive = you pay
     funding_now_apr: float | None
     funding_avg_apr: float | None
+    slippage_source: str = "book"    # "book": walked the live book · "model": square-root impact beyond it
 
     @property
     def total(self) -> float:
@@ -592,17 +608,32 @@ class Plan:
     paths_n: int
     notes: tuple[str, ...] = field(default_factory=tuple)
     bracket: Bracket | None = None       # with a stop and/or target
+    margin_mode: str = "isolated"        # "isolated" | "cross"
+    equity: float = 0.0                  # what backs the position: the margin, or the cross account balance
+    tail: dict[str, float] = field(default_factory=dict)      # p1, es5 (mean of the worst 5%), p_lose_half
+    fan: tuple[tuple[float, ...], ...] = ()                   # hours, then 5/25/50/75/95th percentile price
+    liq_curve: tuple[tuple[float, float], ...] = ()           # hours, chance of liquidation by then
+    calibration: "Calibration | None" = None                  # how the model did on this coin's own history
 
 
 def _pnl(notional: float, side: int, log_move: np.ndarray | float):
     return notional * (np.expm1(log_move) if side > 0 else -np.expm1(log_move))
 
 
-def _safe_leverage(paths, side, entry, maint, max_lev, threshold, adverse) -> float:
+def sqrt_impact_bps(notional: float, day_volume: float, sigma_day: float) -> float | None:
+    """The square-root law of market impact (Tóth et al. 2011; Almgren et al. 2005): a market order of size Q
+    in a market trading V a day with daily volatility σ moves price by about Y·σ·√(Q/V). Used only beyond
+    the visible book, where walking the levels can't tell."""
+    if day_volume <= 0 or sigma_day <= 0:
+        return None
+    return IMPACT_Y * sigma_day * math.sqrt(notional / day_volume) * 10_000
+
+
+def _safe_leverage(paths, side, entry, maint, max_lev, threshold, adverse, ratio=1.0) -> float:
     best = 1.0
     lev = 1.0
     while lev <= max_lev + 1e-9:
-        if liq_probability(paths, side, entry, lev, maint, adverse) > threshold:
+        if liq_probability(paths, side, entry, lev, maint, adverse, ratio) > threshold:
             break
         best = lev
         lev += 0.5 if lev < 10 else 1.0
@@ -613,16 +644,20 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
               paths: Paths, model: RiskModel, max_leverage: float | None, entry_slip_bps: float | None,
               exit_slip_bps: float | None, funding_now: float | None, funding_avg: float | None,
               vol_ratio: float = 1.0, book_seen: bool = True, stop_pct: float | None = None,
-              target_pct: float | None = None) -> Plan:
+              target_pct: float | None = None, account: float | None = None,
+              slippage_source: str = "book") -> Plan:
+    """`account`: cross margin — the account balance (≥ margin) that backs the position; None = isolated."""
     known = max_leverage is not None
     max_lev = float(max_leverage or DEFAULT_MAX_LEVERAGE)
     maint = maintenance_rate(max_lev)
     notional = margin * leverage
+    equity = account if account else margin
+    ratio = equity / margin
     adverse = _adverse(paths, side)
     favourable = paths.best_alive if paths.best_alive is not None else _favourable(paths, side)
 
-    liq = liquidation_price(entry, side, leverage, maint)
-    liq_dist = liq_distance(entry, side, leverage, maint)
+    liq = liquidation_price(entry, side, leverage, maint, ratio)
+    liq_dist = liq_distance(entry, side, leverage, maint, ratio)
     liq_hit = adverse >= liq_dist if liq_dist is not None else np.zeros(len(adverse), bool)
     sigma = float(np.std(paths.final))
 
@@ -634,14 +669,17 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
     slippage = entry_slip + (exit_slip_bps or 0) / 10_000 * notional
     funding = side * expected_funding_rate(hours, funding_now, funding_avg) * notional
     to_apr = lambda f: None if f is None else f * 24 * 365 * 100
-    costs = Costs(fees, slippage, slip_known, funding, to_apr(funding_now), to_apr(funding_avg))
+    costs = Costs(fees, slippage, slip_known, funding, to_apr(funding_now), to_apr(funding_avg),
+                  slippage_source if slip_known else "")
 
-    # outcome at exit: liquidated paths lose the margin plus what entering cost (and any funding paid);
-    # the rest pay all costs
-    liquidated_pnl = -margin - entry_fee - entry_slip - max(funding, 0.0)
+    # outcome at exit: liquidated paths lose the equity behind the position (the margin, or the whole cross
+    # account) plus what entering cost (and any funding paid); the rest pay all costs
+    liquidated_pnl = -equity - entry_fee - entry_slip - max(funding, 0.0)
     pnl = np.where(liq_hit, liquidated_pnl, _pnl(notional, side, paths.final) - costs.total)
-    q = np.percentile(pnl, [5, 25, 50, 75, 95])
-    outcome = dict(zip(("p5", "p25", "p50", "p75", "p95"), (float(x) for x in q)))
+    q = np.percentile(pnl, [1, 5, 25, 50, 75, 95])
+    outcome = dict(zip(("p5", "p25", "p50", "p75", "p95"), (float(x) for x in q[1:])))
+    worst = np.sort(pnl)[: max(1, len(pnl) // 20)]
+    tail = {"p1": float(q[0]), "es5": float(worst.mean()), "p_lose_half": float(np.mean(pnl <= -0.5 * equity))}
 
     # touches on the way: the round levels whose chance of trading before you exit is nearest 60%, 35%, 15%
     # and 5%, so the table spans "noise will hit this" to "only a real move gets here"
@@ -676,7 +714,7 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
     lo5, hi95 = np.percentile(paths.final, [5, 95])
     dd50, dd75 = np.percentile(capped, [50, 75])
     curve_levs = sorted({x for x in CURVE_LEVERAGES if x <= max_lev} | {float(leverage), max_lev})
-    curve = tuple((lv, liq_probability(paths, side, entry, lv, maint, adverse)) for lv in curve_levs)
+    curve = tuple((lv, liq_probability(paths, side, entry, lv, maint, adverse, ratio)) for lv in curve_levs)
 
     notes = []
     if not known:
@@ -689,7 +727,14 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
     if not book_seen:
         notes.append("No order book yet, so slippage isn't included.")
     elif not slip_known:
-        notes.append("Your size goes beyond the visible order book, so slippage isn't included.")
+        notes.append("Your size goes beyond the visible order book and there's no 24h volume to estimate "
+                     "impact from, so slippage isn't included.")
+    elif slippage_source == "model":
+        notes.append("Your size goes beyond the visible order book, so slippage is estimated with the square-root "
+                     "impact rule from the coin's volatility and 24h volume, not read off the book.")
+    if account:
+        notes.append(f"Cross margin: liquidation uses your whole account balance (${account:,.0f}) and would take "
+                     f"it with the position. Other open positions would change this.")
     if funding_now is None and funding_avg is None:
         notes.append("No funding rate yet, so funding isn't included.")
     elif liq_dist is not None and funding > 0.02 * margin:
@@ -709,8 +754,8 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
         liq_distance_pct=None if liq is None else (liq / entry - 1) * 100,
         liq_prob=float(liq_hit.mean()),
         liq_sigmas=None if liq_dist is None or sigma <= 0 else liq_dist / sigma,
-        safe_leverage={"1": _safe_leverage(paths, side, entry, maint, max_lev, 0.01, adverse),
-                       "5": _safe_leverage(paths, side, entry, maint, max_lev, 0.05, adverse)},
+        safe_leverage={"1": _safe_leverage(paths, side, entry, maint, max_lev, 0.01, adverse, ratio),
+                       "5": _safe_leverage(paths, side, entry, maint, max_lev, 0.05, adverse, ratio)},
         leverage_curve=curve,
         sigma_pct=float(np.expm1(sigma) * 100),
         range_pct=(float(np.expm1(lo5) * 100), float(np.expm1(hi95) * 100)),
@@ -725,4 +770,111 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
         paths_n=len(paths.final),
         notes=tuple(notes),
         bracket=bracket,
+        margin_mode="cross" if account else "isolated",
+        equity=equity,
+        tail=tail,
+        fan=tuple(tuple([r[0]] + [entry * math.exp(x) for x in r[1:]]) for r in paths.fan.tolist())
+        if paths.fan is not None else (),
+        liq_curve=tuple(tuple(r) for r in paths.liq_curve.tolist()) if paths.liq_curve is not None and liq_dist
+        else (),
     )
+
+
+# ── proof on the coin's own history ──────────────────────────────────────────
+CALIB_SPLIT = 0.6                 # fit on the first 60% of the candles, test on the 40% the fit never saw
+CALIB_PATHS = 3_000
+CALIB_MAX_STARTS = 200
+CALIB_LEVELS = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)       # test levels, in the hold's typical moves, both directions
+CALIB_BINS = (0.0, 0.02, 0.05, 0.10, 0.20, 0.40, 0.70, 1.0001)
+TAIL_P = 0.10
+
+
+@dataclass(frozen=True, slots=True)
+class CalibBin:
+    lo: float
+    hi: float
+    predicted: float          # average chance the model gave the levels in this bin
+    happened: float           # share of those levels price actually reached
+    n: int
+
+
+@dataclass(frozen=True, slots=True)
+class Calibration:
+    """Walk-forward test: at many past moments the model never trained on, what it said vs what happened."""
+    hours: float
+    starts: int               # past moments tested (overlapping holds, so not all independent)
+    days: float               # length of the unseen stretch
+    bins: tuple[CalibBin, ...]
+    tail_predicted: float     # levels it gave under 10%: average chance it gave …
+    tail_happened: float      # … and how often they were reached
+    tail_n: int
+    bell_predicted: float     # the same, for a plain bell-curve model (constant volatility, normal moves)
+    bell_happened: float
+    bell_n: int
+    range_coverage: float     # share of exits inside its 5–95% range (90% if right)
+
+
+def calibrate(c: Candles, hours: float, season: np.ndarray | None = None, split: float = CALIB_SPLIT,
+              n_paths: int = CALIB_PATHS, max_starts: int = CALIB_MAX_STARTS) -> Calibration | None:
+    """Fit on the older part of the history, then step through the newer part: at each start, use only what
+    was known then (the GARCH run forward through the candles before it), predict the chance of trading
+    0.5–3 typical moves away in each direction before the hold ends, and check what the candles did.
+    A plain bell-curve model (one volatility, normal moves) is scored on the same starts for comparison."""
+    n = len(c)
+    cut = int(n * split)
+    steps = max(1, math.ceil(hours * 3600 / c.step_s))
+    if cut < MIN_CANDLES + 1 or n - cut <= steps + 10:
+        return None
+    m = fit_model(Candles(c.step_s, c.t[:cut], c.close[:cut], c.low[:cut], c.high[:cut]), season)
+    if m is None:
+        return None
+    # the starting variance before each unseen candle, from the past only
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r_all = np.log(c.close[1:] / c.close[:-1])
+    f_all = m.season[season_bucket(c.t[1:])]
+    v_start = np.empty(n)
+    v = m.var_next
+    cap = VAR_CAP * m.var_long
+    for i in range(cut, n):
+        v_start[i] = v
+        x = r_all[i - 1] / f_all[i - 1] if np.isfinite(r_all[i - 1]) else 0.0
+        v = min(m.omega + m.alpha * x * x + m.beta * v, cap)
+    raw = r_all[: cut - 1]
+    bell_sd = float(np.std(raw[np.isfinite(raw)])) * math.sqrt(steps)
+
+    last = n - steps
+    stride = max(1, math.ceil((last - cut) / max_starts))
+    preds, hits, bells = [], [], []
+    inside = 0
+    starts = range(cut, last + 1, stride)
+    for i in starts:
+        ref = c.close[i - 1]
+        paths = simulate(m, hours, float(v_start[i]), int(c.t[i]), n_paths=n_paths, seed=i)
+        sd = float(np.std(paths.final))
+        lo = math.log(float(c.low[i:i + steps].min()) / ref)
+        hi = math.log(float(c.high[i:i + steps].max()) / ref)
+        fin = math.log(float(c.close[i + steps - 1]) / ref)
+        q5, q95 = np.percentile(paths.final, [5, 95])
+        inside += q5 <= fin <= q95
+        for k in CALIB_LEVELS:
+            d = k * sd
+            preds += [float(np.mean(-paths.low >= d)), float(np.mean(paths.high >= d))]
+            hits += [-lo >= d, hi >= d]
+            b = math.erfc(d / bell_sd / math.sqrt(2)) if bell_sd > 0 else 0.0   # reflection: 2·Φ(−d/σ)
+            bells += [min(1.0, b), min(1.0, b)]
+    preds, hits, bells = np.array(preds), np.array(hits, float), np.array(bells)
+    bins = []
+    for lo_b, hi_b in zip(CALIB_BINS, CALIB_BINS[1:]):
+        sel = (preds >= lo_b) & (preds < hi_b)
+        if sel.any():
+            bins.append(CalibBin(lo_b, min(hi_b, 1.0), float(preds[sel].mean()), float(hits[sel].mean()), int(sel.sum())))
+    tail = preds < TAIL_P
+    bell_tail = bells < TAIL_P
+    n_starts = len(starts)
+    return Calibration(
+        hours=hours, starts=n_starts, days=float((c.t[-1] - c.t[cut]) / DAY_MS), bins=tuple(bins),
+        tail_predicted=float(preds[tail].mean()) if tail.any() else 0.0,
+        tail_happened=float(hits[tail].mean()) if tail.any() else 0.0, tail_n=int(tail.sum()),
+        bell_predicted=float(bells[bell_tail].mean()) if bell_tail.any() else 0.0,
+        bell_happened=float(hits[bell_tail].mean()) if bell_tail.any() else 0.0, bell_n=int(bell_tail.sum()),
+        range_coverage=inside / n_starts if n_starts else 0.0)
