@@ -79,7 +79,7 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
         }
 
     threshold = an.baseline.sweep_threshold if an.baseline else float("inf")
-    sweep_keys = {(o.side, o.timestamp) for o in st.orders.window(60, st.now_ms) if is_sweep(o, threshold)} \
+    sweep_keys = {(o.side, o.timestamp) for o in st.orders.window(60, st.now_ms) if is_sweep(o, threshold, st.engine.twap_wallets)} \
         if st.now_ms else set()
     trades = []
     for t in reversed(st.trades):

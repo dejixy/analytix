@@ -29,6 +29,7 @@ from engine.impact import ImpactModel, assess, fit_impact
 from engine.cascades import CascadeTracker
 from engine.levels import LevelTracker
 from engine.positioning import PositioningModel, fit_positioning
+from engine.summary import LiquidityTracker, SummaryContext, summarize
 from engine.walls import WallTracker
 from models.bookModel import BookSummary
 from models.contextModel import AssetContext
@@ -57,6 +58,7 @@ class Analyzer:
         self.levels = LevelTracker(state.coin)
         self.cascades = CascadeTracker(state.coin)
         self.walls = WallTracker()
+        self.liquidity = LiquidityTracker()
         self.runs = 0
         self._last_run_ms = 0
         self._baseline_ms = 0
@@ -92,6 +94,8 @@ class Analyzer:
         recent = min(recent, st.trades.max_seconds)      # after a long feed gap, only what the buffer still holds
         self.walls.update(st.book, st.trades.window(recent, now_ms), now_ms, self.baseline.sweep_threshold)
         wall_stats = self.walls.stats(now_ms)
+        self.liquidity.update(st.book, now_ms, self.baseline.sweep_threshold)
+        twaps, forced = st.engine.view()
         refreshed: dict[str, Explanation] = {}
         for label, seconds in self.windows.items():
             every_ms = min(MAX_REFRESH_MS, max(self.interval_ms, seconds * 1000 // WINDOW_REFRESH_DIVISOR))
@@ -106,14 +110,16 @@ class Analyzer:
             if sl is None:
                 continue
             sl = replace(sl, funding_history=self.positioning.funding_history(),
-                         oi_history=self.positioning.oi_history(seconds))
+                         oi_history=self.positioning.oi_history(seconds), twap_wallets=twaps, forced_keys=forced)
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
             flow = next((x for x in signals if x.name == "volume_imbalance"), None)
             impact = assess(self.impact_model, seconds, flow.metrics.get("buy_notional", 0.0),
                             flow.metrics.get("sell_notional", 0.0), move.move_bps, move.expected_bps,
                             sl.flow_coverage) if flow and flow.metrics and sl.coverage >= 0.95 else None
-            refreshed[label] = explain(st.coin, sl, move, signals, impact)
+            ex = explain(st.coin, sl, move, signals, impact)
+            rows, range_ratio = summarize(sl, move, signals, impact, self._summary_ctx(live=True))
+            refreshed[label] = replace(ex, summary=rows, range_ratio=range_ratio)
             self._window_ms[label] = now_ms
         self.latest = {**self.latest, **refreshed}
         self.events.update(refreshed, now_ms)
@@ -124,6 +130,12 @@ class Analyzer:
         self._last_run_ms = now_ms
         self.runs += 1
         return self.latest
+
+    def _summary_ctx(self, live: bool) -> SummaryContext:
+        usual = self.bar_baseline.sigma_1s_bps if self.bar_baseline else self.baseline.sigma_1s_bps
+        return SummaryContext(live=live, book=self.state.book if live else None, usual_sigma_1s_bps=usual,
+                              liquidity_size=self.liquidity.size or 100_000.0,
+                              liquidity_usual_bps=self.liquidity.usual())
 
     def explain_at(self, label: str, at_ms: int) -> tuple[str, Explanation] | None:
         """Explain the move in the window ending at a past moment — "what happened at 14:32?".
@@ -152,15 +164,18 @@ class Analyzer:
                 sl = self.build_bar_slice(name, seconds, at_ms, self.bar_baseline or self.baseline)
             if sl is None:
                 continue
+            twaps, forced = st.engine.view()
             sl = replace(sl, funding_history=self.positioning.funding_history(),
-                         oi_history=self.positioning.oi_history(seconds))
+                         oi_history=self.positioning.oi_history(seconds), twap_wallets=twaps, forced_keys=forced)
             move = price_move(sl)
             signals = [fn(sl) for fn in DRIVER_SIGNALS]
             flow = next((x for x in signals if x.name == "volume_imbalance"), None)
             impact = assess(self.impact_model, seconds, flow.metrics.get("buy_notional", 0.0),
                             flow.metrics.get("sell_notional", 0.0), move.move_bps, move.expected_bps,
                             sl.flow_coverage) if flow and flow.metrics else None
-            return name, explain(st.coin, sl, move, signals, impact)
+            ex = explain(st.coin, sl, move, signals, impact)
+            rows, range_ratio = summarize(sl, move, signals, impact, self._summary_ctx(live=at_ms >= st.now_ms - 1000))
+            return name, replace(ex, summary=rows, range_ratio=range_ratio)
         return None
 
     def market_events(self) -> list:
@@ -224,13 +239,21 @@ class Analyzer:
         oldest = min(x.timestamp for x in (st.books.oldest, st.trades.oldest) if x is not None)
         coverage = min(1.0, max(0.0, (now_ms - max(start_ms, oldest)) / (seconds * 1000)))
 
+        orders = st.orders.window(seconds, now_ms)
+        vwap = None
+        if seconds > 120:                          # VWAP isn't on the 1m card
+            notional = coins = 0.0
+            for o in orders:
+                notional += o.notional
+                coins += o.size
+            vwap = notional / coins if coins > 0 else None
         return WindowSlice(
             label=label,
             seconds=seconds,
             start_ms=start_ms,
             end_ms=now_ms,
             trades=st.trades.window(seconds, now_ms),
-            orders=st.orders.window(seconds, now_ms),
+            orders=orders,
             book_start=book_start,
             book_end=book_end,
             ctx_start=st.contexts.latest_at(start_ms) or st.contexts.oldest,
@@ -245,6 +268,8 @@ class Analyzer:
             burst_down_end_ms=bursts[3],
             cascades=cascades,
             walls=walls,
+            path=tuple(path),
+            vwap=vwap,
         )
 
     # ── slicing: bar windows ─────────────────────────────────────────────────
@@ -314,7 +339,22 @@ class Analyzer:
             burst_up_bps=bursts[0], burst_down_bps=bursts[1],
             burst_up_end_ms=bursts[2], burst_down_end_ms=bursts[3], burst_span_s=span_s,
             resolution="bar", flow=flow, sweep_agg=sweeps, flow_coverage=flow_cov,
+            path=tuple(path), vwap=_bar_vwap(bars),
         )
+
+
+def _bar_vwap(bars) -> float | None:
+    """Volume-weighted price over bars. Bars store traded notional, so coins = notional ÷ the bar's price
+    (typical price for live minute bars, close for candles, whose notional was computed at the close)."""
+    notional = coins = 0.0
+    for b in bars:
+        if b.volume_usd <= 0:
+            continue
+        ref = b.close if b.source == "candle" else (b.high + b.low + b.close) / 3
+        if ref > 0:
+            notional += b.volume_usd
+            coins += b.volume_usd / ref
+    return notional / coins if coins > 0 else None
 
 
 def _std(xs: list[float]) -> float:

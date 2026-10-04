@@ -27,7 +27,8 @@ def test_parse_trades():
     t = events[0]
     assert t.side is TradeSide.BUY and t.price == 3012.5 and t.size == 1.25
     assert t.hash == "0xabc"
-    assert t.buyer is None          # wallets are dropped unless liquidator matching is on
+    assert t.buyer is None          # both wallets only when liquidator matching is on…
+    assert t.taker == "0xbuyer"     # …but the aggressor's is always kept ("B": the buyer took the ask)
 
 
 def test_wallets_kept_when_liquidators_configured(monkeypatch):
@@ -72,3 +73,17 @@ def test_duplicate_trades_after_reconnect_are_dropped():
     st.apply_many(parse_message(TRADES, "ETH"))
     st.apply_many(parse_message(TRADES, "ETH"))      # resent snapshot
     assert len(st.trades) == 2 and st.dropped == 2
+
+
+def test_taker_is_the_seller_on_an_aggressive_sell_and_engine_fills_are_not_merged():
+    from models.orderModel import group_orders
+    zero = "0x" + "0" * 64
+    raw = {"channel": "trades", "data": [
+        {"coin": "ETH", "side": "A", "px": "3000.0", "sz": "2", "hash": zero, "time": 1, "tid": 1, "users": ["0xMM", "0xTwapOne"]},
+        {"coin": "ETH", "side": "A", "px": "2999.9", "sz": "1", "hash": zero, "time": 1, "tid": 2, "users": ["0xMM2", "0xTwapOne"]},
+        {"coin": "ETH", "side": "A", "px": "3000.0", "sz": "3", "hash": zero, "time": 1, "tid": 3, "users": ["0xMM", "0xTwapTwo"]},
+    ]}
+    trades = parse_message(raw, "ETH")
+    assert [t.taker for t in trades] == ["0xtwapone", "0xtwapone", "0xtwaptwo"] and all(t.zero_hash for t in trades)
+    orders = sorted(group_orders(trades), key=lambda o: o.taker)
+    assert [(o.taker, o.size, o.engine) for o in orders] == [("0xtwapone", 3.0, True), ("0xtwaptwo", 3.0, True)]

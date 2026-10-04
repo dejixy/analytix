@@ -86,6 +86,21 @@ class MarketEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class Metric:
+    """One line of a timeframe card: a number, a plain verdict, and how it's worked out (engine/summary.py)."""
+    key: str                 # "flow" | "who" | "forced" | "book" | "liquidity" | "trend" | "vwap" | "positioning" | "funding"
+    label: str               # "Flow"
+    value: str               # "76% sell · net −$1.6M"
+    tag: str                 # the verdict in a word or two: "absorbed", "TWAP", "chop", "stretched"
+    lean: Direction          # which way this reading points (colours the bar and tag); NEUTRAL when it doesn't
+    bar: float               # 0..1: intensity, or a position along the track (see kind)
+    kind: str = "fill"       # "fill" | "position"
+    help: str = ""           # how it's calculated and how to read it
+    detail: str = ""         # the specifics behind this reading
+    partial: bool = False    # computed from only part of the window
+
+
+@dataclass(frozen=True, slots=True)
 class Explanation:
     window: str
     seconds: int
@@ -103,6 +118,8 @@ class Explanation:
     flow_coverage: float = 1.0
     impact: FlowImpact | None = None
     level: DefendedLevel | None = None
+    summary: tuple[Metric, ...] = ()        # the card's rows, chosen for this timeframe
+    range_ratio: float | None = None        # the window's high–low range ÷ its usual range
 
 
 @dataclass(slots=True)
