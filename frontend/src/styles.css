@@ -356,7 +356,22 @@ tr.wall td { color: var(--ink); }
 .plan-input input::-webkit-outer-spin-button, .plan-input input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .plan-input:focus-within { border-color: var(--up); }
 .plan-lev { display: flex; align-items: center; gap: 8px; }
-.plan-lev input[type="range"] { flex: 1; accent-color: var(--up); min-width: 0; }
+/* Leverage slider styled like the selected chips (deep green fill, green edge), not the browser's bright accent */
+.plan-lev input[type="range"] {
+  flex: 1; min-width: 0; height: 4px; margin: 0; cursor: pointer; border-radius: 2px;
+  -webkit-appearance: none; appearance: none;
+  background: linear-gradient(to right, var(--up-deep) 0 var(--fill, 0%), var(--surface-3) var(--fill, 0%) 100%);
+  outline: 1px solid var(--border);
+}
+.plan-lev input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--up-deep); border: 1px solid var(--up);
+}
+.plan-lev input[type="range"]::-moz-range-thumb {
+  width: 11px; height: 11px; border-radius: 50%; background: var(--up-deep); border: 1px solid var(--up);
+}
+.plan-lev input[type="range"]::-moz-range-progress { background: var(--up-deep); height: 4px; border-radius: 2px; }
+.plan-lev input[type="range"]:focus-visible { outline-color: var(--up); }
 .plan-holds { display: flex; flex-wrap: wrap; gap: 3px; }
 .plan-chip {
   border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); cursor: pointer;
@@ -380,7 +395,7 @@ tr.wall td { color: var(--ink); }
 .plan-big { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .plan-risk { font-size: 28px; font-weight: 700; line-height: 1.1; }
 .plan-band { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 6px; border: 1px solid; border-radius: 2px; }
-.plan-risk.up, .plan-band.up { color: var(--up-bright); }
+.plan-risk.up, .plan-band.up { color: var(--up); }
 .plan-risk.mid, .plan-band.mid { color: var(--ink-2); }
 .plan-risk.down, .plan-band.down { color: var(--down); }
 .plan-ladder { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; margin-top: 4px; }
@@ -391,7 +406,7 @@ tr.wall td { color: var(--ink); }
 .plan-rung span:first-child { font-weight: 600; color: var(--ink); }
 .plan-rung.mid span:last-child { color: var(--ink-2); }
 .plan-rung.down span:last-child { color: var(--down); }
-.plan-rung.up span:last-child { color: var(--up-bright); }
+.plan-rung.up span:last-child { color: var(--up); }
 .plan-rung.on { border-color: var(--ink-2); background: var(--surface-3); }
 .plan-safe { font-size: 11.5px; color: var(--ink-2); }
 .plan-sec { padding: 12px; border-bottom: 1px solid var(--border); }
