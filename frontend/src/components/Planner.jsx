@@ -202,7 +202,11 @@ export default function Planner({ coin, mid, explanations, onClose }) {
           <label className="plan-field">
             <span>Leverage</span>
             <span className="plan-lev">
-              <input type="range" min="1" max={maxLev} step="1" value={Math.min(leverage, maxLev)} onChange={(e) => setLeverage(Number(e.target.value))} aria-label="Leverage" />
+              <input
+                type="range" min="1" max={maxLev} step="1" value={Math.min(leverage, maxLev)}
+                onChange={(e) => setLeverage(Number(e.target.value))} aria-label="Leverage"
+                style={{ "--fill": `${((Math.min(leverage, maxLev) - 1) / Math.max(maxLev - 1, 1)) * 100}%` }}
+              />
               <span className="plan-input small">
                 <input type="number" min="1" max={maxLev} step="0.5" value={leverage} onChange={(e) => setLeverage(Number(e.target.value))} />×
               </span>
