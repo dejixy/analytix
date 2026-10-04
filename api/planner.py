@@ -16,12 +16,17 @@ import asyncio
 import logging
 import math
 import time
+from dataclasses import replace
 
 from config import DEFAULT_SIGMA_1S_BPS
 from engine.planner import (
     DEFAULT_MAX_LEVERAGE,
     SHORT_HOLD_H,
+    Calibration,
+    Candles,
     bracket_distances,
+    calibrate,
+    sqrt_impact_bps,
     Paths,
     Plan,
     RiskModel,
@@ -59,6 +64,9 @@ class PlannerService:
         self._paths: dict[tuple, Paths] = {}
         self._locks: dict[tuple, asyncio.Lock] = {}
         self._max_lev: dict[str, float] = {}
+        self._candles: dict[tuple[str, int], Candles] = {}                  # what each model was fitted on
+        self._calib: dict[tuple, Calibration | None] = {}                   # (coin, step, hours, fit) → result
+        self._calib_tasks: dict[tuple, asyncio.Task] = {}
         self._meta_at = 0.0
 
     # ── inputs ─────────────────────────────────────────────────────────────
@@ -94,19 +102,22 @@ class PlannerService:
                     hourly = await self.model(coin, 3600)
                     season = hourly.season if hourly.kind == "fhs" else None
                 rows = await fetch_candles(coin, INTERVAL[step_s])
-                m = await asyncio.to_thread(fit_model, candles_from_rows(rows, step_s, int(time.time() * 1000)),
-                                            season)
+                candles = candles_from_rows(rows, step_s, int(time.time() * 1000))
+                m = await asyncio.to_thread(fit_model, candles, season)
                 if m:
-                    log.info("planner model for %s %s: %d candles, α=%.2f β=%.2f, vol %.2f× usual",
-                             coin, INTERVAL[step_s], m.n, m.alpha, m.beta, m.vol_ratio)
+                    log.info("planner model for %s %s: %d candles, α=%.2f β=%.2f",
+                             coin, INTERVAL[step_s], m.n, m.alpha, m.beta)
+                    self._candles[(coin, step_s)] = candles
                     return m
             except Exception as exc:
                 log.warning("candles for %s unavailable (%s); using the bars in memory", coin, exc)
         pipe = self.rt.pipeline(coin)
         bars = list(pipe.state.bars)
         for step in dict.fromkeys((step_s, 300)):                 # hourly from memory if enough, else 5-minute
-            m = await asyncio.to_thread(fit_model, candles_from_bars(bars, step))
+            candles = candles_from_bars(bars, step)
+            m = await asyncio.to_thread(fit_model, candles)
             if m:
+                self._candles[(coin, step)] = candles
                 return m
         an = pipe.analyzer
         base = an.bar_baseline or an.baseline
@@ -129,9 +140,40 @@ class PlannerService:
         self._paths[key] = p
         return p
 
+    def calibration(self, coin: str, model: RiskModel, hours: float) -> tuple[Calibration | None, bool]:
+        """The walk-forward check for this model and hold: (result, still running). Started on first ask and
+        run off the event loop (a second or two for long holds); the next request picks it up."""
+        if model.kind != "fhs":
+            return None, False
+        key = (coin, model.step_s, hours, model.last_t, model.n)          # one check per fit, not per object
+        if key in self._calib:
+            return self._calib[key], False
+        if key not in self._calib_tasks:
+            candles = self._candles.get((coin, model.step_s))
+            if candles is None:
+                return None, False
+            season = model.season if model.step_s < 3600 else None   # the 5m model's borrowed daily cycle
+
+            async def run():
+                try:
+                    self._calib[key] = await asyncio.to_thread(calibrate, candles, hours, season)
+                except Exception:
+                    log.exception("calibration for %s %sh failed", coin, hours)
+                    self._calib[key] = None
+                finally:
+                    self._calib_tasks.pop(key, None)
+            if len(self._calib) > 64:
+                self._calib.clear()
+            self._calib_tasks[key] = asyncio.create_task(run())
+        return None, True
+
     # ── the plan ───────────────────────────────────────────────────────────
     async def plan(self, coin: str, side: int, margin: float, leverage: float, hours: float,
-                   stop_pct: float | None = None, target_pct: float | None = None) -> Plan:
+                   stop_pct: float | None = None, target_pct: float | None = None,
+                   account: float | None = None) -> tuple[Plan, bool]:
+        """The plan, and whether its history check is still running. `account`: cross margin balance."""
+        if account is not None and account < margin:
+            raise PlanError("In cross margin the account balance has to be at least the margin.")
         pipe = self.rt.pipeline(coin)
         if pipe.state.mid is None:
             raise PlanError("No price yet — the feed is still connecting.", 503)
@@ -153,21 +195,34 @@ class PlannerService:
         v0 = model.nowcast(candles_from_bars(recent, model.step_s), mid, now_ms)
         maint = maintenance_rate(max_lev or DEFAULT_MAX_LEVERAGE)
         notional = margin * leverage
+        ratio = account / margin if account else 1.0
         entry_slip = exit_slip = None
+        slip_source = "book"
         if book:
             entry_slip = slippage_bps(book.asks if side > 0 else book.bids, notional, mid)
             exit_slip = slippage_bps(book.bids if side > 0 else book.asks, notional, mid)
+            if entry_slip is None or exit_slip is None:              # beyond the 20 visible levels
+                day_vol = st.context.day_volume if st.context else 0.0
+                est = sqrt_impact_bps(notional, day_vol, math.sqrt(v0 * 86_400 / model.step_s))
+                if est is not None:
+                    entry_slip = entry_slip if entry_slip is not None else est
+                    exit_slip = exit_slip if exit_slip is not None else est
+                    slip_source = "model"
         funding_now = st.context.funding if st.context else None
         hist = pipe.analyzer.positioning.funding
         funding_avg = sum(hist) / len(hist) if hist else None
 
         bracket = bracket_distances(side, stop_pct, target_pct) if stop_pct or target_pct else None
-        paths = await self.paths(coin, model, hours, v0, now_ms, side, liq_distance(mid, side, leverage, maint), bracket)
-        return await asyncio.to_thread(
+        paths = await self.paths(coin, model, hours, v0, now_ms, side,
+                                 liq_distance(mid, side, leverage, maint, ratio), bracket)
+        plan = await asyncio.to_thread(
             make_plan, coin=coin, side=side, margin=margin, leverage=leverage, hours=hours, entry=mid,
             paths=paths, model=model, max_leverage=max_lev, entry_slip_bps=entry_slip, exit_slip_bps=exit_slip,
             funding_now=funding_now, funding_avg=funding_avg, vol_ratio=model.vol_ratio(v0, now_ms),
-            book_seen=book is not None, stop_pct=stop_pct, target_pct=target_pct)
+            book_seen=book is not None, stop_pct=stop_pct, target_pct=target_pct, account=account,
+            slippage_source=slip_source)
+        calib, pending = self.calibration(coin, model, hours)
+        return (replace(plan, calibration=calib) if calib else plan), pending
 
     def _lock(self, key) -> asyncio.Lock:
         return self._locks.setdefault(key, asyncio.Lock())

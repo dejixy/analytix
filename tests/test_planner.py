@@ -325,3 +325,64 @@ def test_a_stop_past_liquidation_never_fires_and_the_plan_says_so(market):
     assert any("past the liquidation price" in n for n in plan.notes)
     alone = _bracket_plan(m, 1, None, 5.0)                             # a target with no stop
     assert alone.bracket.p_stop == 0 and alone.bracket.p_target > 0
+
+
+def test_cross_margin_uses_the_whole_account(market):
+    """Cross margin, one position: liquidation is where the account (not just the margin) runs out — the same
+    price as an isolated position at account ÷ notional leverage — and a liquidation takes the account."""
+    _, _, m = market
+    m40 = maintenance_rate(40)
+    assert liquidation_price(100.0, 1, 5, m40, ratio=3.0) == pytest.approx(liquidation_price(100.0, 1, 5 / 3, m40))
+    assert liquidation_price(100.0, 1, 2, m40, ratio=3.0) is None             # the account covers any fall
+    paths = simulate(m, 72, liq=(1, liq_distance(100.0, 1, 20, m40, 3.0)))
+    kw = dict(coin="X", side=1, margin=1_000, leverage=20, hours=72, entry=100.0, paths=paths, model=m,
+              max_leverage=40, entry_slip_bps=0, exit_slip_bps=0, funding_now=0.0, funding_avg=0.0)
+    cross = make_plan(**kw, account=3_000)
+    isolated = make_plan(**{**kw, "paths": simulate(m, 72, liq=(1, liq_distance(100.0, 1, 20, m40)))})
+    assert cross.margin_mode == "cross" and cross.equity == 3_000
+    assert cross.liq_price < isolated.liq_price and cross.liq_prob < isolated.liq_prob
+    liq_row = next(t for t in cross.touches if t.kind == "liq")
+    assert liq_row.pnl <= -3_000
+    assert cross.safe_leverage["1"] >= isolated.safe_leverage["1"]
+    assert any(n.startswith("Cross margin") for n in cross.notes)
+
+
+def test_the_price_cone_and_tail_risk_add_up(market):
+    _, _, m = market
+    paths = simulate(m, 72, liq=(1, liq_distance(100.0, 1, 10, maintenance_rate(40))))
+    plan = make_plan(coin="X", side=1, margin=1_000, leverage=10, hours=72, entry=100.0, paths=paths, model=m,
+                     max_leverage=40, entry_slip_bps=1, exit_slip_bps=1, funding_now=0.0, funding_avg=0.0)
+    fan = np.array(plan.fan)
+    assert fan[0, 0] == 0 and fan[-1, 0] == pytest.approx(72) and len(fan) <= 50
+    assert np.all(np.diff(fan[:, 1:], axis=1) >= 0)                        # 5th ≤ 25th ≤ … ≤ 95th at every moment
+    assert np.all(np.diff(fan[1:, 5] - fan[1:, 1]) > -0.5)                  # the cone widens with time (± noise)
+    assert fan[-1, 1] == pytest.approx(100 * math.exp(np.percentile(paths.final, 5)))
+    curve = np.array(plan.liq_curve)
+    assert np.all(np.diff(curve[:, 1]) >= 0) and curve[-1, 1] == pytest.approx(plan.liq_prob)
+    t = plan.tail
+    assert t["es5"] <= t["p1"] + 1e-9 or t["es5"] <= plan.outcome["p5"]
+    assert t["p1"] <= plan.outcome["p5"] and 0 <= t["p_lose_half"] <= 1
+
+
+def test_square_root_impact_beyond_the_book():
+    from engine.planner import sqrt_impact_bps
+    # $1M into a $100M/day market with 3% daily volatility: 0.7 × 300 bps × √0.01 = 21 bps
+    assert sqrt_impact_bps(1e6, 1e8, 0.03) == pytest.approx(21.0)
+    assert sqrt_impact_bps(4e6, 1e8, 0.03) == pytest.approx(42.0)          # 4× the size, 2× the cost
+    assert sqrt_impact_bps(1e6, 0.0, 0.03) is None
+
+
+def test_walk_forward_check_is_honest_on_a_known_market():
+    """On the unseen 40% of a known market, the levels the model gave under 10% are reached about as often as
+    it said, and its 90% range holds about 90% of the time. Too little history: no check."""
+    from engine.planner import calibrate
+    c, _ = _garch_t(5000, seed=3, amp=0.3)
+    cal = calibrate(c, 24)
+    assert cal.starts > 150 and 80 < cal.days < 90
+    assert cal.tail_n > 500 and abs(cal.tail_happened - cal.tail_predicted) < 0.5 * cal.tail_predicted + 0.005
+    assert 0.84 <= cal.range_coverage <= 0.95
+    for b in cal.bins:
+        if b.n >= 300:
+            assert abs(b.happened - b.predicted) < 0.06 + 0.25 * b.predicted, b
+    short, _ = _garch_t(400, seed=4)
+    assert calibrate(short, 24) is None
