@@ -120,26 +120,6 @@ function BracketSection({ b, p, hl }) {
   );
 }
 
-/** One plain sentence: what this trade means, before any numbers. */
-function summaryLine(p, hl) {
-  const lp = p.liq_prob;
-  const risk = !p.liq_price ? "it can't be liquidated"
-    : lp < 0.001 ? "liquidation is very unlikely"
-    : lp < 0.01 ? `liquidation is unlikely (${chance(lp)})`
-    : lp < 0.05 ? `liquidation is possible (${chance(lp)})`
-    : lp < 0.5 ? `liquidation is a real risk (${chance(lp)})`
-    : `you're more likely than not to be liquidated (${chance(lp)})`;
-  const dd = p.drawdown[0];
-  const parts = [
-    `${p.leverage}× ${p.side > 0 ? "long" : "short"} for ${hl}${p.margin_mode === "cross"
-      ? ` (${(p.notional / p.equity).toFixed(1)}× your account, in cross)` : ""}: ${risk}.`,
-    `Expect about ±${p.sigma_pct.toFixed(1)}% of movement, and to be ${Math.abs(dd.move_pct).toFixed(1)}% against you at some point${dd.liquidated ? "" : ` (${usd(dd.pnl, true)})`}.`,
-    `Costs ${usd(p.costs.total)}.`,
-  ];
-  if (p.liq_price && p.safe_leverage["1"] < p.leverage) parts.push(`Drop to ${p.safe_leverage["1"]}× to keep liquidation risk under 1%.`);
-  return parts.join(" ");
-}
-
 /** The price cone over the hold: 5–95% and 25–75% bands, the median, and the levels that matter. */
 function Cone({ p, hl, bracket }) {
   const [hover, setHover] = useState(null);
@@ -415,7 +395,6 @@ export default function Planner({ coin, mid, explanations, onClose }) {
 
         {p && (
           <div className="plan-body">
-            <p className="plan-summary">{summaryLine(p, hl)}</p>
             <section className="plan-verdict">
               <div className="plan-kicker">Chance of liquidation before you exit ({hl})</div>
               <div className="plan-big">
@@ -430,19 +409,6 @@ export default function Planner({ coin, mid, explanations, onClose }) {
               ) : (
                 <div className="ink2">A 1× long can't be liquidated.</div>
               )}
-              <div className="plan-ladder" title="Chance of liquidation before you exit, at each leverage, for this hold">
-                {p.leverage_curve.map(([lv, pr]) => (
-                  <button
-                    key={lv}
-                    className={`plan-rung ${lv === p.leverage ? "on" : ""} ${riskBand(pr)[1]}`}
-                    onClick={() => setLeverage(lv)}
-                    title={`${lv}×: ${chance(pr)} chance of liquidation over ${hl}`}
-                  >
-                    <span>{lv}×</span>
-                    <span className="num">{chance(pr)}</span>
-                  </button>
-                ))}
-              </div>
               <div className="plan-safe">
                 For {hl}: up to <b>{p.safe_leverage["1"]}×</b> keeps it under 1%, up to <b>{p.safe_leverage["5"]}×</b> under 5%
                 {p.safe_leverage["1"] >= p.max_leverage ? " (any leverage Hyperliquid allows)" : ""}.
