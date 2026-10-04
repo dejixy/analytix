@@ -51,8 +51,9 @@ def test_long_liquidation_cascade_is_found_and_explained(replayed):
     assert evs, "cascade not detected"
     ex = max(evs, key=lambda e: abs(e.explanation.move.z)).explanation
     assert ex.move.direction is Direction.DOWN
-    # the script collapses OI during the cascade, so it's confirmed as liquidations rather than "-style"
-    assert "long-liquidation cascade" in ex.headline and "OI −$" in ex.headline
+    # the script's liquidation sweeps are engine-executed (no tx hash, many accounts at once), so the
+    # cascade is confirmed as liquidations straight from the feed rather than "-style"
+    assert "long-liquidation cascade" in ex.headline and "liquidated)" in ex.headline
     assert ex.drivers[0].name in {"liquidations", "volume_imbalance"}
     assert ex.confidence > 0.7
 

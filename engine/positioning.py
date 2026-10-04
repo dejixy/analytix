@@ -37,10 +37,14 @@ class PositioningModel:
 
 
 def percentile(sorted_values: tuple[float, ...], x: float) -> float | None:
-    """Share of the history at or below x (0..1). None without history."""
+    """Mid-rank percentile of x in the history (0..1). None without history.
+
+    Mid-rank matters for funding: it usually sits exactly at the interest-rate floor, so a plain
+    "share at or below" would call a perfectly normal floor reading the 100th percentile."""
     if not sorted_values:
         return None
-    return bisect.bisect_right(sorted_values, x) / len(sorted_values)
+    lo, hi = bisect.bisect_left(sorted_values, x), bisect.bisect_right(sorted_values, x)
+    return (lo + hi) / (2 * len(sorted_values))
 
 
 def fit_positioning(bars: list[Bar], horizons_s: list[int]) -> PositioningModel:

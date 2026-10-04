@@ -27,6 +27,7 @@ from config import (
 from models.barModel import Bar, BarAccumulator
 from models.bookModel import BookSummary, OrderBook
 from models.contextModel import AssetContext
+from engine.engineFlow import EngineFlow
 from models.orderModel import AggressiveOrder, group_orders, is_sweep
 from models.tradeModel import Trade
 
@@ -53,6 +54,7 @@ class MarketState:
         self.bars: RingBuffer[Bar] = RingBuffer(max_seconds=BAR_HISTORY_S)
         self.on_bar = on_bar                        # e.g. persist each closed bar
         self.sweep_threshold = MIN_SWEEP_NOTIONAL   # the analyzer keeps this in line with its baseline
+        self.engine = EngineFlow()                  # engine-executed fills: TWAP slices vs liquidations
         self._bar: BarAccumulator | None = None
         self._last_close: float | None = None
 
@@ -74,6 +76,8 @@ class MarketState:
                 self._apply_context(e)
         if accepted:
             for order in group_orders(accepted, LIQUIDATOR_ADDRESSES):
+                if order.engine:
+                    self.engine.observe(order)
                 self.orders.push(order)
                 self._bar_order(order)
 
@@ -152,7 +156,7 @@ class MarketState:
         else:
             acc.sell += o.notional
         acc.fills += o.fills
-        if is_sweep(o, self.sweep_threshold):
+        if is_sweep(o, self.sweep_threshold, self.engine.twaps):
             if buy:
                 acc.sw_b += 1
                 acc.swn_b += o.notional

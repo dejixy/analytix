@@ -68,7 +68,7 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 | `ingestion/` | `hyperliquidClient.py` (live, with reconnect and ping), `replay.py`, `recorder.py`, `parsers.py` (raw JSON → models), `feedStatus.py` (the one place the **wall clock** is used, to detect a stale feed) and `synthetic.py` (the scripted demo market). |
 | `signals/` | One pure function per signal. They are registered in `signals/__init__.py`. |
 | `engine/` | `analyzer.py` runs once per exchange-second: it computes the baseline and window slices, then calls the signals and the explainer. `explainer.py` ranks drivers and writes the narrative. `eventLog.py` records significant moves at their peak. |
-| `engine/` (trading reads) | `impact.py` (flow efficiency), `levels.py` (defended levels and breaks), `cascades.py` (OI check and recovery), `walls.py` (real vs pulled walls), `positioning.py` (funding/OI percentiles). See "What each read is for" below. |
+| `engine/` (trading reads) | `summary.py` (the card rows), `engineFlow.py` (TWAP slices vs liquidations from engine-executed fills), `impact.py` (flow efficiency), `levels.py` (defended levels and breaks), `cascades.py` (OI check and recovery), `walls.py` (real vs pulled walls), `positioning.py` (funding/OI percentiles). See "The timeframe cards" below. |
 | `pipeline.py` | One definition of "process a message", shared by the API, the scripts and the tests. |
 | `api/` | FastAPI: REST routes, the `/ws` push, the runtime (source and broadcaster) and serializers. |
 | `scripts/` | `record.py` (capture live sessions), `replayReport.py` (print every significant move in a recording), `study.py` (what price did after each signal) and `generateSample.py`. |
@@ -102,6 +102,34 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 | **price down** | new shorts opening | longs closing / being flushed |
 
 The explainer also calls out **absorption**: heavy one-sided aggression that *lost* (sellers at 72% while price held), which usually means a patient passive counterparty.
+
+### The timeframe cards
+
+Each card shows the five readings that matter most for its horizon: a number for the pro, a one- or two-word verdict for everyone else, and the full working when you hover a row (or in the Why panel's "At a glance" list).
+
+| Timeframe | Rows | Why these |
+|---|---|---|
+| **1m** (execution) | Flow · Who · Forced · Book · Liquidity | who's hitting the book right now, whether it's liquidations, and what a big order would cost |
+| **10m** (scalp) | Flow · Who · Trend · VWAP · Book | whether the pressure is working, who it is, and whether price is trending or chopping around value |
+| **60m** (session) | Trend · VWAP · Flow · Who · Positioning | the structure of the hour, plus who's opening or closing positions |
+| **6h / 12h / 24h / 1w** (swing) | Trend · VWAP · Positioning · Funding · Flow | trend and value over the day, positioning, and what it costs to hold |
+
+- **Flow**: aggressive buy vs sell share, net dollars, and what that flow *did*. The tag compares price impact with what that much net flow normally buys: *absorbed*, *against flow*, *outsized*, or the pace of trading.
+- **Who**: Hyperliquid prints the wallet behind every trade, so this row shows how concentrated the aggressive side is: one wallet, a **TWAP**, or many traders. Hover it for the wallet, its size, and its slice cadence. A "95% sell, flat price" tape that's really one TWAP being absorbed is a very different market from broad selling.
+- **Forced**: sweeps, cascades and **engine-executed liquidations**. Fills the exchange's engine generates itself carry an all-zero transaction hash; the classifier (`engine/engineFlow.py`) separates TWAP slices from forced closes using Hyperliquid's own rules:
+  - **TWAP**: a fixed interval of 30s or more, with similar slice sizes.
+  - **Forced close**: many accounts on the same side within the same few seconds, or a 20% partial liquidation followed by the rest.
+  - Anything ambiguous is left unclassified.
+- **Book**: bid/ask split of resting depth near the price, how it changed, and whether big walls on the stacking side keep getting pulled ("bait?").
+- **Liquidity**: slippage of a large market order (sized to the coin) right now, buy and sell, compared with its usual cost over the last 30 minutes.
+- **Trend**: efficiency ratio (net move ÷ distance travelled over 30 equal steps; a random market scores about 0.18) and position in the range. Thresholds are calibrated on simulated random walks:
+  - "uptrend/downtrend" fires on about 4% of pure-noise windows and catches about 93% of real drifts.
+  - "chop" fires on about 4% of noise.
+- **VWAP**: price vs the window's volume-weighted average price. The distance is scored against how far a random market typically sits from its own VWAP, so "stretched" means further than about 95% of random moments.
+- **Positioning**: OI change in % and $, ranked against every OI move of the same timeframe, and who it says is moving (longs in, short cover, shorts in, longs out).
+- **Funding**: the rate, what holding a position for that timeframe costs, and whether one side is crowded. A side counts as crowded only when funding is both a high percentile for the week (mid-rank, so the usual floor rate isn't misread) and meaningfully above the floor.
+
+The footer compares the window's high-low range with the usual range for that timeframe. Rows from a timeframe that hasn't filled yet are dimmed, and long windows say how much of the window their live flow covers.
 
 ### What each read is for
 

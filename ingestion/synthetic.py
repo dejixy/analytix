@@ -25,6 +25,9 @@ NOISE_BPS_SQRT_S = 0.5   # random-walk volatility of the mid, on top of flow imp
 IMPACT_BPS_PER_COIN = 0.08  # each taker order nudges the mid in its direction
 BASE_LEVEL_SIZE = 12.0   # coins per book level before multipliers
 BASE_FUNDING = 0.0000125 # 0.00125%/h ≈ 11% APR — Hyperliquid's baseline
+# One algorithmic seller works a big order through the quiet stretch — a slice every 30s, no tx hash — and
+# passive bids absorb it: the "95% sell, price flat" tape that's really one TWAP.
+TWAP_START_S, TWAP_END_S, TWAP_EVERY_S, TWAP_SLICE = 680, 950, 30.0, 60.0
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,8 @@ def generate_session(
     duration = SCRIPT[-1].end_s
 
     wallets = ["0x" + "".join(rng.choice("0123456789abcdef") for _ in range(40)) for _ in range(400)]
+    twap_wallet = "0x7a9" + "".join(rng.choice("0123456789abcdef") for _ in range(37))
+    next_twap = TWAP_START_S
     mid = start_price
     bid_mult = ask_mult = 1.0
     oi = 600_000.0
@@ -117,16 +122,20 @@ def generate_session(
     def level_size(mult: float, i: int) -> float:
         return BASE_LEVEL_SIZE * mult * rng.uniform(0.5, 1.5) * (1 + 0.05 * i)
 
-    def aggressive_order(ts: int, side: str, size: float, max_levels: int) -> list[dict]:
-        """Walk the book from the touch; fills of one order share a hash."""
+    def aggressive_order(ts: int, side: str, size: float, max_levels: int, taker: str | None = None,
+                         engine: bool = False) -> list[dict]:
+        """Walk the book from the touch; fills of one order share a hash. Engine-executed orders (TWAP slices,
+        liquidations) have none: all zeros."""
         bb, ba = best_prices()
-        h = "0x" + "".join(rng.choice("0123456789abcdef") for _ in range(64))
+        h = "0x" + ("0" * 64 if engine else "".join(rng.choice("0123456789abcdef") for _ in range(64)))
         fills, remaining, lvl = [], size, 0
+        taker_wallet = taker or rng.choice(wallets)
         while remaining > 1e-9 and lvl < max_levels:
             px = ba + lvl * TICK if side == "B" else bb - lvl * TICK
             avail = level_size(ask_mult if side == "B" else bid_mult, lvl)
             take = min(remaining, avail)
-            taker, maker = rng.choice(wallets), rng.choice(wallets)
+            maker = rng.choice(wallets)
+            taker = taker_wallet
             users = [taker, maker] if side == "B" else [maker, taker]
             fills.append({"coin": coin, "side": side, "px": _fmt_px(px), "sz": _fmt_sz(take),
                           "hash": h, "time": ts, "tid": rng.getrandbits(50), "users": users})
@@ -160,10 +169,16 @@ def generate_session(
         # large sweeps: sized off the *normal* book, so a thin book gets walked further
         if r.sweep_rate and rng.random() < r.sweep_rate * DT:
             size = BASE_LEVEL_SIZE * rng.randint(3, 7) * rng.uniform(0.9, 1.3)
-            sweep = aggressive_order(ts, r.sweep_side, size, max_levels=LEVELS)
+            # in the liquidation phase the sweeps are the exchange closing accounts: engine-executed
+            sweep = aggressive_order(ts, r.sweep_side, size, max_levels=LEVELS, engine=r.name == "long_liquidation")
             fills += sweep
             impact = len(sweep) * TICK * 0.5
             mid += impact if r.sweep_side == "B" else -impact
+        # a TWAP seller working an order through the absorption phase: one zero-hash slice every 30s
+        if TWAP_START_S <= t < TWAP_END_S and t >= next_twap:
+            next_twap += TWAP_EVERY_S
+            fills += aggressive_order(ts, "A", TWAP_SLICE * rng.uniform(0.9, 1.1), max_levels=LEVELS,
+                                      taker=twap_wallet, engine=True)
         if fills:
             emit(ts, {"channel": "trades", "data": fills})
 

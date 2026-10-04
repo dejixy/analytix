@@ -96,7 +96,11 @@ def liquidations(s: WindowSlice) -> SignalResult:
     if total <= 0:
         return SignalResult(NAME, LABEL, 0.0, 0.0, Direction.NEUTRAL, "No trades in this window.", stat="—")
 
-    sweeps = [o for o in orders if is_sweep(o, s.baseline.sweep_threshold)]
+    sweeps = [o for o in orders if is_sweep(o, s.baseline.sweep_threshold, s.twaps)]
+    # Engine-executed orders judged forced (engine/engineFlow.py): liquidations/ADL seen directly in the feed.
+    engine_forced = [o for o in orders if o.engine and (o.timestamp, o.taker) in s.forced_keys]
+    forced_usd = sum(o.notional for o in engine_forced)
+    forced_accounts = len({o.taker for o in engine_forced})
     buy_sw = [o for o in sweeps if o.side is TradeSide.BUY]
     sell_sw = [o for o in sweeps if o.side is TradeSide.SELL]
     buy_n, sell_n = sum(o.notional for o in buy_sw), sum(o.notional for o in sell_sw)
@@ -122,9 +126,20 @@ def liquidations(s: WindowSlice) -> SignalResult:
         "confirmed_liquidations": confirmed,
         "largest_order": max((o.notional for o in orders), default=0.0),
         "sweep_threshold": s.baseline.sweep_threshold,
+        "engine_forced_usd": forced_usd,
+        "engine_forced_accounts": float(forced_accounts),
     }
+    engine_note = (f" Engine-executed forced closes (liquidations/ADL): {fmt_usd(forced_usd)} from "
+                   f"{forced_accounts} account{'s' if forced_accounts != 1 else ''}.") if forced_usd else ""
 
     if not sweeps:
+        if forced_usd:
+            side = "sell" if sum(o.notional for o in engine_forced if o.side is TradeSide.SELL) >= forced_usd / 2 else "buy"
+            kind = "long" if side == "sell" else "short"
+            return SignalResult(NAME, LABEL, 0.0, 0.2, Direction.DOWN if side == "sell" else Direction.UP,
+                                f"No sweeps above {fmt_usd(s.baseline.sweep_threshold)}.{engine_note}",
+                                phrase=f"{kind} liquidations ({fmt_usd(forced_usd)})",
+                                stat=f"{fmt_usd(forced_usd)} liquidated", metrics=metrics)
         return SignalResult(NAME, LABEL, 0.0, 0.0, Direction.NEUTRAL,
                             f"No sweeps above {fmt_usd(s.baseline.sweep_threshold)}; flow was ordinary size.",
                             stat="no sweeps", metrics=metrics)
@@ -134,7 +149,11 @@ def liquidations(s: WindowSlice) -> SignalResult:
         side_word = "buy" if biggest.side is TradeSide.BUY else "sell"
         info = _tracked(s, biggest)
         size = f"{biggest.sweeps} sweeps, {fmt_usd(biggest.notional)}"
-        if info and info.verdict == "likely":
+        in_cascade = sum(o.notional for o in engine_forced
+                         if o.side is biggest.side and biggest.start_ms - 1000 <= o.timestamp <= biggest.end_ms + 1000)
+        if in_cascade >= 0.5 * biggest.notional:              # the engine itself closed most of it: no guessing
+            phrase = f"a {kind}-liquidation cascade ({size}; {fmt_usd(in_cascade)} liquidated)"
+        elif info and info.verdict == "likely":
             phrase = f"a {kind}-liquidation cascade ({size}; OI −{fmt_usd(-(info.oi_change_usd or 0))})"
         elif info and info.verdict == "unlikely":
             phrase = f"a {side_word}-sweep cascade ({size}; OI didn't fall)"
@@ -160,6 +179,7 @@ def liquidations(s: WindowSlice) -> SignalResult:
             f"{len(buy_sw)} buy sweeps ({fmt_usd(buy_n)}) vs {len(sell_sw)} sell sweeps ({fmt_usd(sell_n)}) "
             f"above {fmt_usd(s.baseline.sweep_threshold)}."
         )
+    summary += engine_note
     if confirmed:
         phrase = f"confirmed liquidations ({fmt_usd(confirmed)})"
         stat = f"{fmt_usd(confirmed)} liquidated"

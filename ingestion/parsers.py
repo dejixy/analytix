@@ -10,6 +10,7 @@ Wire formats (https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api
   activeAssetCtx  {"channel": "activeAssetCtx", "data": {coin, ctx: {funding, openInterest, ...}}}
 Numbers arrive as strings ("3012.5"); float() handles both.
 """
+import sys
 from typing import Any
 
 from config import LIQUIDATOR_ADDRESSES
@@ -19,19 +20,29 @@ from models.tradeModel import Trade, TradeSide
 from state import Event
 
 
+def _wallet(addr: Any) -> str | None:
+    # Interned: an hour of trades repeats the same few thousand addresses, so they share one string each.
+    return sys.intern(addr.lower()) if isinstance(addr, str) and addr else None
+
+
 def parse_trade(raw: dict[str, Any]) -> Trade:
-    # Wallet addresses are only needed to match liquidators; skipping them keeps
-    # an hour of trades per coin small in memory.
-    users = (raw.get("users") or [None, None]) if LIQUIDATOR_ADDRESSES else [None, None]
+    # `users` is [buyer, seller]; `side` is the aggressor's ("B" bought from the ask, "A" sold into the bid),
+    # so the taker is users[0] on "B" and users[1] on "A". The taker is always kept (who is aggressive is
+    # the point); both wallets only when liquidator matching needs them.
+    users = raw.get("users") or [None, None]
+    side = TradeSide(raw["side"])
+    taker = _wallet(users[0] if side is TradeSide.BUY else users[1]) if len(users) == 2 else None
+    both = LIQUIDATOR_ADDRESSES and len(users) == 2
     return Trade(
         timestamp=int(raw["time"]),
         price=float(raw["px"]),
         size=float(raw["sz"]),
-        side=TradeSide(raw["side"]),
+        side=side,
         tid=int(raw.get("tid", 0)),
         hash=str(raw.get("hash", "")),
-        buyer=(users[0] or "").lower() or None,
-        seller=(users[1] or "").lower() or None,
+        buyer=_wallet(users[0]) if both else None,
+        seller=_wallet(users[1]) if both else None,
+        taker=taker,
     )
 
 

@@ -46,6 +46,21 @@ export default function DetailPanel({ ex, pinned, onUnpin }) {
             <li key={i}>{line}</li>
           ))}
         </ul>
+        {ex.summary?.length > 0 && (
+          <div className="snapshot">
+            <div className="snapshot-head">At a glance · {ex.window}</div>
+            {ex.summary.map((m) => (
+              <div className={`snap-row ${m.partial || ex.coverage < 0.95 ? "partial" : ""}`} key={m.key}>
+                <div className="snap-line">
+                  <span className="snap-label" title={m.help}>{m.label}</span>
+                  <span className="snap-value">{m.value}</span>
+                  <span className={`metric-tag ${m.lean}`}>{m.tag}</span>
+                </div>
+                {m.detail && <div className="signal-summary">{m.detail}</div>}
+              </div>
+            ))}
+          </div>
+        )}
         <div>
           {order.map((name) => {
             const s = ex.signals[name];
