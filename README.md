@@ -145,6 +145,29 @@ The four signals say *what happened*. These reads turn them into things a trader
 | **Percentiles** | card stat: `OI −1.40% · top 5%`; Positioning panel | Funding vs the past week's hourly readings; each window's OI change vs every OI move over the same timeframe in the saved live bars. | Normal for one coin is extreme for another. A percentile says whether this move is unusual for *this* coin. |
 | **Timeframe agreement** | ▲/▼ on each tab; `Flow aligned ▲ 1m–60m` beside them | Which way aggressive flow leans (strength ≥ 0.25) on 1m, 10m, 60m. | Aligned flow is a trend; short-term flow pushing against the 60m is a pullback or a turn. |
 
+### Running Analytix on the server
+
+The recorder alone captures the feed. Running the whole backend on the server instead captures the same recordings *and* keeps the dashboard's history complete around the clock: the 24h and 1w cards have a full day and week of real flow and open interest, open-interest percentiles and price-impact calibration build up without gaps, and alerts can run 24/7. `deploy/analytix.service` does this. It listens only on the server itself; you view it through an SSH tunnel.
+
+Switch over (on the server, after the recorder setup above):
+
+```bash
+sudo -u analytix git -C /opt/analytix pull
+sudo -u analytix /opt/analytix/.venv/bin/pip install -r /opt/analytix/requirements.txt
+sudo cp /opt/analytix/deploy/analytix.service /etc/systemd/system/
+sudo systemctl disable --now analytix-recorder
+sudo systemctl enable --now analytix
+journalctl -u analytix -f          # a status line every 5 minutes
+```
+
+The recordings carry on in the same folder (a switch inside one hour appends to that hour's file). View the dashboard from your laptop:
+
+```bash
+ssh -N -L 8001:127.0.0.1:8000 you@SERVER_IP      # leave this running, then open http://localhost:8001
+```
+
+Port 8001 on your laptop so it doesn't clash with a local copy on 8000. Update later with the first two commands, then `sudo systemctl restart analytix`.
+
 ### Plan a trade
 
 The **Plan a trade** button opens the position planner. Pick long or short, margin, leverage and how long you'll hold (15m … 1w). It answers, before you click buy:

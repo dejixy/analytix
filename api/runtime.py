@@ -45,7 +45,8 @@ from ingestion.synthetic import generate_session
 from pipeline import Pipeline
 from storage.barStore import BarStore
 
-BARS_EVERY_N_BROADCASTS = 10   # the long-window chart changes slowly; send it every ~5s, not twice a second
+BARS_EVERY_N_BROADCASTS = 10
+HEARTBEAT_S = 300   # the long-window chart changes slowly; send it every ~5s, not twice a second
 
 log = logging.getLogger("analytix.runtime")
 
@@ -114,6 +115,8 @@ class Runtime:
                        asyncio.create_task(self._broadcast_loop(), name="broadcast")]
         if self.backfill_enabled:
             self._tasks.append(asyncio.create_task(self._backfill(), name="backfill"))
+        if self.mode == "live":
+            self._tasks.append(asyncio.create_task(self._heartbeat(), name="heartbeat"))
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
 
     async def stop(self) -> None:
@@ -154,6 +157,18 @@ class Runtime:
     def snapshot(self, coin: str | None = None, include_bars: bool = True) -> dict:
         from api.serializers import build_snapshot
         return build_snapshot(self, coin or self.default_coin, include_bars=include_bars)
+
+    async def _heartbeat(self, every_s: float = HEARTBEAT_S) -> None:
+        """One status line every few minutes, so a server's log shows the feed (and recording) is alive."""
+        while True:
+            await asyncio.sleep(every_s)
+            st = self.status
+            line = (f"feed {'connected' if st.connected else 'reconnecting'} · {st.messages:,} messages · "
+                    f"{st.reconnects} reconnects · {len(self.clients)} browsers")
+            if isinstance(self._recorder, HourlyRecorder):
+                line += (f" · recording this hour {self._recorder.hour_bytes / 1e6:.0f} MB"
+                         + (" · PAUSED: disk nearly full" if self._recorder.paused else ""))
+            log.info(line)
 
     async def _broadcast_loop(self) -> None:
         while True:
