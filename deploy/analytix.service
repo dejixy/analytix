@@ -1,0 +1,20 @@
+# The full Analytix backend on a Linux server: live engine, dashboard and recording, 24/7.
+# Replaces analytix-recorder.service (same recordings, same folder). Setup: README → "Running Analytix on the server".
+# It listens on the server itself only (127.0.0.1); view it from your laptop through an SSH tunnel.
+[Unit]
+Description=Analytix (live engine + dashboard + recording)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=analytix
+WorkingDirectory=/opt/analytix
+Environment=ANALYTIX_RECORD=1
+ExecStart=/opt/analytix/.venv/bin/uvicorn api.app:app --host 127.0.0.1 --port 8000 --no-access-log
+Restart=always
+RestartSec=10
+# Stopping sends SIGTERM: the backend saves its state, flushes the recording and exits cleanly.
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
