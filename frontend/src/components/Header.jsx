@@ -60,7 +60,7 @@ function FeedBadge({ feed, conn }) {
   );
 }
 
-export default function Header({ snap, conn, onCoin, onPlan }) {
+export default function Header({ snap, conn, onCoin, onPlan, onAlerts }) {
   const { price, context, coin, feed } = snap;
   const chg = context?.change_24h_pct;
   return (
@@ -94,6 +94,9 @@ export default function Header({ snap, conn, onCoin, onPlan }) {
       </div>
 
       <div className="header-right">
+        <button className="alerts-open" onClick={onAlerts} title="Telegram and browser alerts: cascades, TWAPs, level breaks, your price levels">
+          Alerts
+        </button>
         <button className="plan-open" onClick={onPlan} title="Liquidation odds, the path to expect, and costs — before you take a trade">
           Plan a trade
         </button>

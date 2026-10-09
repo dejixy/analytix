@@ -168,6 +168,28 @@ ssh -N -L 8001:127.0.0.1:8000 you@SERVER_IP      # leave this running, then open
 
 Port 8001 on your laptop so it doesn't clash with a local copy on 8000. Update later with the first two commands, then `sudo systemctl restart analytix`.
 
+### Alerts
+
+The **Alerts** button opens the alert settings. Alerts are checked every second for every coin, wherever Analytix runs (your server), and go to Telegram and, if you switch it on, to desktop notifications while the dashboard sits in a background tab.
+
+| Alert | Fires when | Default |
+|---|---|---|
+| Liquidation cascade | a chain of forced flow, once its OI check is in | ≥ $1M liquidated or swept |
+| Big liquidation | one account force-closed by the exchange (its 20% chunk and the rest added up) | ≥ $500K |
+| New TWAP | a wallet starts slicing a big order | ≥ $1M an hour |
+| Level break | a defended level gives way | on |
+| Absorbed flow | heavy one-sided flow fails to move price on the 10m or 60m card | on |
+| Volatility spike | the 10m range is ≥ N× its usual size | 2.5× |
+| Price alerts | price crosses a level you set (once) | — |
+
+Each alert type has a quiet time per coin (15 minutes by default), and nothing fires in the first five minutes after start-up, while the engine learns what's normal. A ping reads like:
+
+> 🔻 **ETH long-liquidation cascade · $5.08M liquidated**
+> 31 sweeps in 37s · price −1.45% · liquidations confirmed by OI
+> now 2,648.95 (−0.70% in 10m) · 61% sell · net −$6.18M
+
+**Telegram setup:** message @BotFather, send `/newbot`, paste the token into the Alerts panel, press Start in your new bot, then **Find chats** and switch your chat on. Only chats you switch on get alerts — anyone else who finds the bot gets nothing. Add the bot to a group or a channel to share alerts. Settings and the token live in `data/alerts.json` on the machine running Analytix (never in git; the API never returns the token). Replays never send to Telegram.
+
 ### Plan a trade
 
 The **Plan a trade** button opens the position planner. Pick long or short, margin, leverage and how long you'll hold (15m … 1w). It answers, before you click buy:
@@ -260,6 +282,7 @@ The recorder prints how many MB the current hour has taken, so you can see your 
 | `ANALYTIX_REPLAY_LOOP` | `1` | `0` to stop at the end |
 | `ANALYTIX_RECORD` | `0` | `1`: in live mode, also record the feed to hourly files (for the study) |
 | `ANALYTIX_RECORD_DIR` | `data/recordings` | where those files go |
+| `ANALYTIX_ALERTS_FILE` | `data/alerts.json` | alert settings, price levels and the Telegram bot token |
 | `ANALYTIX_RECORD_FILE` | — | in live mode, also record raw messages to this one file |
 | `ANALYTIX_LIQUIDATORS` | — | comma-separated addresses |
 | `ANALYTIX_BACKFILL` | `1` | `0` to skip downloading price candles on start |
@@ -278,6 +301,7 @@ Thresholds live in `config.py`.
 | `GET /api/events?coin=BTC&window=1m&limit=20` | significant moves, newest first |
 | `GET /api/explain_at?t=<ms>&window=10m&coin=BTC` | "what happened at 14:32?": the explanation for the window ending at any moment still in memory (the last hour for 1m–60m, the last week for 6h+). Falls back to a shorter timeframe if the requested one reaches back past the data. This is what clicking the chart calls. |
 | `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&stop=2&target=4&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, the model behind them, and (with `stop`/`target`, % from entry) the bracket's odds. Add `account=3000` for cross margin. The first answer for a coin and hold starts the history check (`calibration_pending: true`); it's included a moment later. |
+| `GET /api/alerts` · `PUT /api/alerts` · `POST /api/alerts/levels` · `POST /api/alerts/telegram/{token,discover,test}` | alert settings (never the token), price alerts, Telegram connection and the latest alerts. |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.

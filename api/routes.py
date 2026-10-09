@@ -1,5 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from pydantic import BaseModel
+
+from api.alerts import AlertError
 from api.planner import PlanError
 from api.serializers import event_dict, explanation_dict, plan_dict
 from config import WINDOWS
@@ -90,3 +93,78 @@ def events(request: Request, coin: str | None = None, window: str | None = None,
     if window is not None and window not in WINDOWS:
         raise HTTPException(404, f"Unknown window '{window}'")
     return [event_dict(e) for e in _pipe(request, coin).analyzer.events.recent(limit, window)]
+
+
+# ── alerts ──────────────────────────────────────────────────────────────────
+class LevelIn(BaseModel):
+    coin: str
+    price: float
+
+
+class TokenIn(BaseModel):
+    token: str
+
+
+class ChatIn(BaseModel):
+    on: bool
+
+
+def _alerts(request: Request):
+    return _rt(request).alerts
+
+
+async def _guard(fn, *args):
+    try:
+        out = fn(*args)
+        return await out if hasattr(out, "__await__") else out
+    except AlertError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/alerts")
+def alerts(request: Request):
+    """Alert settings (never the bot token), approved chats, and the latest alerts."""
+    return _alerts(request).public()
+
+
+@router.put("/alerts")
+async def alerts_update(request: Request, patch: dict):
+    """Change rules ({"rules": {"twap": {"on": true, "min_usd_per_hour": 2e6}}}), "cooldown_min" or "coins"."""
+    return await _guard(_alerts(request).update, patch)
+
+
+@router.post("/alerts/levels")
+async def alerts_add_level(request: Request, body: LevelIn):
+    return await _guard(_alerts(request).add_level, body.coin, body.price)
+
+
+@router.delete("/alerts/levels/{level_id}")
+async def alerts_remove_level(request: Request, level_id: str):
+    return await _guard(_alerts(request).remove_level, level_id)
+
+
+@router.post("/alerts/telegram/token")
+async def alerts_token(request: Request, body: TokenIn):
+    """Connect a bot (checked with Telegram's getMe). Stored on this machine only; never sent back."""
+    return await _guard(_alerts(request).set_token, body.token)
+
+
+@router.delete("/alerts/telegram")
+async def alerts_disconnect(request: Request):
+    return await _guard(_alerts(request).disconnect)
+
+
+@router.post("/alerts/telegram/discover")
+async def alerts_discover(request: Request):
+    """List chats that have messaged the bot recently; new ones start switched off."""
+    return await _guard(_alerts(request).discover)
+
+
+@router.put("/alerts/telegram/chats/{chat_id}")
+async def alerts_chat(request: Request, chat_id: int, body: ChatIn):
+    return await _guard(_alerts(request).set_chat, chat_id, body.on)
+
+
+@router.post("/alerts/telegram/test")
+async def alerts_test(request: Request):
+    return await _guard(_alerts(request).test)
