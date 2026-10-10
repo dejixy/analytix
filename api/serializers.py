@@ -3,7 +3,7 @@ Dataclasses → JSON-ready dicts. Enums become their values, floats are rounded,
 NaN/inf become null (JSON has no NaN).
 """
 import math
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from enum import Enum
 from typing import Any
 
@@ -128,6 +128,7 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
             "stats": an.walls.stats(st.now_ms),
         },
         "engine": {"runs": an.runs, "dropped": st.dropped, "trades_buffered": len(st.trades)},
+        "alerts": [asdict(a) for a in list(runtime.alerts.recent)[-10:]] if hasattr(runtime, "alerts") else [],
     })
 
 

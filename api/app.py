@@ -17,14 +17,14 @@ from fastapi.staticfiles import StaticFiles
 from api.routes import router as rest_router
 from api.runtime import Runtime
 from api.stream import router as ws_router
-from config import FRONTEND_DIST, MODE, REPLAY_FILE, REPLAY_LOOP, REPLAY_SPEED
+from config import ALERTS_FILE, FRONTEND_DIST, MODE, REPLAY_FILE, REPLAY_LOOP, REPLAY_SPEED
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 def create_app(mode: str = MODE, replay_file: Path = REPLAY_FILE, speed: float = REPLAY_SPEED,
-               loop: bool = REPLAY_LOOP, serve_frontend: bool = True) -> FastAPI:
-    runtime = Runtime(mode, replay_file=replay_file, speed=speed, loop=loop)
+               loop: bool = REPLAY_LOOP, serve_frontend: bool = True, alerts_file: Path = ALERTS_FILE) -> FastAPI:
+    runtime = Runtime(mode, replay_file=replay_file, speed=speed, loop=loop, alerts_file=alerts_file)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -10,7 +10,8 @@ from ingestion.synthetic import generate_session
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):
     path = generate_session(tmp_path_factory.mktemp("api") / "session.jsonl")
-    app = create_app(mode="replay", replay_file=path, speed=float("inf"), loop=False, serve_frontend=False)
+    app = create_app(mode="replay", replay_file=path, speed=float("inf"), loop=False, serve_frontend=False,
+                     alerts_file=tmp_path_factory.mktemp("alerts") / "alerts.json")
     with TestClient(app) as c:
         deadline = time.time() + 60
         while time.time() < deadline and not c.get("/api/health").json()["feed"]["finished"]:
@@ -88,3 +89,17 @@ def test_plan_endpoint_answers_with_the_rough_model_in_a_short_replay(client):
     assert short["liq_price"] > short["entry"] and short["hours"] == 1
     assert client.get("/api/plan", params={"side": "sideways"}).status_code == 400
     assert client.get("/api/plan", params={"hours": 500}).status_code == 422
+
+
+def test_alert_settings_round_trip_and_telegram_needs_a_bot(client):
+    a = client.get("/api/alerts").json()
+    assert a["rules"]["cascade"]["on"] and a["telegram"]["connected"] is False and a["telegram"]["enabled"] is False
+    r = client.put("/api/alerts", json={"rules": {"volatility": {"min_ratio": 3}}, "cooldown_min": 20})
+    assert r.status_code == 200 and r.json()["rules"]["volatility"]["min_ratio"] == 3
+    assert client.put("/api/alerts", json={"cooldown_min": 0}).status_code == 400
+    lv = client.post("/api/alerts/levels", json={"coin": "ETH", "price": 2700}).json()["price_levels"]
+    assert len(lv) == 1 and lv[0]["price"] == 2700
+    assert client.delete(f"/api/alerts/levels/{lv[0]['id']}").json()["price_levels"] == []
+    assert client.post("/api/alerts/telegram/discover").status_code == 400      # no bot connected yet
+    assert client.post("/api/alerts/telegram/token", json={"token": "nonsense"}).status_code == 400
+    assert "alerts" in client.get("/api/snapshot").json()

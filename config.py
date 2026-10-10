@@ -110,3 +110,4 @@ RECORD = os.getenv("ANALYTIX_RECORD", "0") == "1"    # live mode: also record to
 RECORD_DIR = Path(os.getenv("ANALYTIX_RECORD_DIR", str(ROOT / "data" / "recordings")))
 RECORD_MIN_FREE_GB = float(os.getenv("ANALYTIX_RECORD_MIN_FREE_GB", "2"))   # pause recording below this much free disk
 FRONTEND_DIST = ROOT / "frontend" / "dist"
+ALERTS_FILE = Path(os.getenv("ANALYTIX_ALERTS_FILE", str(ROOT / "data" / "alerts.json")))   # alert settings + Telegram

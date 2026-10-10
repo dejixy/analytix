@@ -202,3 +202,7 @@ class CascadeTracker:
     @property
     def events(self) -> list[MarketEvent]:
         return list(self._events.values())
+
+    def settled(self) -> list[TrackedCascade]:
+        """Cascades that are over and have had their OI check (the moment they're worth reporting)."""
+        return [t for t in self._items if t.oi_settled]

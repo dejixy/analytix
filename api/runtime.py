@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from config import (
+    ALERTS_FILE,
     BACKFILL_ENABLED,
     BAR_HISTORY_S,
     BARS_DB,
@@ -34,6 +35,7 @@ from config import (
     REPLAY_LOOP,
     REPLAY_SPEED,
 )
+from api.alerts import AlertService
 from api.planner import PlannerService
 from ingestion.backfill import backfill
 from ingestion.feedStatus import FeedStatus
@@ -55,7 +57,8 @@ class Runtime:
     def __init__(self, mode: str, coins: list[str] | None = None, default_coin: str = COIN,
                  replay_file: Path = REPLAY_FILE, speed: float = REPLAY_SPEED, loop: bool = REPLAY_LOOP,
                  record_file: str | None = RECORD_FILE, record: bool = RECORD, broadcast_interval_s: float = BROADCAST_INTERVAL_S,
-                 bars_db: Path | None = BARS_DB, backfill_enabled: bool = BACKFILL_ENABLED):
+                 bars_db: Path | None = BARS_DB, backfill_enabled: bool = BACKFILL_ENABLED,
+                 alerts_file: Path = ALERTS_FILE):
         if mode not in ("live", "replay"):
             raise ValueError(f"ANALYTIX_MODE must be 'live' or 'replay', got {mode!r}")
         self.mode = mode
@@ -79,6 +82,7 @@ class Runtime:
         self.store: BarStore | None = None
         self._broadcasts = 0
         self.planner = PlannerService(self)
+        self.alerts = AlertService(self, alerts_file)
 
     # ── pipelines ───────────────────────────────────────────────────────────
     def pipeline(self, coin: str | None = None) -> Pipeline:
@@ -117,9 +121,11 @@ class Runtime:
             self._tasks.append(asyncio.create_task(self._backfill(), name="backfill"))
         if self.mode == "live":
             self._tasks.append(asyncio.create_task(self._heartbeat(), name="heartbeat"))
+        await self.alerts.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
 
     async def stop(self) -> None:
+        await self.alerts.stop()
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)

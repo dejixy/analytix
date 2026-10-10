@@ -10,6 +10,7 @@ import Positioning from "./components/Positioning.jsx";
 import EventLog from "./components/EventLog.jsx";
 import Toasts from "./components/Toasts.jsx";
 import Planner from "./components/Planner.jsx";
+import AlertsPanel, { notifyEnabled } from "./components/AlertsPanel.jsx";
 
 const FLOW_MIN_STRENGTH = 0.25;
 
@@ -39,6 +40,28 @@ export default function App() {
   const [pinned, setPinned] = useState(null); // a MoveEvent object, kept even after it scrolls out of the feed
   const [notice, setNotice] = useState(null); // a short message under the chart, e.g. "that moment is outside the data"
   const [planning, setPlanning] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const seenAlerts = useRef(null); // ids already shown, so only new alerts notify
+
+  // Desktop notifications for new alerts while the dashboard sits in a background tab
+  useEffect(() => {
+    const list = snap?.alerts || [];
+    if (seenAlerts.current === null) {
+      if (snap) seenAlerts.current = new Set(list.map((a) => a.id));
+      return;
+    }
+    const fresh = list.filter((a) => !seenAlerts.current.has(a.id));
+    fresh.forEach((a) => seenAlerts.current.add(a.id));
+    if (!fresh.length || !document.hidden || !notifyEnabled()) return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    fresh.slice(-3).forEach((a) => {
+      try {
+        new Notification(a.title, { body: a.lines.join("\n"), tag: a.id });
+      } catch {
+        /* some browsers only allow notifications from a service worker */
+      }
+    });
+  }, [snap]);
   const railRef = useRef(null);
 
   useEffect(() => {
@@ -116,6 +139,7 @@ export default function App() {
           setCoin(c);
         }}
         onPlan={() => setPlanning(true)}
+        onAlerts={() => setAlertsOpen(true)}
       />
 
       <section className="rail-wrap" aria-label="Explanations by timeframe">
@@ -192,6 +216,7 @@ export default function App() {
 
       <EventLog events={snap.events} marketEvents={snap.market_events || []} pinned={pinned} onPick={pin} />
       <Toasts coin={snap.coin} nowMs={snap.now_ms} marketEvents={snap.market_events || []} />
+      {alertsOpen && <AlertsPanel coin={snap.coin} onClose={() => setAlertsOpen(false)} />}
       {planning && <Planner coin={snap.coin} mid={snap.price?.mid} explanations={snap.explanations} onClose={() => setPlanning(false)} />}
     </div>
   );
