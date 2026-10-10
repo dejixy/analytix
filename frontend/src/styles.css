@@ -477,3 +477,19 @@ tr.wall td { color: var(--ink); }
 .alert-dot.down { background: var(--down); }
 .plan-chip:disabled, .plan-open:disabled { opacity: 0.45; cursor: default; }
 .plan-input input.left { text-align: left; }
+
+/* position watch */
+.pw-pos { border: 1px solid var(--border); background: var(--surface-2); border-radius: 2px; padding: 10px; margin-top: 8px; }
+.pw-pos-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.pw-odds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 6px; }
+.pw-odd { font-size: 22px; font-weight: 700; line-height: 1.2; display: flex; align-items: center; gap: 8px; }
+.pw-odd.up { color: var(--up); }
+.pw-odd.mid { color: var(--ink-2); }
+.pw-odd.down { color: var(--down); }
+.pw-line { font-size: 11.5px; color: var(--ink-2); line-height: 1.55; margin-top: 3px; }
+.pw-line b { color: var(--ink); }
+.pw-line.muted { color: var(--muted); }
+.pw-wallet-head { display: flex; justify-content: space-between; align-items: center; }
+.pw-wallet-head h3 { margin: 0; }
+.pw-sub { font-size: 10.5px; margin-top: 2px; }
+.pw-name { width: 130px !important; flex: 0 0 auto !important; }

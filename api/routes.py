@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from api.alerts import AlertError
 from api.planner import PlanError
+from api.positions import WatchError
 from api.serializers import event_dict, explanation_dict, plan_dict
 from config import WINDOWS
 
@@ -168,3 +169,35 @@ async def alerts_chat(request: Request, chat_id: int, body: ChatIn):
 @router.post("/alerts/telegram/test")
 async def alerts_test(request: Request):
     return await _guard(_alerts(request).test)
+
+
+# ── position watch ──────────────────────────────────────────────────────────
+class WalletIn(BaseModel):
+    address: str
+    label: str = ""
+
+
+def _watch(request: Request):
+    return _rt(request).positions
+
+
+@router.get("/positions")
+def positions(request: Request):
+    """Watched wallets with their open positions and each position's odds (refreshed every 20s, live mode)."""
+    return _watch(request).public()
+
+
+@router.post("/positions/wallets")
+def positions_add(request: Request, body: WalletIn):
+    try:
+        return _watch(request).add(body.address, body.label)
+    except WatchError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.delete("/positions/wallets/{address}")
+def positions_remove(request: Request, address: str):
+    try:
+        return _watch(request).remove(address)
+    except WatchError as exc:
+        raise HTTPException(404, str(exc)) from exc
