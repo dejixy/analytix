@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 140 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 148 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -181,6 +181,7 @@ The **Alerts** button opens the alert settings. Alerts are checked every second 
 | Heavy trading, price held | lots of buying or selling fails to move price on the 10m or 60m card | on |
 | Volatility spike | the last 10 minutes covered ≥ N× the normal range | 2.5× |
 | Price alerts | price crosses a level you set (once) | you add them |
+| Position risk | a watched wallet's chance of liquidation in the next 24h, or the next hour, goes above N% | 5% |
 
 Each alert type has a quiet time per coin (15 minutes by default), and nothing fires in the first five minutes after start-up, while the engine learns what's normal. A ping reads like:
 
@@ -191,6 +192,20 @@ Each alert type has a quiet time per coin (15 minutes by default), and nothing f
 Every alert says exactly what happened and where: "ETH fell through 2,667.90" (buyers had defended it for 8 min, soaking up $1.21M of selling), never just "level broke".
 
 **Telegram setup:** message @BotFather, send `/newbot`, paste the token into the Alerts panel, press Start in your new bot, then **Find chats** and switch your chat on. Only chats you switch on get alerts; anyone else who finds the bot gets nothing. Add the bot to a group or a channel to share alerts. Settings and the token live in `data/alerts.json` on the machine running Analytix (never in git; the API never returns the token). Replays never send to Telegram.
+
+### Position watch
+
+The **Positions** button opens position watch. Paste a wallet address (and a name if you like) and it shows that wallet's open Hyperliquid positions, refreshed every 20 seconds. It's read-only: Hyperliquid shows every wallet's positions publicly, so it needs no keys and can't trade. Up to 10 wallets; they're kept in `data/watch.json` on the machine running Analytix.
+
+For each position:
+
+- size, leverage (cross or isolated), entry, the price now, and P&L;
+- **the chance of liquidation in the next hour and the next 24 hours**, from the same simulation as Plan a trade (5-minute candles for the hour, hourly candles for the day, volatility brought up to the moment);
+- how far liquidation is, in % and in normal 24-hour moves;
+- the stop-loss and take-profit on the book, if any, with the chance each one closes the position first in the next 24h, and a warning when the stop sits inside the normal daily swing;
+- what funding costs (or pays) per day at today's rate.
+
+The liquidation price is Hyperliquid's own, so it already accounts for cross margin and the other open positions. The odds hold it fixed; in cross margin it really moves as the other positions win or lose. The **Position risk** alert pings Telegram when a position's chance of liquidation in the next 24 hours passes your threshold, and again, more urgently, when the chance within the next hour does. Each re-arms once the chance falls back below half the threshold. Position watch runs in live mode only (`engine/positions.py`, `api/positions.py`, `ingestion/account.py`).
 
 ### Plan a trade
 

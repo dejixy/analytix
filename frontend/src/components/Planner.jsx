@@ -7,7 +7,7 @@ const HOLDS = [
 const REFRESH_MS = 30_000;
 
 const holdLabel = (h) => (HOLDS.find(([, v]) => v === h) || [`${h}h`])[0];
-const usd = (x, sign = false) => {
+export const usd = (x, sign = false) => {
   if (x == null) return "-";
   const a = Math.abs(x);
   const d = a < 100 && Math.round(a * 100) % 100 !== 0 ? 2 : 0;   // $4.50, $81.51, but $50 and $220
@@ -15,8 +15,8 @@ const usd = (x, sign = false) => {
     : `$${a.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`;
   return x < 0 ? `−${s}` : sign ? `+${s}` : s;
 };
-const pct = (x, d = 1) => (x == null ? "-" : `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(d)}%`);
-function chance(p) {
+export const pct = (x, d = 1) => (x == null ? "-" : `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(d)}%`);
+export function chance(p) {
   if (p == null) return "-";
   if (p === 0) return "<0.01%";
   if (p < 0.001) return "<0.1%";
@@ -28,7 +28,7 @@ function oneIn(p) {
   if (p >= 0.5) return "";
   return `about 1 in ${Math.round(1 / p).toLocaleString()}`;
 }
-function riskBand(p) {
+export function riskBand(p) {
   if (p < 0.01) return ["low", "up"];
   if (p < 0.05) return ["moderate", "mid"];
   if (p < 0.2) return ["high", "down"];

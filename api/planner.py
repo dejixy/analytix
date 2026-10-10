@@ -111,6 +111,9 @@ class PlannerService:
                     return m
             except Exception as exc:
                 log.warning("candles for %s unavailable (%s); using the bars in memory", coin, exc)
+        if coin not in self.rt.pipelines:                       # position watch can ask about any coin
+            raise PlanError(f"No price history for {coin}: its candles couldn't be loaded and it isn't one of "
+                            f"the coins in the live feed.", 503)
         pipe = self.rt.pipeline(coin)
         bars = list(pipe.state.bars)
         for step in dict.fromkeys((step_s, 300)):                 # hourly from memory if enough, else 5-minute
