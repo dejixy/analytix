@@ -12,7 +12,7 @@ class AggressiveOrder:
 
     A market order that walks three price levels shows up on the feed as three
     trades. They share the L1 tx hash, side and timestamp, so we stitch them
-    back together — order size and levels walked are what reveal a sweep.
+    back together: order size and levels walked are what reveal a sweep.
     """
     timestamp: int
     side: TradeSide
@@ -24,7 +24,7 @@ class AggressiveOrder:
     last_price: float
     confirmed_liquidation: bool = False
     taker: str | None = None        # the aggressor's wallet
-    engine: bool = False            # no tx hash: executed by the engine itself — a TWAP slice, liquidation or ADL
+    engine: bool = False            # no tx hash: executed by the engine itself: a TWAP slice, liquidation or ADL
 
     @property
     def span_bps(self) -> float:
@@ -36,7 +36,7 @@ class AggressiveOrder:
 def group_orders(trades: Iterable[Trade], liquidators: frozenset[str] | set[str] = frozenset()) -> list[AggressiveOrder]:
     """Fills → taker orders. Normally one order = one L1 transaction hash. Engine-executed fills (TWAP
     slices, liquidations) have no hash (all zeros), so several of them in one block would collapse into one
-    fake "big order" — those are grouped by the taker's wallet instead."""
+    fake "big order"; those are grouped by the taker's wallet instead."""
     groups: dict[tuple[str, TradeSide, int], list[Trade]] = {}
     for t in trades:
         if t.zero_hash:
@@ -64,7 +64,7 @@ def group_orders(trades: Iterable[Trade], liquidators: frozenset[str] | set[str]
 
 
 def is_twap_slice(o: AggressiveOrder, twaps: dict | None) -> bool:
-    """A slice of a running TWAP: an engine order from a (wallet, side) known to be TWAPing, and slice-sized —
+    """A slice of a running TWAP: an engine order from a (wallet, side) known to be TWAPing, and slice-sized:
     a much bigger engine order from the same wallet is something else (a liquidation) and isn't excused."""
     if not twaps or not o.engine or not o.taker:
         return False

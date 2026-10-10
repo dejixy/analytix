@@ -52,7 +52,7 @@ def test_flickering_quotes_are_not_walls():
 
 def test_depth_summary_flags_stacking_that_keeps_getting_pulled():
     w = WallStats(pulled_near={"bid": 0, "ask": 3}, eaten={"bid": 0, "ask": 1}, held={"bid": 0, "ask": 0})
-    assert _wall_note(w, bid_chg=0.0, ask_chg=0.94).startswith(" Careful: 3 of the last 4 big ask walls were pulled")
+    assert _wall_note(w, bid_chg=0.0, ask_chg=0.94).startswith(" Careful: 3 of the last 4 big sell walls vanished as price got close")
     real = WallStats(pulled_near={"bid": 1, "ask": 0}, eaten={"bid": 2, "ask": 0}, held={"bid": 1, "ask": 0})
     assert "3 of 4 held or got traded into" in _wall_note(real, bid_chg=0.5, ask_chg=0.0)
     assert _wall_note(w, bid_chg=0.0, ask_chg=0.05) == ""          # not stacking: nothing to say

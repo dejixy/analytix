@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fmtPrice, fmtTime } from "../format.js";
 
 const RULES = [
-  { kind: "cascade", label: "Liquidation cascade", help: "A chain of forced selling or buying, once open interest confirms it", field: "min_usd", unit: "$", hint: "min liquidated" },
+  { kind: "cascade", label: "Liquidation cascade", help: "A run of forced selling or buying, once open interest confirms it", field: "min_usd", unit: "$", hint: "min liquidated" },
   { kind: "liquidation", label: "Big liquidation", help: "One account force-closed by the exchange", field: "min_usd", unit: "$", hint: "min size" },
-  { kind: "twap", label: "New TWAP", help: "A wallet starts slicing a big order over time", field: "min_usd_per_hour", unit: "$", hint: "min per hour" },
-  { kind: "level", label: "Level break", help: "A level that absorbed flow for minutes gives way" },
-  { kind: "absorbed", label: "Absorbed flow", help: "Heavy one-sided flow fails to move price on the 10m or 60m card" },
-  { kind: "volatility", label: "Volatility spike", help: "The 10m range is this many times its usual size", field: "min_ratio", unit: "×", hint: "times usual" },
+  { kind: "twap", label: "New TWAP", help: "A wallet starts buying or selling a big amount in small slices over time", field: "min_usd_per_hour", unit: "$", hint: "min per hour" },
+  { kind: "level", label: "Broken price level", help: "A price that buyers or sellers defended for minutes gives way" },
+  { kind: "absorbed", label: "Heavy trading, price held", help: "Lots of buying or selling that fails to move price, on the 10m or 60m card" },
+  { kind: "volatility", label: "Volatility spike", help: "The last 10 minutes covered this many times the normal range", field: "min_ratio", unit: "×", hint: "times usual" },
   { kind: "price", label: "Price alerts", help: "Your levels below; each fires once when price crosses it" },
 ];
 const NOTIFY_KEY = "analytix.notify";
@@ -126,7 +126,7 @@ export default function AlertsPanel({ coin, onClose }) {
     }
     const perm = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
     if (perm !== "granted") {
-      setError("Notifications are blocked for this site — allow them in the browser's site settings.");
+      setError("Notifications are blocked for this site. Allow them in the browser's site settings.");
       return;
     }
     try { localStorage.setItem(NOTIFY_KEY, "1"); } catch { /* private mode */ }

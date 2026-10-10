@@ -8,21 +8,21 @@ behave very differently, and the rules that create them make them separable:
   TWAP          Suborders at a fixed interval of at least 30 seconds, each about the
                 same size (±20% if randomised; up to 3× to catch up after a miss), for
                 5 minutes to 7 days. → one wallet, one side, a regular cadence, similar sizes.
-  Liquidation   A market order for the whole position — or 20% of it for positions over
+  Liquidation   A market order for the whole position, or 20% of it for positions over
                 $100K, then the rest within a 30-second cooldown. In a sell-off many
                 accounts hit maintenance margin in the same few seconds.
 
 So an engine order is:
   twap        its (wallet, side) has ≥ 3 engine orders at a regular interval ≥ 25s and of
-              similar size — and this order is slice-sized (≤ 4.5× the usual slice: a +20%
+              similar size, and this order is slice-sized (≤ 4.5× the usual slice: a +20%
               randomised slice tripled by catch-up is 3.6×), so a TWAP wallet that later
               gets liquidated is still caught
   forced      after a 90-second warm-up (so running TWAPs are recognised first), ≥ 3
               distinct wallets with no recent engine history hit the same side within 3s;
               or one wallet's ≥ $20K chunk followed within 31s by ≥ 3.5× more (a 20%
-              partial liquidation, then the remaining ~80%) — undone if that wallet keeps
+              partial liquidation, then the remaining ~80%), undone if that wallet keeps
               producing engine orders (4 inside 3 minutes is recurring flow, not a liquidation)
-  otherwise   unclassified — a lone engine fill could be a small liquidation or a TWAP's
+  otherwise   unclassified: a lone engine fill could be a small liquidation or a TWAP's
               first slice, and we don't guess
 
 Classifications live in maps keyed by (wallet, side) and (time, wallet), so orders already
@@ -90,7 +90,7 @@ class EngineFlow:
                 return
 
         # One account's 20% partial liquidation, then the rest inside the 30s cooldown. Not for a known TWAP
-        # (its previous order is a slice), and undone if the wallet keeps going — liquidations don't recur.
+        # (its previous order is a slice), and undone if the wallet keeps going: liquidations don't recur.
         recent_n = sum(1 for ts, _ in hist if t - ts <= RECURRING_PAIR_MS)
         if recent_n >= RECURRING_PAIR:
             for k in [k for k in self.forced if k[1] == w and t - k[0] <= RECURRING_PAIR_MS
@@ -102,7 +102,7 @@ class EngineFlow:
                 self.forced[(t0, w)] = n0
                 self.forced[(t1, w)] = n1
 
-        # Many accounts closed in the same instant — once running TWAPs have had time to show themselves.
+        # Many accounts closed in the same instant, once running TWAPs have had time to show themselves.
         self._recent.append((t, w, side, usd, recurring))
         while self._recent and t - self._recent[0][0] > CLUSTER_MS:
             self._recent.popleft()

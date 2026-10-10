@@ -2,11 +2,11 @@
 
 **Why did this price move?** Analytix is a real-time market microstructure tool for Hyperliquid perps. It ingests live trades, the L2 order book and funding/open-interest data for several coins at once (ETH, BTC, SOL and HYPE by default, switchable in the top bar). It then explains each move over 1m, 10m, 60m, 6h, 12h, 24h and 1w windows in plain language, for example:
 
-> **ETH −1.33% in 1m** — driven by a long-liquidation-style cascade (22 sweeps, $3.79M) and aggressive selling (92% of taker volume)
-> · A significant move: 15.0× the typical 1m move (±9 bps)
-> · Sellers took 92% of $8.59M taker volume (1157 fills, 3.9× normal pace)
-> · Near-touch asks +28% ($808K → $1.03M), bids −64% ($888K → $317K); the book now leans 53% toward asks
-> · Open interest −1.49% while price fell: crowded longs being flushed. Funding +28.8% APR
+> **ETH −1.74% in 1m**: driven by a long-liquidation cascade (31 big orders, $5.52M; $5.08M liquidated) and heavy selling (94% of market orders)
+> · A significant move: 19.5× a typical 1m move (±0.09%). Range 2,645.95 to 2,692.85.
+> · Sellers made up 94% of $10.50M in market orders (1,413 trades, 4.7× the usual pace).
+> · Sell orders close to the price +5% ($1.03M → $1.08M), buy orders −66% ($1.06M → $359K). The book now leans 50% toward sellers.
+> · Open interest −1.99% while price fell: crowded longs being forced out. Funding 27.9% a year (longs pay shorts, crowded).
 >
 > *(Output from the synthetic demo session.)*
 
@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 55 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 140 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -60,7 +60,7 @@ Hyperliquid WS ──► ingestion/ ──► state.py ────────�
 |---|---|
 | `config.py` | **Single source of truth.** `WINDOWS`, thresholds and modes. Add `"1h": 3600` and every layer picks it up. |
 | `models/` | Frozen dataclasses: `Trade`, `OrderBook`/`BookSummary`, `AssetContext`, `AggressiveOrder`, `SignalResult`, `Explanation`, `MoveEvent`. |
-| `models/barModel.py` | One-minute `Bar`s — the storage tier for 6h … 1w windows. |
+| `models/barModel.py` | One-minute `Bar`s: the storage tier for 6h … 1w windows. |
 | `storage/barStore.py` | Saves live bars to SQLite (`data/bars.sqlite`) so the long windows survive restarts. |
 | `ingestion/backfill.py` | Downloads ~a week of 5m price candles and funding history from Hyperliquid's REST API on start. |
 | `buffer/ringBuffer.py` | A time-evicting buffer on the **exchange clock**. `T` is bound to a `Timestamped` Protocol. `window()` stops early. Out-of-order items are rejected. |
@@ -111,23 +111,23 @@ Each card shows the five readings that matter most for its horizon: a number for
 | Timeframe | Rows | Why these |
 |---|---|---|
 | **1m** (execution) | Flow · Who · Forced · Book · Liquidity | who's hitting the book right now, whether it's liquidations, and what a big order would cost |
-| **10m** (scalp) | Flow · Who · Trend · VWAP · Book | whether the pressure is working, who it is, and whether price is trending or chopping around value |
-| **60m** (session) | Trend · VWAP · Flow · Who · Positioning | the structure of the hour, plus who's opening or closing positions |
-| **6h / 12h / 24h / 1w** (swing) | Trend · VWAP · Positioning · Funding · Flow | trend and value over the day, positioning, and what it costs to hold |
+| **10m** (scalp) | Flow · Who · Trend · Avg price · Book | whether the pressure is working, who it is, and whether price is trending or chopping around value |
+| **60m** (session) | Trend · Avg price · Flow · Who · Positions | the structure of the hour, plus who's opening or closing positions |
+| **6h / 12h / 24h / 1w** (swing) | Trend · Avg price · Positions · Funding · Flow | trend and value over the day, positioning, and what it costs to hold |
 
-- **Flow**: aggressive buy vs sell share, net dollars, and what that flow *did*. The tag compares price impact with what that much net flow normally buys: *absorbed*, *against flow*, *outsized*, or the pace of trading.
-- **Who**: Hyperliquid prints the wallet behind every trade, so this row shows how concentrated the aggressive side is: one wallet, a **TWAP**, or many traders. Hover it for the wallet, its size, and its slice cadence. A "95% sell, flat price" tape that's really one TWAP being absorbed is a very different market from broad selling.
+- **Flow**: market-order buy vs sell share, net dollars, and what that flow *did*. The tag compares the price move with what that much net buying or selling usually does: *price held*, *rose anyway* / *fell anyway*, *big reaction*, or how busy trading is (*busy*, *steady*, *quiet*).
+- **Who**: Hyperliquid prints the wallet behind every trade, so this row shows how concentrated the aggressive side is: one wallet (*whale*), a **TWAP** bot, *few wallets* or *many wallets*. Hover it for the wallet, its size, and its slice cadence. A "95% sell, flat price" tape that's really one TWAP being absorbed is a very different market from broad selling.
 - **Forced**: sweeps, cascades and **engine-executed liquidations**. Fills the exchange's engine generates itself carry an all-zero transaction hash; the classifier (`engine/engineFlow.py`) separates TWAP slices from forced closes using Hyperliquid's own rules:
   - **TWAP**: a fixed interval of 30s or more, with similar slice sizes.
   - **Forced close**: many accounts on the same side within the same few seconds, or a 20% partial liquidation followed by the rest.
   - Anything ambiguous is left unclassified.
-- **Book**: bid/ask split of resting depth near the price, how it changed, and whether big walls on the stacking side keep getting pulled ("bait?").
-- **Liquidity**: slippage of a large market order (sized to the coin) right now, buy and sell, compared with its usual cost over the last 30 minutes.
-- **Trend**: efficiency ratio (net move ÷ distance travelled over 30 equal steps; a random market scores about 0.18) and position in the range. Thresholds are calibrated on simulated random walks:
+- **Book**: bid/ask split of resting depth near the price (*more bids*, *more asks*, *balanced*), how it changed, and whether big walls on the stacking side keep getting pulled (*fake walls?*).
+- **Liquidity**: what a large market order (sized to the coin) costs in slippage right now, in dollars, buy and sell, compared with its usual cost over the last 30 minutes (*thin*, *normal*, *deep*).
+- **Trend**: how one-way the move was (efficiency ratio: net move ÷ distance travelled over 30 equal steps; a random market scores about 18%) and where price sits in the range (near the high, mid-range, near the low). Thresholds are calibrated on simulated random walks:
   - "uptrend/downtrend" fires on about 4% of pure-noise windows and catches about 93% of real drifts.
-  - "chop" fires on about 4% of noise.
-- **VWAP**: price vs the window's volume-weighted average price. The distance is scored against how far a random market typically sits from its own VWAP, so "stretched" means further than about 95% of random moments.
-- **Positioning**: OI change in % and $, ranked against every OI move of the same timeframe, and who it says is moving (longs in, short cover, shorts in, longs out).
+  - "choppy" fires on about 4% of noise. Otherwise it reads *sideways* or *quiet*.
+- **Avg price** (VWAP): price vs the window's volume-weighted average price. The distance is scored against how far a random market typically sits from its own VWAP, so *far above* / *far below* means further than about 95% of random moments (otherwise *above average*, *below average* or *at average*).
+- **Positions**: open interest (all open positions) change in % and $, ranked against every open interest move of the same timeframe, and who it says is moving (*new longs*, *shorts exit*, *new shorts*, *longs exit*, *long squeeze*, *short squeeze*).
 - **Funding**: the rate, what holding a position for that timeframe costs, and whether one side is crowded. A side counts as crowded only when funding is both a high percentile for the week (mid-rank, so the usual floor rate isn't misread) and meaningfully above the floor.
 
 The footer compares the window's high-low range with the usual range for that timeframe. Rows from a timeframe that hasn't filled yet are dimmed, and long windows say how much of the window their live flow covers.
@@ -138,12 +138,12 @@ The four signals say *what happened*. These reads turn them into things a trader
 
 | Read | Where you see it | How it's worked out | Why it matters |
 |---|---|---|---|
-| **Flow efficiency** | card footer: `impact 0.3× · absorbed`; Why panel | The coin's normal price impact (bps per $1M of net taker flow) is fitted per timeframe from live minute bars. Each window's actual move ÷ the move its net flow normally buys. | Under 0.35× or the wrong way means the aggressors were absorbed; over 2.5× means a thin book or a move led from other venues. "76% sell" alone can't tell you that. Each timeframe needs its own history: ~20 min of live bars for 1m, ~40 for 10m, ~4 h for 60m (saved across restarts). |
-| **Defended levels** | headline: `bids absorbed it at 2,650.40`; dashed lines on the chart; LEVEL events | The price bin (±2 bps) that absorbed the most aggressive flow without price trading beyond it afterwards. Tracked from 1m/10m/60m; a level breaks when price stays half a normal 1-minute move through it for 10 s. | A level to lean on (stop just beyond it) and a trigger (it breaking). Only levels that held 3+ minutes log a break; breaks within 30 s on one side are one event. |
+| **Flow efficiency** | card footer: `moved 0.3× usual · price held`; Why panel | The coin's normal price impact (bps per $1M of net taker flow) is fitted per timeframe from live minute bars. Each window's actual move ÷ the move its net flow normally buys. | Under 0.35× or the wrong way means the aggressors were absorbed; over 2.5× means a thin book or a move led from other venues. "76% sell" alone can't tell you that. Each timeframe needs its own history: ~20 min of live bars for 1m, ~40 for 10m, ~4 h for 60m (saved across restarts). |
+| **Defended levels** | headline: `sellers pushed, but buyers held at 2,650.40`; dashed lines on the chart; LEVEL events | The price bin (±2 bps) that absorbed the most aggressive flow without price trading beyond it afterwards. Tracked from 1m/10m/60m; a level breaks when price stays half a normal 1-minute move through it for 10 s. | A level to lean on (stop just beyond it) and a trigger (it breaking). Only levels that held 3+ minutes log a break; breaks within 30 s on one side are one event. |
 | **Cascade check** | Forced flow summary; CASCADE events and pop-ups | Open interest from before the first sweep vs a reading taken 15 s+ after the last. OI falling by ≥ 50% of the cascade's size → likely liquidations; flat or rising → likely one large trader. Then price is followed for 15 min. | Forced selling that's absorbed tends to snap back; repositioning keeps going. "Won back 60% in 5m" vs "kept going past the low" tells you which. Not proof: a liquidated long can sell into a new long's bid, leaving OI flat. |
 | **Walls: real or pulled** | order book `wall` tags and `real · pulled` counts; Book depth summary | Levels ≥ 4× the median visible level and ≥ 2 sweeps' worth of USD, followed until they go. Eaten = at least half of what vanished was traded; pulled = vanished unfilled with price within 10 bps. | "Asks +94%" may be bait. If the stacking side keeps pulling its walls, the Book depth summary says so. Hyperliquid shows 20 levels a side, so this only sees walls near the touch. |
-| **Percentiles** | card stat: `OI −1.40% · top 5%`; Positioning panel | Funding vs the past week's hourly readings; each window's OI change vs every OI move over the same timeframe in the saved live bars. | Normal for one coin is extreme for another. A percentile says whether this move is unusual for *this* coin. |
-| **Timeframe agreement** | ▲/▼ on each tab; `Flow aligned ▲ 1m–60m` beside them | Which way aggressive flow leans (strength ≥ 0.25) on 1m, 10m, 60m. | Aligned flow is a trend; short-term flow pushing against the 60m is a pullback or a turn. |
+| **Percentiles** | Positions row: `−1.40% (−$21.3M) · top 5%`; Positioning panel | Funding vs the past week's hourly readings; each window's open interest change vs every one over the same timeframe in the saved live bars. | Normal for one coin is extreme for another. A percentile says whether this move is unusual for *this* coin. |
+| **Timeframe agreement** | ▲/▼ on each tab; `Buying on 1m and 10m, selling on 60m` beside them | Which way aggressive flow leans (strength ≥ 0.25) on 1m, 10m, 60m. | Aligned flow is a trend; short-term flow pushing against the 60m is a pullback or a turn. |
 
 ### Running Analytix on the server
 
@@ -174,41 +174,42 @@ The **Alerts** button opens the alert settings. Alerts are checked every second 
 
 | Alert | Fires when | Default |
 |---|---|---|
-| Liquidation cascade | a chain of forced flow, once its OI check is in | ≥ $1M liquidated or swept |
+| Liquidation cascade | a run of forced selling or buying, once open interest confirms it | ≥ $1M liquidated or swept |
 | Big liquidation | one account force-closed by the exchange (its 20% chunk and the rest added up) | ≥ $500K |
-| New TWAP | a wallet starts slicing a big order | ≥ $1M an hour |
-| Level break | a defended level gives way | on |
-| Absorbed flow | heavy one-sided flow fails to move price on the 10m or 60m card | on |
-| Volatility spike | the 10m range is ≥ N× its usual size | 2.5× |
-| Price alerts | price crosses a level you set (once) | — |
+| New TWAP | a wallet starts buying or selling a big amount in small slices | ≥ $1M an hour |
+| Broken price level | a price that buyers or sellers defended for minutes gives way | on |
+| Heavy trading, price held | lots of buying or selling fails to move price on the 10m or 60m card | on |
+| Volatility spike | the last 10 minutes covered ≥ N× the normal range | 2.5× |
+| Price alerts | price crosses a level you set (once) | you add them |
 
 Each alert type has a quiet time per coin (15 minutes by default), and nothing fires in the first five minutes after start-up, while the engine learns what's normal. A ping reads like:
 
-> 🔻 **ETH long-liquidation cascade · $5.08M liquidated**
-> 31 sweeps in 37s · price −1.45% · liquidations confirmed by OI
-> now 2,648.95 (−0.70% in 10m) · 61% sell · net −$6.18M
+> 🔻 **ETH: $5.08M of longs liquidated in 37s**
+> 31 big sell orders in a row pushed price −1.45%. Open interest fell, so these were real liquidations.
+> Now 2,648.95 (−0.70% in 10m). Last 10m of market orders: 61% sell · net −$6.18M.
 
-**Telegram setup:** message @BotFather, send `/newbot`, paste the token into the Alerts panel, press Start in your new bot, then **Find chats** and switch your chat on. Only chats you switch on get alerts — anyone else who finds the bot gets nothing. Add the bot to a group or a channel to share alerts. Settings and the token live in `data/alerts.json` on the machine running Analytix (never in git; the API never returns the token). Replays never send to Telegram.
+Every alert says exactly what happened and where: "ETH fell through 2,667.90" (buyers had defended it for 8 min, soaking up $1.21M of selling), never just "level broke".
+
+**Telegram setup:** message @BotFather, send `/newbot`, paste the token into the Alerts panel, press Start in your new bot, then **Find chats** and switch your chat on. Only chats you switch on get alerts; anyone else who finds the bot gets nothing. Add the bot to a group or a channel to share alerts. Settings and the token live in `data/alerts.json` on the machine running Analytix (never in git; the API never returns the token). Replays never send to Telegram.
 
 ### Plan a trade
 
 The **Plan a trade** button opens the position planner. Pick long or short, margin, leverage and how long you'll hold (15m … 1w). It answers, before you click buy:
 
-- **Chance of liquidation before you exit**, the liquidation price (Hyperliquid's isolated-margin formula, maintenance = half the initial margin at the coin's max leverage), and a ladder of the same odds at 1×, 2×, 3×, 5×, 10× …
+- **Chance of liquidation before you exit** and the liquidation price (Hyperliquid's isolated-margin formula, maintenance = half the initial margin at the coin's max leverage).
 - **Safe leverage**: the most leverage that keeps that chance under 1% / 5% for this hold.
 - **Where price trades before you exit**: round levels above and below with the chance price touches each, so you can see where a stop would be hit by noise and where a target is realistic.
-- **When you close**: P&L percentiles (5th … 95th) after fees, slippage on the live book and funding, and the chance of being in profit.
+- **When you close**: the spread of P&L outcomes (from the worst 1 in 20 to the best 1 in 20) after fees, slippage on the live book and funding, and the chance of being in profit.
 - **Costs**: fees (0.045% in and out), slippage now, and funding expected over the hold (today's rate drifting back to the week's average).
-- **Plain summary first**: one sentence on what the trade means ("5× long for 24h: liquidation is very unlikely. Expect about ±2.8% of movement, and to be 1.6% against you at some point (−$82). Costs $6."), and the leverage to drop to if the risk is over 1%.
 - **Isolated or cross margin.** In cross (Hyperliquid's default), your whole account balance backs the position: liquidation is where the account runs out, and a liquidation takes the account.
 - **The price cone**: where half and 90% of simulated paths are at each moment of the hold, with entry, stop, target and liquidation drawn on it; hover for the numbers and the chance of liquidation by then.
 - **Bad cases**: the worst 1-in-100 result, the average of the worst 5% (expected shortfall), and the chance of losing half your margin or more.
 - **Slippage beyond the visible book**: sizes the 20 visible levels can't fill are costed with the square-root impact law (≈ 0.7 × daily volatility × √(size ÷ 24h volume)) instead of being left out.
-- **Stop and take-profit** (optional, % from entry): the chance each closes the trade first, or that neither does before you exit; what each is worth after costs; how long each typically takes; and the average result. If one candle reaches both, the loss is taken as first. A stop past the liquidation price is flagged, since liquidation would come first. With no directional view the average is roughly minus the costs whatever the bracket — it changes the shape of your results, not the average.
+- **Stop and take-profit** (optional, % from entry): the chance each closes the trade first, or that neither does before you exit; what each is worth after costs; how long each typically takes; and the average result. If one candle reaches both, the loss is taken as first. A stop past the liquidation price is flagged, since liquidation would come first. With no directional view the average is roughly minus the costs whatever the bracket: it changes the shape of your results, not the average.
 
-How the odds are made — filtered historical simulation, the method risk desks use for VaR (`engine/planner.py`):
+How the odds are made: filtered historical simulation, the method risk desks use for VaR (`engine/planner.py`):
 
-1. The coin's own candles from Hyperliquid: hourly (~200 days) for holds over 6h, 5-minute (~17 days) for shorter ones. Each candle gives three moves from the previous close: to the close, the low and the high — wicks are what liquidate people.
+1. The coin's own candles from Hyperliquid: hourly (~200 days) for holds over 6h, 5-minute (~17 days) for shorter ones. Each candle gives three moves from the previous close: to the close, the low and the high (wicks are what liquidate people).
 2. Time of day and weekends are taken out (measured on the ~200 days of hourly candles, reused for the 5-minute model).
 3. A GARCH(1,1) gives each candle's expected volatility; dividing by it leaves the coin's shape of surprise (fat tails, lopsided wicks) without the regime. How long volatility lingers is uncertain, so each path draws its own GARCH parameters from how well they fit.
 4. Volatility is brought up to the moment through every candle since the fit and the move so far, so a crash ten minutes ago counts.
@@ -220,7 +221,7 @@ No direction is assumed: historical drift is removed, so it sizes the room a tra
 
 ### Does any of it work? Measure it
 
-`scripts/study.py` replays recordings and, using only what the engine knew at each moment, logs every time one of these reads fires and the direction it implies. It also logs every card tag on the 1m, 10m and 60m cards that leans one way ("absorbed", "TWAP", "stretched", "uptrend", "liq flush"…), in the direction the row leans. Then it checks the price 1, 5, 15 and 60 minutes later:
+`scripts/study.py` replays recordings and, using only what the engine knew at each moment, logs every time one of these reads fires and the direction it implies. It also logs every card tag on the 1m, 10m and 60m cards that leans one way ("price held", "TWAP", "far above", "uptrend", "liquidations"…), in the direction the row leans. Then it checks the price 1, 5, 15 and 60 minutes later:
 
 ```bash
 python -m scripts.record                 # leave it running: days, not hours
@@ -233,10 +234,10 @@ python -m scripts.study data/recordings --coin ETH --min-n 30 --csv study.csv
 
 signal                                     n  │ 1m  hit   avg    t  │ 5m  hit   avg    t  …
 absorption (10m)                          41  │     58%  +2.1  +1.9 │     55%  +3.4  +1.2 …
-card vwap: stretched (10m)                88  │     44%  -0.9  -1.4 │     41%  -2.6  -2.2 …
+card vwap: far above (10m)                88  │     44%  -0.9  -1.4 │     41%  -2.6  -2.2 …
 ```
 
-`hit` is the share that went the implied way, `avg` the mean move that way in bps, `t` the average ÷ its standard error. A card tag with a negative `avg` means fading it worked (above: price stretched above VWAP tended to come back). Under ~30 occurrences or with |t| < 2, it isn't known yet. Keep the reads that hold up across days and coins, and drop the ones that don't. (The numbers above are illustrative. The synthetic session is far too short to say anything.)
+`hit` is the share that went the implied way, `avg` the mean move that way in bps, `t` the average ÷ its standard error. A card tag with a negative `avg` means fading it worked (above: price far above VWAP tended to come back). Under ~30 occurrences or with |t| < 2, it isn't known yet. Keep the reads that hold up across days and coins, and drop the ones that don't. (The numbers above are illustrative. The synthetic session is far too short to say anything.)
 
 ### Recording for the study
 
@@ -283,8 +284,8 @@ The recorder prints how many MB the current hour has taken, so you can see your 
 | `ANALYTIX_RECORD` | `0` | `1`: in live mode, also record the feed to hourly files (for the study) |
 | `ANALYTIX_RECORD_DIR` | `data/recordings` | where those files go |
 | `ANALYTIX_ALERTS_FILE` | `data/alerts.json` | alert settings, price levels and the Telegram bot token |
-| `ANALYTIX_RECORD_FILE` | — | in live mode, also record raw messages to this one file |
-| `ANALYTIX_LIQUIDATORS` | — | comma-separated addresses |
+| `ANALYTIX_RECORD_FILE` | none | in live mode, also record raw messages to this one file |
+| `ANALYTIX_LIQUIDATORS` | none | comma-separated addresses |
 | `ANALYTIX_BACKFILL` | `1` | `0` to skip downloading price candles on start |
 | `ANALYTIX_BARS_DB` | `data/bars.sqlite` | where live minute bars are saved (live mode only) |
 

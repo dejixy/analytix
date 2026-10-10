@@ -1,6 +1,6 @@
 import { arrow, fmtPct, headlineBody } from "../format.js";
 
-const ALIGN_ICON = { supports: "✓", opposes: "✕", neutral: "–" };
+const ALIGN_ICON = { supports: "✓", opposes: "✕", neutral: "·" };
 const ALIGN_TEXT = { supports: "supports the move", opposes: "pushed against the move", neutral: "not a factor" };
 
 export function DriverBars({ ex, limit = 4 }) {
@@ -10,9 +10,9 @@ export function DriverBars({ ex, limit = 4 }) {
         const dir = ex.signals[d.name]?.direction || "neutral";
         const cls = d.alignment === "neutral" ? "neutral" : dir;
         return (
-          <div className="driver" key={d.name} title={`${d.label}: ${ALIGN_TEXT[d.alignment]} — ${d.summary}`}>
+          <div className="driver" key={d.name} title={`${d.label}: ${ALIGN_TEXT[d.alignment]}. ${d.summary}`}>
             <span className="driver-label">{d.label}</span>
-            <span className="driver-stat">{ex.signals[d.name]?.stat || "—"}</span>
+            <span className="driver-stat">{ex.signals[d.name]?.stat || ""}</span>
             <div className="track">
               <div className={`fill ${cls}`} style={{ width: `${Math.max(2, d.strength * 100)}%` }} />
             </div>
@@ -26,9 +26,9 @@ export function DriverBars({ ex, limit = 4 }) {
 
 // Verdicts worth catching the eye: they change how you'd trade the timeframe.
 const HOT = new Set([
-  "TWAP", "whale", "absorbed", "outsized", "stretched", "thin", "bait?", "liq flush", "one trader",
-  "crowded longs", "crowded shorts", "chop", "uptrend", "downtrend", "short squeeze", "long flush",
-  "against flow", "liquidations",
+  "TWAP", "whale", "price held", "big reaction", "far above", "far below", "thin", "fake walls?", "one trader",
+  "crowded longs", "crowded shorts", "choppy", "uptrend", "downtrend", "short squeeze", "long squeeze",
+  "rose anyway", "fell anyway", "liquidations",
 ]);
 
 /** The card's rows: one per metric chosen for this timeframe (engine/summary.py). Hover a row for the working. */
@@ -39,7 +39,7 @@ export function SummaryRows({ ex }) {
       {ex.summary.map((m) => {
         const partial = m.partial || warming;
         const tip =
-          `${m.label}: ${m.value} — ${m.tag}${partial ? " (only part of the window has data so far)" : ""}` +
+          `${m.label}: ${m.value}${m.tag ? ` (${m.tag})` : ""}${partial ? ". Only part of the window has data so far." : ""}` +
           (m.detail ? `\n\n${m.detail}` : "") +
           `\n\nHow it's worked out: ${m.help}`;
         return (
@@ -80,9 +80,9 @@ export default function ExplanationCard({ ex, window, selected, onSelect }) {
           {move.significance !== "quiet" && <span aria-hidden="true">{arrow(move.direction)} </span>}
           {fmtPct(move.move_pct)}
         </span>
-        <span className="sig" title={`${Math.abs(move.z).toFixed(1)}× the typical ${window} move (±${move.expected_bps.toFixed(0)} bps)`}>
+        <span className="sig" title={`This move is ${Math.abs(move.z).toFixed(1)}× the size of a normal ${window} move (about ±${(move.expected_bps / 100).toFixed(2)}%)`}>
           <span className={`sig-dot ${move.significance}`} />
-          {move.significance.toUpperCase()} · {Math.abs(move.z).toFixed(1)}σ
+          {move.significance.toUpperCase()} · {Math.abs(move.z).toFixed(1)}×
         </span>
       </div>
       <div className="headline">{headlineBody(ex.headline)}</div>
@@ -96,7 +96,7 @@ export default function ExplanationCard({ ex, window, selected, onSelect }) {
           {ex.coverage < 0.95
             ? `warming up · ${Math.round(ex.coverage * 100)}% of window`
             : ex.flow_coverage < 0.95
-              ? `flow data: ${Math.round(ex.flow_coverage * 100)}% of window`
+              ? `trade data: ${Math.round(ex.flow_coverage * 100)}% of window`
               : (
                 <span
                   className="range-note"

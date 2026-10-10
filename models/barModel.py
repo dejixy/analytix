@@ -4,11 +4,11 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class Bar:
     """
-    A compressed slice of market history — the storage tier for long windows.
+    A compressed slice of market history: the storage tier for long windows.
 
     Live bars are built from the feed every minute and carry everything: price,
     who was aggressive, sweeps, book depth, open interest. Backfilled bars come
-    from Hyperliquid's candle endpoint and carry price and total volume only —
+    from Hyperliquid's candle endpoint and carry price and total volume only:
     the public API has no history of trades by side, depth or OI.
     """
     timestamp: int                   # bar open, ms (exchange clock)
@@ -42,7 +42,7 @@ class Bar:
 
 
 class BarAccumulator:
-    """The bar currently being built. Mutable on purpose — it becomes a frozen Bar when the minute closes."""
+    """The bar currently being built. Mutable on purpose: it becomes a frozen Bar when the minute closes."""
 
     __slots__ = ("start", "open", "high", "low", "close", "buy", "sell", "fills", "sw_b", "sw_s",
                  "swn_b", "swn_s", "bid", "ask", "oi", "funding", "mark")

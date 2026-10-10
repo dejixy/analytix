@@ -3,8 +3,8 @@ Alert delivery: settings, the once-a-second check, Telegram and the dashboard fe
 
 Settings live in data/alerts.json on the machine running Analytix (never in git): which
 alerts are on and their minimums, the cooldown, which coins, your price levels, and the
-Telegram bot token plus the chats you've approved. The token is write-only through the API
-— it's never sent back to a browser.
+Telegram bot token plus the chats you've approved. The token is write-only through the API:
+it's never sent back to a browser.
 
 Telegram: a bot can only message chats that have started it (or groups/channels it was added
 to), and Analytix only sends to the ones switched on here. "Find chats" lists everyone who
@@ -118,7 +118,7 @@ class AlertService:
         self._save()
 
     def public(self) -> dict:
-        """Settings for the dashboard — everything except the token itself."""
+        """Settings for the dashboard: everything except the token itself."""
         tg = self.cfg["telegram"]
         return {
             "rules": self.cfg["rules"], "cooldown_min": self.cfg["cooldown_min"], "coins": self.cfg["coins"],
@@ -237,15 +237,15 @@ class AlertService:
                 c["on"] = bool(on)
                 self._save()
                 return self.public()
-        raise AlertError("no such chat — use Find chats first")
+        raise AlertError("no such chat: press Find chats first")
 
     async def test(self) -> dict:
         chats = [c for c in self.cfg["telegram"].get("chats", []) if c.get("on")]
         if not chats:
             raise AlertError("switch on at least one chat first")
         coins = ", ".join(self.rt.coins)
-        text = (f"✅ <b>Analytix alerts connected</b>\nWatching {coins}. You'll get the alerts switched on in the "
-                f"dashboard's Alerts panel.")
+        text = (f"✅ <b>Analytix alerts connected</b>\nWatching {coins}. You'll get the alerts that are switched on "
+                f"in the dashboard's Alerts panel.")
         for c in chats:
             await self._api("sendMessage", chat_id=c["id"], text=text, parse_mode="HTML",
                             disable_web_page_preview=True)

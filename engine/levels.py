@@ -8,14 +8,14 @@ gives a level to lean on (a stop just beyond it) and a trigger (it breaking).
 Finding the level. Bin the aggressors' fills by price (2 bps bins), take each
 bin with its neighbours as a cluster, and walk the clusters from heaviest to
 lightest. The first one where price never traded meaningfully beyond it after
-the absorption began is the defended level — provided it took a real share
+the absorption began is the defended level, provided it took a real share
 (≥ 20%) of the aggressors' volume.
 
 Tracking it. Levels from the tick windows (1m, 10m, 60m) that absorbed at least
 five sweeps' worth of flow are kept, merged when they sit within a few bps of
 each other. A level is
 broken when price closes beyond it by half a normal one-minute move and stays
-there for 10 seconds — a wick through doesn't count. Only a level that held for
+there for 10 seconds: a wick through doesn't count. Only a level that held for
 three minutes or more gets a "broke" event; untouched levels expire after four
 hours.
 """
@@ -74,10 +74,10 @@ def defended_level(trades: list[Trade], aggressor: TradeSide) -> DefendedLevel |
 
 def level_sentence(lv: DefendedLevel) -> str:
     if lv.side == "bid":
-        return (f"Bids held {fmt_px(lv.price)}: {fmt_usd(lv.absorbed)} of market sells ({lv.share:.0%} of all selling) "
-                f"hit around that price and it never traded lower.")
-    return (f"Offers held {fmt_px(lv.price)}: {fmt_usd(lv.absorbed)} of market buys ({lv.share:.0%} of all buying) "
-            f"hit around that price and it never traded higher.")
+        return (f"Buyers defended {fmt_px(lv.price)}: {fmt_usd(lv.absorbed)} of market selling ({lv.share:.0%} "
+                f"of all selling) hit that price, and it never went lower.")
+    return (f"Sellers defended {fmt_px(lv.price)}: {fmt_usd(lv.absorbed)} of market buying ({lv.share:.0%} "
+            f"of all buying) hit that price, and it never went higher.")
 
 
 @dataclass(slots=True)
@@ -177,14 +177,17 @@ def _margin_bps(sigma_1s_bps: float) -> float:
 def _break_event(ev_id: str, ts: int, levels: list[TrackedLevel]) -> MarketEvent:
     down = levels[0].side == "bid"
     prices = sorted(t.price for t in levels)
-    where = fmt_px(prices[0]) if len(prices) == 1 else f"{fmt_px(prices[0])}–{fmt_px(prices[-1])}"
-    noun = ("Bid level" if down else "Offer level") + ("s" if len(levels) > 1 else "")
-    verb = "broke — it had" if len(levels) == 1 else "broke — they had"
+    # the level price was crossed: falling through the highest bid level, or breaking above the lowest offer
+    edge = prices[-1] if down else prices[0]
+    where = fmt_px(edge) if len(prices) == 1 else f"the {fmt_px(prices[0])} to {fmt_px(prices[-1])} zone"
+    who = "buyers" if down else "sellers"
     absorbed = sum(t.absorbed for t in levels)
     longest = max(levels, key=lambda t: TRACK_WINDOWS.index(t.window))
     held = max((t.beyond_since or ts) - t.created_ms for t in levels)
     return MarketEvent(
         id=ev_id, kind="level_break", ts=ts, direction=Direction.DOWN if down else Direction.UP,
-        title=f"{noun} {where} {verb} absorbed {fmt_usd(absorbed)} of {'selling' if down else 'buying'}",
-        detail=f"{longest.window} level · held {_minutes(held)}", window=longest.window, stat=longest.window,
+        title=(f"Price {'fell through' if down else 'broke above'} {where}, where {who} had soaked up "
+               f"{fmt_usd(absorbed)} of {'selling' if down else 'buying'}"),
+        detail=f"{who.capitalize()} held it for {_minutes(held)} ({longest.window} chart)", window=longest.window,
+        stat=longest.window, price=edge, amount=absorbed, held_ms=held,
     )

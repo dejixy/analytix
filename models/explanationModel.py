@@ -83,6 +83,9 @@ class MarketEvent:
     detail: str = ""         # a short note after the title
     window: str = ""         # the timeframe it came from, if any
     stat: str = ""           # the short figure shown beside the arrow (a timeframe, or the move)
+    price: float | None = None   # level breaks: the price that gave way
+    amount: float | None = None  # level breaks: dollars the level had soaked up
+    held_ms: int | None = None   # level breaks: how long it held
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +116,7 @@ class Explanation:
     drivers: list[Driver]
     confidence: float
     signals: dict[str, SignalResult] = field(default_factory=dict)
-    shape: str = ""         # "burst" | "grind" | "mixed" | "" — only for windows longer than a minute
+    shape: str = ""         # "burst" | "grind" | "mixed" | "", only for windows longer than a minute
     shape_label: str = ""   # human text for the shape, e.g. "one sharp 30-minute stretch"
     flow_coverage: float = 1.0
     impact: FlowImpact | None = None
@@ -124,7 +127,7 @@ class Explanation:
 
 @dataclass(slots=True)
 class MoveEvent:
-    """A significant move, captured at its peak — the answer to 'what happened at 14:32?'"""
+    """A significant move, captured at its peak: the answer to 'what happened at 14:32?'"""
     id: int
     window: str
     started_ms: int

@@ -56,8 +56,8 @@ def test_a_level_breaks_only_after_price_stays_through_it():
     tr.check(t + 10_000, 2998.0, 0.5)
     (ev,) = tr.check(t + 10_000 + BREAK_CONFIRM_MS, 2997.5, 0.5)
     assert ev.kind == "level_break" and ev.direction is Direction.DOWN
-    assert ev.title == "Bid level 3,000.00 broke — it had absorbed $2.00M of selling"
-    assert ev.detail.startswith("10m level · held") and tr.active() == []
+    assert ev.title == "Price fell through 3,000.00, where buyers had soaked up $2.00M of selling"
+    assert ev.detail == "Buyers held it for 4 min (10m chart)" and tr.active() == []
 
 
 def test_a_level_that_gives_way_quickly_breaks_silently():
@@ -76,7 +76,7 @@ def test_levels_breaking_together_are_one_event():
     tr.check(t + 15_000, 2993.0, 0.5)
     tr.check(t + 15_000 + BREAK_CONFIRM_MS, 2993.0, 0.5)                    # then the lower one
     (ev,) = tr.events
-    assert ev.title == "Bid levels 2,995.00–3,000.00 broke — they had absorbed $3.00M of selling"
+    assert ev.title == "Price fell through the 2,995.00 to 3,000.00 zone, where buyers had soaked up $3.00M of selling"
 
 
 def test_a_broken_level_is_not_drawn_as_holding_again():

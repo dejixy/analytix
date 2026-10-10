@@ -4,7 +4,7 @@ import { arrow } from "../format.js";
 const SHOW_MS = 9000;
 
 /** Pops up new broken levels and cascades for the coin on screen, once each (later updates show in the log).
- *  Whatever is already in the feed when a coin is opened — or reopened, or a replay restarts — is treated as
+ *  Whatever is already in the feed when a coin is opened (or reopened, or a replay restarts) is treated as
  *  seen, so switching coins never replays old news. */
 export default function Toasts({ coin, nowMs, marketEvents }) {
   const seen = useRef({ coin: null, ids: new Set(), now: 0 });

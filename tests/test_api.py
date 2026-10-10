@@ -35,7 +35,7 @@ def test_snapshot_shape(client):
     assert s["events"], "expected the scripted moves in the event log"
     # the absorption phase leaves bid levels that the long liquidation later breaks
     breaks = [e for e in s["market_events"] if e["kind"] == "level_break"]
-    assert any(e["direction"] == "down" and e["title"].startswith("Bid level") for e in breaks)
+    assert any(e["direction"] == "down" and e["title"].startswith("Price fell through") for e in breaks)
     # every card carries its timeframe's summary rows
     assert [m["key"] for m in s["explanations"]["1m"]["summary"]] == ["flow", "who", "forced", "book", "liquidity"]
     assert [m["key"] for m in s["explanations"]["24h"]["summary"]] == ["trend", "vwap", "positioning", "funding", "flow"]

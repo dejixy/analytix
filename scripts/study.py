@@ -8,13 +8,13 @@ signal fires, with the direction it implies. Then it looks up the price 1, 5,
     n       independent occurrences (repeats within one timeframe-length are merged)
     hit     share where price moved the implied way
     avg     mean move in the implied direction, in bps (positive = it worked)
-    t       avg ÷ its standard error — |t| under ~2 is indistinguishable from luck
+    t       avg ÷ its standard error: |t| under ~2 is indistinguishable from luck
 
 Only what the engine knew at the time is used: a cascade is logged when its OI
 check comes in, a level when it breaks, a wall when it goes.
 
 Card tags are scored too: every time a 1m/10m/60m card row shows a tag that leans
-one way ("absorbed", "TWAP", "stretched", "uptrend", "liq flush"…), it's logged in
+one way ("price held", "TWAP", "far above", "uptrend", "liquidations"…), it's logged in
 the direction the row leans. A positive avg means following the lean worked; a
 negative one means fading it did.
 
@@ -45,7 +45,7 @@ from pipeline import Pipeline
 HORIZONS_S = (60, 300, 900, 3600)
 TICK_WINDOWS = ("1m", "10m", "60m")
 FLOW_MIN_STRENGTH = 0.25
-UNSCORED_TAGS = {"—", "partial", "measuring", "quiet"}
+UNSCORED_TAGS = {"", "partial", "learning", "quiet"}
 
 
 @dataclass(slots=True)
@@ -116,17 +116,18 @@ class Collector:
             f = ex.signals.get("volume_imbalance") if ex and ex.coverage >= 0.95 else None
             dirs.append(f.direction.value if f and f.strength >= FLOW_MIN_STRENGTH else "neutral")
         if dirs[0] != "neutral" and len(set(dirs)) == 1:
-            self._log("flow aligned 1m–60m: follow it", now, 1 if dirs[0] == "up" else -1, mid, 600)
+            self._log("same direction on 1m, 10m and 60m: follow it", now, 1 if dirs[0] == "up" else -1, mid, 600)
 
     def _events(self, now: int, mid: float) -> None:
         for ev in self.pipe.analyzer.market_events():
             if ev.id in self._events_seen:
                 continue
             if ev.kind == "cascade":
-                if ev.detail.startswith("checking OI"):
+                if ev.detail.startswith("checking"):
                     continue                                    # wait until the engine knows the verdict
                 kind = "likely liquidations" if "likely liquidations" in ev.detail else \
-                    "one trader" if "one trader" in ev.detail else "partly liquidations"
+                    "one trader" if "one trader" in ev.detail else \
+                    "partly liquidations" if "partly" in ev.detail else "no open interest data"
                 sign = 1 if ev.direction.value == "up" else -1
                 self.occurrences.append(Occurrence(f"cascade, {kind}: fade it", now, -sign, mid))
             elif ev.kind == "level_break":
@@ -260,9 +261,9 @@ def main() -> None:
         for h in HORIZONS_S:
             s = r.stats[h]
             if s is None:
-                line += f"{'│':>9}" + f"{'—':>6}" + " " * 13
+                line += f"{'│':>9}" + f"{'-':>6}" + " " * 13
             else:
-                t = f"{'—':>6}" if math.isnan(s[3]) else f"{s[3]:>+6.1f}"
+                t = f"{'-':>6}" if math.isnan(s[3]) else f"{s[3]:>+6.1f}"
                 line += f"{'│':>9}{s[1]:>6.0%}{s[2]:>+7.1f}{t}"
         print(line)
     print("\nhit = share that moved the implied way · avg = mean move that way, bps · t = avg ÷ standard error")

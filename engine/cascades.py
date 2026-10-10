@@ -5,8 +5,8 @@ A chain of same-side sweeps *looks* like liquidations, but one aggressive trader
 leaves the same footprint. Open interest tells them apart: a liquidation closes
 a position, so OI falls. If OI dropped by a good share of the cascade's size,
 positions were force-closed; if it didn't move (or rose), it was more likely
-one large trader. Not proof either way — a liquidated long can sell into a
-new long's bid, leaving OI flat — so the wording stays "likely".
+one large trader. Not proof either way (a liquidated long can sell into a
+new long's bid, leaving OI flat), so the wording stays "likely".
 
 Then the aftermath. Forced selling that's fully absorbed tends to snap back;
 selling that keeps going is real repositioning. So each cascade is followed for
@@ -87,12 +87,13 @@ def oi_sentence(c: CascadeInfo) -> str:
         return "Open interest wasn't available around it." if c.oi_settled else "Checking open interest…"
     d = c.oi_change_usd or 0.0
     if c.verdict == "likely":
-        return (f"Open interest fell {fmt_usd(-d)} across it (≈{c.confirm_share:.0%} of the cascade): "
-                f"positions were force-closed — likely liquidations.")
+        return (f"Open interest fell {fmt_usd(-d)} during it (about {c.confirm_share:.0%} of the cascade), so "
+                f"positions really were force-closed: likely liquidations.")
     if c.verdict == "partly":
-        return f"Open interest fell {fmt_usd(-d)} (≈{c.confirm_share:.0%} of the cascade): partly forced closes."
+        return (f"Open interest fell {fmt_usd(-d)} (about {c.confirm_share:.0%} of the cascade), so some of it was "
+                f"forced closes.")
     moved = f"rose {fmt_usd(d)}" if d > 0 else "barely moved"
-    return f"Open interest {moved} — more likely one large trader than liquidations."
+    return f"Open interest {moved}, so this was more likely one big trader than liquidations."
 
 
 def recovery_text(c: CascadeInfo, long_form: bool = True) -> str:
@@ -183,14 +184,14 @@ class CascadeTracker:
         buy = t.side is TradeSide.BUY
         dur = max(1, round((t.end_ms - t.start_ms) / 1000))
         verdict = {"likely": "likely liquidations", "partly": "partly liquidations",
-                   "unlikely": "likely one trader, not liquidations"}.get(t.verdict or "", "OI unavailable")
+                   "unlikely": "likely one trader, not liquidations"}.get(t.verdict or "", "no open interest data")
         oi = t.oi_change_usd
-        oi_txt = f"OI {'+' if (oi or 0) >= 0 else '−'}{fmt_usd(abs(oi))}: " if oi is not None else ""
+        oi_txt = f"open interest {'+' if (oi or 0) >= 0 else '−'}{fmt_usd(abs(oi))}: " if oi is not None else ""
         rec = recovery_text(info, long_form=False)
         return MarketEvent(
             id=f"cascade-{self.coin}-{t.id}", kind="cascade", ts=t.start_ms,
             direction=Direction.UP if buy else Direction.DOWN,
-            title=(f"{t.sweeps} {'buy' if buy else 'sell'} sweeps in {dur}s ({fmt_usd(t.notional)}) "
+            title=(f"{t.sweeps} big {'buy' if buy else 'sell'} orders in {dur}s ({fmt_usd(t.notional)}) "
                    f"pushed price {t.move_bps / 100:+.2f}%"),
             detail=oi_txt + verdict + (f" · {rec}" if rec else ""),
             stat=f"{t.move_bps / 100:+.2f}%",

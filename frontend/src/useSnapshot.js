@@ -23,7 +23,7 @@ export function useSnapshot(coin) {
         retry = 0;
         setConn("open");
       };
-      // The long-window chart series only rides along every few pushes — keep the last one.
+      // The long-window chart series only rides along every few pushes: keep the last one.
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         setSnap((prev) => (msg.bar_series || !prev || prev.coin !== msg.coin ? msg : { ...msg, bar_series: prev.bar_series }));

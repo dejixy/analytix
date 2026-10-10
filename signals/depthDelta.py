@@ -9,7 +9,7 @@ from config import DEPTH_FULL_STRENGTH
 from models.signalModel import Direction, SignalResult
 from signals.base import WallStats, WindowSlice, clip, fmt_usd
 
-NAME, LABEL = "depth_delta", "Book depth"
+NAME, LABEL = "depth_delta", "Order book"
 
 
 def _chg(a: float, b: float) -> float:
@@ -27,19 +27,20 @@ def _wall_note(w: WallStats | None, bid_chg: float, ask_chg: float) -> str:
         if chg < STACKING:
             continue
         pulled, real = w.pulled_near[side], w.eaten[side] + w.held[side]
-        noun = "ask" if side == "ask" else "bid"
+        noun = "sell" if side == "ask" else "buy"
         if pulled >= 2 and pulled > real:
-            return (f" Careful: {pulled} of the last {pulled + real} big {noun} walls were pulled as price approached "
-                    f"(30m) — this stacking may not be real.")
+            return (f" Careful: {pulled} of the last {pulled + real} big {noun} walls vanished as price got close "
+                    f"(last 30 min), so these may not be real.")
         if real >= 2 and real >= pulled:
-            return f" Big {noun} walls have been real lately: {real} of {pulled + real} held or got traded into (30m)."
+            return (f" Big {noun} walls have been real lately: {real} of {pulled + real} held or got traded into "
+                    f"(last 30 min).")
     return ""
 
 
 def depth_delta(s: WindowSlice) -> SignalResult:
     a, b = s.book_start, s.book_end
     if not a or not b or a.timestamp == b.timestamp:
-        return SignalResult(NAME, LABEL, 0.0, 0.0, Direction.NEUTRAL, "Not enough book history yet.", stat="—")
+        return SignalResult(NAME, LABEL, 0.0, 0.0, Direction.NEUTRAL, "Not enough order book history yet.", stat="")
 
     bid_chg = _chg(a.bid_notional, b.bid_notional)
     ask_chg = _chg(a.ask_notional, b.ask_notional)
@@ -47,18 +48,20 @@ def depth_delta(s: WindowSlice) -> SignalResult:
 
     if score >= 0:
         asks_lead = -ask_chg >= bid_chg
-        phrase = f"thinning asks (ask depth {ask_chg:+.0%})" if asks_lead else f"bids stacking up (bid depth {bid_chg:+.0%})"
+        phrase = (f"sell orders thinning out ({ask_chg:+.0%})" if asks_lead
+                  else f"buy orders piling up ({bid_chg:+.0%})")
         stat = f"asks {ask_chg:+.0%}" if asks_lead else f"bids {bid_chg:+.0%}"
     else:
         bids_lead = -bid_chg >= ask_chg
-        phrase = f"bids being pulled (bid depth {bid_chg:+.0%})" if bids_lead else f"asks stacking up (ask depth {ask_chg:+.0%})"
+        phrase = (f"buy orders being pulled ({bid_chg:+.0%})" if bids_lead
+                  else f"sell orders piling up ({ask_chg:+.0%})")
         stat = f"bids {bid_chg:+.0%}" if bids_lead else f"asks {ask_chg:+.0%}"
 
-    lean = "bids" if b.imbalance > 0 else "asks"
+    lean = "buyers" if b.imbalance > 0 else "sellers"
     summary = (
-        f"Near-touch asks {ask_chg:+.0%} ({fmt_usd(a.ask_notional)} → {fmt_usd(b.ask_notional)}), "
-        f"bids {bid_chg:+.0%} ({fmt_usd(a.bid_notional)} → {fmt_usd(b.bid_notional)}); "
-        f"book now leans {abs(b.imbalance):.0%} toward {lean}."
+        f"Sell orders close to the price {ask_chg:+.0%} ({fmt_usd(a.ask_notional)} → {fmt_usd(b.ask_notional)}), "
+        f"buy orders {bid_chg:+.0%} ({fmt_usd(a.bid_notional)} → {fmt_usd(b.bid_notional)}). "
+        f"The book now leans {abs(b.imbalance):.0%} toward {lean}."
     )
     summary += _wall_note(s.walls, bid_chg, ask_chg)
     return SignalResult(

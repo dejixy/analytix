@@ -25,13 +25,13 @@ def test_volume_imbalance_empty_window_is_neutral():
 def test_depth_delta_thinning_asks_is_bullish():
     r = depth_delta(make_slice(book_start=summary(T0, ask=1e6), book_end=summary(T0 + 60_000, ask=4e5)))
     assert r.direction is Direction.UP and r.score > 0.9
-    assert "thinning asks" in r.phrase
+    assert "sell orders thinning out" in r.phrase
 
 
 def test_depth_delta_pulled_bids_is_bearish():
     r = depth_delta(make_slice(book_start=summary(T0, bid=1e6), book_end=summary(T0 + 60_000, bid=5e5)))
     assert r.direction is Direction.DOWN
-    assert "bids being pulled" in r.phrase
+    assert "buy orders being pulled" in r.phrase
 
 
 def test_funding_quadrants():
@@ -50,7 +50,7 @@ def test_funding_flags_crowded_longs_being_flushed():
     r = funding(make_slice(book_start=summary(T0, mid=3000), book_end=summary(T0 + 60_000, mid=2970),
                            ctx_start=ctx(T0, oi=100_000, funding=0.00005),
                            ctx_end=ctx(T0 + 60_000, oi=98_000, funding=0.00005)))
-    assert "crowded longs being flushed" in r.phrase
+    assert "crowded longs being forced out" in r.phrase
 
 
 def test_liquidation_cascade_detected_from_chained_sell_sweeps():

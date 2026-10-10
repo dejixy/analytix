@@ -176,21 +176,21 @@ class PlannerService:
             raise PlanError("In cross margin the account balance has to be at least the margin.")
         pipe = self.rt.pipeline(coin)
         if pipe.state.mid is None:
-            raise PlanError("No price yet — the feed is still connecting.", 503)
+            raise PlanError("No price yet. The feed is still connecting.", 503)
         max_lev = await self.max_leverage(coin)
         if max_lev is not None and leverage > max_lev:
             raise PlanError(f"{coin} allows up to {max_lev:g}× on Hyperliquid.")
         if max_lev is None and leverage > DEFAULT_MAX_LEVERAGE:
             raise PlanError(f"Hyperliquid's max leverage for {coin} hasn't loaded (it needs live mode), so plans "
                             f"stop at {DEFAULT_MAX_LEVERAGE}× with {maintenance_rate(DEFAULT_MAX_LEVERAGE) * 100:.0f}% "
-                            f"maintenance margin — the cautious case.")
+                            f"maintenance margin, the cautious case.")
         model = await self.model(coin, 300 if hours <= SHORT_HOLD_H else 3600)
 
         # Everything live is read together, after the waits, so entry, book and volatility are of one moment.
         st = pipe.state
         mid, book, now_ms = st.mid, st.book, st.now_ms
         if mid is None:
-            raise PlanError("No price yet — the feed is still connecting.", 503)
+            raise PlanError("No price yet. The feed is still connecting.", 503)
         recent = [b for b in st.bars if b.timestamp >= model.last_t]
         v0 = model.nowcast(candles_from_bars(recent, model.step_s), mid, now_ms)
         maint = maintenance_rate(max_lev or DEFAULT_MAX_LEVERAGE)

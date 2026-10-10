@@ -64,13 +64,13 @@ def test_squeeze_reads_as_shorts_covering(replayed):
     evs = events_in(pipe, "1m", r.start_s, r.end_s + 30)
     assert evs and all(e.explanation.move.direction is Direction.UP for e in evs)
     funding = evs[0].explanation.signals["funding"]
-    assert "shorts covering" in funding.phrase or "flushed" in funding.phrase
+    assert "shorts covering" in funding.phrase or "forced out" in funding.phrase
 
 
 def test_absorption_is_called_out(replayed):
     _, snaps = replayed
     ex = snaps["absorption"]["1m"]
-    assert "absorbed" in ex.headline
+    assert "but buyers held" in ex.headline
     assert ex.signals["volume_imbalance"].direction is Direction.DOWN
 
 

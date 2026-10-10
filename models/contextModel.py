@@ -7,7 +7,7 @@ class AssetContext:
     Perp context from Hyperliquid's `activeAssetCtx` channel.
 
     The feed carries no timestamp, so the parser leaves timestamp=0 and
-    MarketState stamps it with the *exchange* clock on arrival — keeping every
+    MarketState stamps it with the *exchange* clock on arrival, keeping every
     buffer on one clock.
     """
     timestamp: int

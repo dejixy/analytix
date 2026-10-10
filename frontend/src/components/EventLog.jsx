@@ -12,10 +12,10 @@ export default function EventLog({ events, marketEvents = [], pinned, onPick }) 
     <section className="panel" aria-label="Event log">
       <div className="panel-head" style={{ paddingBottom: 10 }}>
         <h2 className="panel-title">Event log</h2>
-        <span className="panel-sub">significant moves, broken levels, cascades · click a move to pin its explanation</span>
+        <span className="panel-sub">big moves, broken levels, cascades · click a move to see why it happened</span>
       </div>
       {rows.length === 0 ? (
-        <div className="empty">Nothing yet — the log fills when a move exceeds 2.5× its normal size, a defended level breaks, or a cascade hits.</div>
+        <div className="empty">Nothing yet. The log fills when price moves 2.5× more than normal, a price that buyers or sellers defended breaks, or a run of big orders hits.</div>
       ) : (
         <div className="events">
           {rows.map(({ kind, ev }) =>

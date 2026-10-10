@@ -101,7 +101,7 @@ class Runtime:
     async def start(self) -> None:
         if self.mode == "replay":
             if not self.replay_file.exists():
-                log.info("no replay file at %s — generating the synthetic sample", self.replay_file)
+                log.info("no replay file at %s, so generating the synthetic sample", self.replay_file)
                 generate_session(self.replay_file, coin=self.default_coin)
                 self.coins = _coins_in(self.replay_file) or [self.default_coin]
                 self.pipelines = {c: Pipeline(c) for c in self.coins}
@@ -147,7 +147,7 @@ class Runtime:
                 pipe.state.on_bar = self.store.save
                 log.info("loaded %d saved minute bars for %s", n, coin)
         except Exception:
-            log.exception("could not open the bar history at %s — long windows will start empty", self.bars_db)
+            log.exception("could not open the bar history at %s, so long windows will start empty", self.bars_db)
             self.store = None
 
     async def _backfill(self) -> None:
@@ -156,7 +156,7 @@ class Runtime:
                 bars = await backfill(coin, BAR_HISTORY_S)
                 added = pipe.state.merge_bars(bars)
                 log.info("backfill %s: %d candles merged", coin, added)
-            except Exception as exc:  # network down, API change — long windows just warm up live
+            except Exception as exc:  # network down, API change: long windows just warm up live
                 log.warning("backfill for %s failed: %s", coin, exc)
 
     # ── browser push ────────────────────────────────────────────────────────

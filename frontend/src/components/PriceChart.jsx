@@ -4,7 +4,7 @@ import { arrow, fmtPct, fmtPrice, fmtTime, fmtUsd, headlineBody } from "../forma
 const HEIGHT = 420;
 const M = { top: 12, right: 78, bottom: 26, left: 10 };
 const TICK_MINUTES = [1, 2, 3, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
-const SNAP_PX = 28; // the cursor snaps to a move marker within this distance — no need to hit the dot exactly
+const SNAP_PX = 28; // the cursor snaps to a move marker within this distance: no need to hit the dot exactly
 
 function tickLabel(t, tickMs) {
   const d = new Date(t);
@@ -78,7 +78,7 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
     return { xs, ys, yTicks, xTicks, xLabel, d, iw, ih, stepDigits: step < 1 ? 2 : step < 10 ? 1 : 0 };
   }, [pts, width, x0, nowMs, SPAN_MS]);
 
-  // Significant moves from every timeframe, so there's always something to pin — the selected timeframe's
+  // Significant moves from every timeframe, so there's always something to pin: the selected timeframe's
   // drawn larger. One big move often registers on several timeframes at the same moment: keep one marker,
   // preferring the selected timeframe, then the shortest.
   const preferred = (a, b) =>
@@ -137,7 +137,7 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Mid price · {long ? `${windowLabel} view` : `${Math.round(tickSpanSeconds / 60)}m`}</h2>
+        <h2 className="panel-title">Price · {long ? `${windowLabel} view` : `${Math.round(tickSpanSeconds / 60)}m`}</h2>
         {pinned ? (
           <span className="pinned-bar">
             <span className="chip">PINNED</span>
@@ -155,7 +155,7 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
         {!geo ? (
           <div className="empty">{long ? "Loading long-window history…" : "Collecting price history…"}</div>
         ) : (
-          <svg height={HEIGHT} role="img" aria-label={`Mid price over the last 15 minutes, last ${fmtPrice(last?.[1])}`}>
+          <svg height={HEIGHT} role="img" aria-label={`Price over the last 15 minutes, last ${fmtPrice(last?.[1])}`}>
             {/* selected window */}
             <rect x={geo.xs(Math.max(winStart, x0))} y={M.top} width={Math.max(0, geo.xs(winEnd) - geo.xs(Math.max(winStart, x0)))} height={geo.ih} fill="var(--surface-2)" />
             {startPx != null && (
@@ -187,7 +187,7 @@ export default function PriceChart({ series, barSeries, events, levels = [], now
                   <g key={`${lv.side}-${lv.price}`} pointerEvents="none">
                     <line x1={M.left} x2={width - M.right} y1={y} y2={y} stroke={color} strokeWidth="1" strokeDasharray="5 4" opacity="0.8" />
                     <text x={M.left + 6} y={lv.side === "bid" ? y + 13 : y - 5} fontSize="10.5" fill={color} className="num">
-                      {lv.side === "bid" ? "bids held" : "offers held"} {fmtPrice(lv.price)} · {fmtUsd(lv.absorbed)} absorbed
+                      {lv.side === "bid" ? "buyers defended" : "sellers defended"} {fmtPrice(lv.price)} · soaked up {fmtUsd(lv.absorbed)}
                     </text>
                   </g>
                 );

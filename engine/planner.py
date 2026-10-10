@@ -10,19 +10,19 @@ Given a side, margin, leverage and how long you'll hold, it answers:
   exit          the spread of outcomes when you close, after fees, slippage and funding
   costs         fees, slippage on the live book, funding expected over the hold
 
-How the paths are made — filtered historical simulation (Barone-Adesi et al.), the method
+How the paths are made: filtered historical simulation (Barone-Adesi et al.), the method
 risk desks use for VaR:
 
   1. Take the coin's own candles: 1-hour (up to ~200 days) for holds over 6h, 5-minute (up to
      ~17 days) for shorter ones. For each candle record three moves from the previous close:
-     to the close, to the low, to the high — the wicks are what liquidate people.
+     to the close, to the low, to the high: the wicks are what liquidate people.
   2. Take out the time of day: crypto is busier at some hours (and quieter at weekends), so each
      move is divided by its hour's usual volatility (shrunk toward 1 where data is thin).
   3. Fit a GARCH(1,1) to the close-to-close moves (variance targeting, quasi-likelihood on a
      coarse grid, then a fine one around the best point). It says how volatile each candle was
      *expected* to be, given the ones before it.
   4. Divide each candle's three moves by that expected volatility. What's left is the coin's
-     shape of surprise — fat tails, long down-wicks — with the regime taken out.
+     shape of surprise (fat tails, long down-wicks) with the regime taken out.
   5. Bring the volatility up to the moment: run the GARCH forward through every candle since
      the fit and through the move so far in the candle still forming, so a crash ten minutes
      ago counts.
@@ -134,7 +134,7 @@ def seasonal_factors(t_ms: np.ndarray, r: np.ndarray) -> np.ndarray:
     """Volatility multiplier for each of the 48 buckets (Andersen–Bollerslev style, made robust):
       · each move is divided by the average size of moves on its own day, so a volatile week raises
         every hour of that week alike instead of masquerading as a volatile hour
-      · mean |move| per hour of day, not mean move² — one fat-tailed candle can't make an hour look busy
+      · mean |move| per hour of day, not mean move²: one fat-tailed candle can't make an hour look busy
       · one weekend multiplier, measured day by day, on top of the hourly shape
       · neighbouring hours blended (¼ ½ ¼) and each hour shrunk toward 1 by how many *days* it was seen on
         (seventeen days of 5-minute candles are 200 candles an hour but still only 17 looks at that hour)
@@ -188,7 +188,7 @@ class RiskModel:
     last_close: float
     n: int
     kind: str                # "fhs" (from the coin's candles) | "rough" (not enough history)
-    params: np.ndarray | None = None   # (k, 3): plausible (α, β, weight) — each path draws its own
+    params: np.ndarray | None = None   # (k, 3): plausible (α, β, weight): each path draws its own
 
     @property
     def span_days(self) -> float:
@@ -214,7 +214,7 @@ class RiskModel:
         if mid and ref and now_ms > t_next:
             # the move since the last known close. Usually that's the candle still forming; if candles are
             # missing (a gap in memory) the move is spread evenly over the candles it took, rather than
-            # counted as one candle's shock — a 2-hour move is not a 5-minute crash.
+            # counted as one candle's shock: a 2-hour move is not a 5-minute crash.
             k = (now_ms - t_next) / step_ms
             r2 = (math.log(mid / ref) / self.season[season_bucket(t_next)]) ** 2
             if k <= 1:
@@ -281,7 +281,7 @@ def _garch_path(r2: np.ndarray, var_long: float, a: float, b: float) -> np.ndarr
 
 
 def fit_model(c: Candles, season: np.ndarray | None = None) -> RiskModel | None:
-    """`season`: time-of-day factors measured elsewhere — the 5-minute model borrows them from the hourly
+    """`season`: time-of-day factors measured elsewhere: the 5-minute model borrows them from the hourly
     one, because 17 days of 5-minute candles pin the daily cycle down only to ±20%, 200 days of hourly
     candles to a few percent (and the cycle is the same whatever the candle size)."""
     if len(c) < MIN_CANDLES + 1:
@@ -320,7 +320,7 @@ def fit_model(c: Candles, season: np.ndarray | None = None) -> RiskModel | None:
 
 def _centred(z: np.ndarray) -> np.ndarray:
     """Residuals with exactly zero mean and unit variance. Even a tiny average in the pool compounds over
-    hundreds of steps into a drift — a view on direction the planner must not have."""
+    hundreds of steps into a drift, a view on direction the planner must not have."""
     mean = float(z[:, 0].mean())
     close = z[:, 0] - mean
     low = np.minimum(np.minimum(z[:, 1] - mean, 0.0), close)
@@ -363,7 +363,7 @@ def simulate(m: RiskModel, hours: float, v0: float | None = None, start_ms: int 
     """Simulate the hold. `liq` = (side, log distance to liquidation) also tracks, per path, the best
     price reached while the position was still open. `bracket` = (stop, target) log distances (needs `liq`'s
     side; either may be None) also records which closes the trade first and when. If one candle reaches both
-    the stop (or liquidation) and the target, the loss is taken as first — the cautious reading of a wick.
+    the stop (or liquidation) and the target, the loss is taken as first: the cautious reading of a wick.
     The random draws are the same with or without a bracket, so its odds match the rest of the plan."""
     steps = max(1, math.ceil(hours * 3600 / m.step_s))
     n_paths = int(min(n_paths, max(2_000, MAX_PATH_STEPS // steps)))
@@ -646,7 +646,7 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
               vol_ratio: float = 1.0, book_seen: bool = True, stop_pct: float | None = None,
               target_pct: float | None = None, account: float | None = None,
               slippage_source: str = "book") -> Plan:
-    """`account`: cross margin — the account balance (≥ margin) that backs the position; None = isolated."""
+    """`account`: cross margin: the account balance (≥ margin) that backs the position; None = isolated."""
     known = max_leverage is not None
     max_lev = float(max_leverage or DEFAULT_MAX_LEVERAGE)
     maint = maintenance_rate(max_lev)
@@ -719,19 +719,19 @@ def make_plan(*, coin: str, side: int, margin: float, leverage: float, hours: fl
     notes = []
     if not known:
         notes.append(f"Hyperliquid's max leverage for {coin} hasn't loaded (it needs live mode), so this assumes "
-                     f"{max_lev:.0f}× max and {maint * 100:.1f}% maintenance margin — the cautious case for "
-                     f"majors, but check it on Hyperliquid.")
+                     f"{max_lev:.0f}× max and {maint * 100:.1f}% maintenance margin. That's the cautious case for "
+                     f"big coins, but check it on Hyperliquid.")
     if model.kind == "rough":
-        notes.append("Rough estimate: not enough price history yet (live mode downloads it), so this uses a "
-                     "fat-tailed random walk at the volatility seen in the feed.")
+        notes.append("Rough estimate: there isn't enough price history yet (live mode downloads it), so this uses "
+                     "a simple random price model, with occasional big jumps, at the volatility seen in the feed.")
     if not book_seen:
         notes.append("No order book yet, so slippage isn't included.")
     elif not slip_known:
-        notes.append("Your size goes beyond the visible order book and there's no 24h volume to estimate "
-                     "impact from, so slippage isn't included.")
+        notes.append("Your size is bigger than the visible order book and there's no 24h volume to estimate "
+                     "from, so slippage isn't included.")
     elif slippage_source == "model":
-        notes.append("Your size goes beyond the visible order book, so slippage is estimated with the square-root "
-                     "impact rule from the coin's volatility and 24h volume, not read off the book.")
+        notes.append("Your size is bigger than the visible order book, so slippage is estimated from the coin's "
+                     "volatility and 24h trading volume (a standard rule of thumb) instead of read off the book.")
     if account:
         notes.append(f"Cross margin: liquidation uses your whole account balance (${account:,.0f}) and would take "
                      f"it with the position. Other open positions would change this.")

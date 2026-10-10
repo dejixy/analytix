@@ -11,7 +11,7 @@ from signals.volumeImbalance import volume_imbalance
 
 DRIVER_SIGNALS = [volume_imbalance, depth_delta, liquidations, funding]
 
-# How much each signal's strength counts when ranking drivers — by horizon.
+# How much each signal's strength counts when ranking drivers, by horizon.
 # Microstructure shocks (sweeps, pulled liquidity) explain seconds-to-minutes;
 # positioning (OI, funding) explains the slower, larger moves. Keyed by horizon
 # rather than window label so a new entry in WINDOWS still gets sensible weights.

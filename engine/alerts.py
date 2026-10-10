@@ -9,8 +9,8 @@ Alerts: the moments worth a ping, checked once a second for every coin.
     volatility    the 10m range is ≥ N× its usual range
     price         price crosses a level you set (one-shot)
 
-Every alert has a cooldown key — per coin and type, or per level / wallet where each one is
-its own story — so a messy hour can't send twenty pings. Nothing fires in the first five
+Every alert has a cooldown key (per coin and type, or per level / wallet where each one is
+its own story), so a messy hour can't send twenty pings. Nothing fires in the first five
 minutes after start-up except price alerts: the engine is still learning what's normal, and
 TWAPs that were already running would all look new.
 
@@ -38,7 +38,7 @@ DEFAULT_COOLDOWN_MIN = 15
 WARMUP_MS = 5 * 60_000
 LIQ_GROUP_MS = 60_000             # a liquidation's pieces (20% chunk, then the rest) arrive within this
 ABSORB_WINDOWS = ("10m", "60m")
-ABSORB_TAGS = {"absorbed": "absorbed", "against flow": "moved against the flow"}
+ABSORB_TAGS = {"price held": "price held", "rose anyway": "price rose anyway", "fell anyway": "price fell anyway"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,8 +127,9 @@ class AlertEngine:
                     out += self._fire(Alert(
                         f"liq-{coin}-{wallet}-{start}", coin, "liquidation", now,
                         "down" if side is TradeSide.SELL else "up",
-                        f"{coin} {'long' if side is TradeSide.SELL else 'short'} liquidated · {fmt_usd(usd)}",
-                        (f"{_short(wallet)} force-closed near {fmt_px(px)}",) + ctx), (coin, "liquidation", wallet))
+                        f"{coin}: a {fmt_usd(usd)} {'long' if side is TradeSide.SELL else 'short'} was liquidated",
+                        (f"The exchange force-closed wallet {_short(wallet)} near {fmt_px(px)}.",) + ctx),
+                        (coin, "liquidation", wallet))
         if self._on("twap"):
             for (wallet, side), (_, slice_usd, interval_ms) in new_twaps:
                 per_hour = slice_usd * 3_600_000 / interval_ms if interval_ms else 0.0
@@ -137,24 +138,32 @@ class AlertEngine:
                     out += self._fire(Alert(
                         f"twap-{coin}-{wallet}-{side.value}-{now}", coin, "twap", now,
                         "up" if side is TradeSide.BUY else "down",
-                        f"{coin} new TWAP {verb} ~{fmt_usd(per_hour)} an hour",
-                        (f"{_short(wallet)} slicing {fmt_usd(slice_usd)} every {interval_ms / 1000:.0f}s",) + ctx),
+                        f"{coin}: a wallet started {verb} about {fmt_usd(per_hour)} an hour",
+                        (f"Wallet {_short(wallet)} {'buys' if side is TradeSide.BUY else 'sells'} {fmt_usd(slice_usd)} "
+                         f"every {interval_ms / 1000:.0f}s (a TWAP bot), whatever the price does.",) + ctx),
                         (coin, "twap", wallet, side))
         if self._on("level"):
             for e in new_levels:
+                down = e.direction.value == "down"
+                where = f" {fmt_px(e.price)}" if e.price else " a defended level"
+                why = (f"{'Buyers' if down else 'Sellers'} had defended it for {_mins(e.held_ms)}, soaking up "
+                       f"{fmt_usd(e.amount or 0)} of {'selling' if down else 'buying'}." if e.held_ms else e.title)
                 out += self._fire(Alert(
-                    f"lvl-{e.id}", coin, "level", now, e.direction.value, f"{coin} level broke",
-                    (e.title, e.detail) + ctx), (coin, "level", e.id))
+                    f"lvl-{e.id}", coin, "level", now, e.direction.value,
+                    f"{coin} {'fell through' if down else 'broke above'}{where}", (why,) + ctx), (coin, "level", e.id))
         if self._on("absorbed"):
             for w in ABSORB_WINDOWS:
                 ex = an.latest.get(w)
                 flow = next((m for m in (ex.summary if ex else ()) if m.key == "flow"), None)
                 if ex is None or flow is None or flow.partial or ex.coverage < 0.95 or flow.tag not in ABSORB_TAGS:
                     continue
+                selling = "sell" in flow.value
                 out += self._fire(Alert(
                     f"abs-{coin}-{w}-{now}", coin, "absorbed", now, flow.lean.value,
-                    f"{coin} {w}: heavy flow {ABSORB_TAGS[flow.tag]}",
-                    (f"{w} flow: {flow.value}", f"price {ex.move.move_bps / 100:+.2f}% over {w}")),
+                    f"{coin}: heavy {'selling' if selling else 'buying'} on the {w} chart, but {ABSORB_TAGS[flow.tag]}",
+                    (f"Market orders over {w}: {flow.value}. Price {_pct(ex.move.move_bps / 100)}.",
+                     f"Big orders waiting in the book are soaking it up, often a sign of a patient "
+                     f"{'buyer' if selling else 'seller'}.")),
                     (coin, "absorbed", w))
         if self._on("volatility"):
             ex = an.latest.get("10m")
@@ -162,9 +171,9 @@ class AlertEngine:
             if ex is not None and rr is not None and ex.coverage >= 0.95 and rr >= self.rules["volatility"]["min_ratio"]:
                 out += self._fire(Alert(
                     f"vol-{coin}-{now}", coin, "volatility", now, ex.move.direction.value,
-                    f"{coin} volatility spike · 10m range {rr:.1f}× usual",
-                    (f"10m range {fmt_px(ex.move.low)}–{fmt_px(ex.move.high)}, now {fmt_px(ex.move.end_price)} "
-                     f"({ex.move.move_bps / 100:+.2f}%)",)), (coin, "volatility"))
+                    f"{coin} is moving fast: the last 10 minutes covered {rr:.1f}× the normal range",
+                    (f"Between {fmt_px(ex.move.low)} and {fmt_px(ex.move.high)}, now {fmt_px(ex.move.end_price)} "
+                     f"({_pct(ex.move.move_bps / 100)} in 10m).",)), (coin, "volatility"))
         return out
 
     # ── pieces ───────────────────────────────────────────────────────────
@@ -185,9 +194,9 @@ class AlertEngine:
         if ex is None:
             return ()
         flow = next((m for m in ex.summary if m.key == "flow"), None)
-        line = f"now {fmt_px(ex.move.end_price)} ({ex.move.move_bps / 100:+.2f}% in 10m)"
+        line = f"Now {fmt_px(ex.move.end_price)} ({_pct(ex.move.move_bps / 100)} in 10m)"
         if flow is not None and not flow.partial and flow.value:
-            line += f" · {flow.value}"
+            line += f". Last 10m of market orders: {flow.value}."
         return (line,)
 
     def _cascade(self, coin, t, st, now, ctx) -> list[Alert]:
@@ -197,14 +206,17 @@ class AlertEngine:
             return []
         buy = t.side is TradeSide.BUY
         kind = "short" if buy else "long"
-        verdict = {"likely": "liquidations confirmed by OI", "partly": "partly liquidations",
-                   "unlikely": "OI didn't fall: likely one trader"}.get(t.verdict or "", "OI unavailable")
+        verdict = {"likely": "Open interest fell, so these were real liquidations.",
+                   "partly": "Open interest fell a little, so some of these were liquidations.",
+                   "unlikely": "Open interest didn't fall, so this was likely one big trader, not liquidations."
+                   }.get(t.verdict or "", "No open interest data to confirm liquidations.")
         dur = max(1, round((t.end_ms - t.start_ms) / 1000))
-        title = (f"{coin} {kind}-liquidation cascade · {fmt_usd(liquidated)} liquidated" if liquidated >= 0.5 * t.notional
-                 else f"{coin} {'buy' if buy else 'sell'} sweep cascade · {fmt_usd(t.notional)}")
+        title = (f"{coin}: {fmt_usd(liquidated)} of {kind}s liquidated in {dur}s" if liquidated >= 0.5 * t.notional
+                 else f"{coin}: heavy {'buying' if buy else 'selling'}, {fmt_usd(t.notional)} in {dur}s")
         return self._fire(Alert(
             f"casc-{coin}-{t.id}", coin, "cascade", now, "up" if buy else "down", title,
-            (f"{t.sweeps} sweeps in {dur}s · price {t.move_bps / 100:+.2f}% · {verdict}",) + ctx),
+            (f"{t.sweeps} big {'buy' if buy else 'sell'} orders in a row pushed price {_pct(t.move_bps / 100)}. "
+             f"{verdict}",) + ctx),
             (coin, "cascade"))
 
     def _new_liquidations(self, st, mem: _CoinMemory, now: int) -> dict:
@@ -238,8 +250,8 @@ class AlertEngine:
                 up = mid > prev
                 lv.triggered_ms = now
                 out.append(Alert(f"px-{lv.id}", coin, "price", now, "up" if up else "down",
-                                 f"{coin} crossed {fmt_px(lv.price)} {'▲' if up else '▼'}",
-                                 (f"now {fmt_px(mid)}",)))
+                                 f"{coin} crossed {'above' if up else 'below'} {fmt_px(lv.price)}",
+                                 (f"Now {fmt_px(mid)}. This price alert won't fire again.",)))
         return out
 
 
@@ -249,6 +261,15 @@ def _engine_forced(st, start_ms: int, end_ms: int, side: TradeSide | None) -> li
     return [o for o in st.orders.window(min(span_s, st.orders.max_seconds), end_ms)
             if o.engine and start_ms <= o.timestamp <= end_ms and (o.timestamp, o.taker) in forced
             and (side is None or o.side is side)]
+
+
+def _pct(x: float) -> str:
+    return f"{'+' if x >= 0 else '−'}{abs(x):.2f}%"
+
+
+def _mins(ms: int | None) -> str:
+    m = (ms or 0) / 60_000
+    return f"{m:.0f} min" if m < 90 else f"{m / 60:.1f} hours"
 
 
 def _short(wallet: str | None) -> str:

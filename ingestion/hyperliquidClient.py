@@ -3,7 +3,7 @@ Live Hyperliquid WebSocket client.
 
 Subscribes to trades, l2Book and activeAssetCtx for each coin on one socket, keeps it
 alive with pings, and reconnects with exponential backoff. Every raw message is
-handed to `on_message` untouched — parsing happens downstream so live and
+handed to `on_message` untouched: parsing happens downstream so live and
 replay share one code path.
 """
 import asyncio
@@ -62,7 +62,7 @@ class HyperliquidClient:
                 raise
             except Exception as exc:  # network errors, proxy refusals, server closes
                 self.status.last_error = f"{type(exc).__name__}: {exc}"
-                log.warning("feed error: %s — reconnecting in %.0fs", self.status.last_error, backoff)
+                log.warning("feed error: %s, reconnecting in %.0fs", self.status.last_error, backoff)
             self.status.connected = False
             self.status.reconnects += 1
             await asyncio.sleep(backoff)

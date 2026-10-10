@@ -4,7 +4,7 @@ the 15-minute buffer has moved on.
 
 A move becomes an *episode*:
   • opens when a window turns SIGNIFICANT,
-  • stays open while the move is at least NOTABLE (hysteresis — a move hovering
+  • stays open while the move is at least NOTABLE (hysteresis: a move hovering
     around the threshold doesn't flicker into five separate events),
   • keeps the explanation from its peak (largest |z|),
   • closes when the window goes quiet or the move reverses,

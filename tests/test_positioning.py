@@ -40,6 +40,6 @@ def test_signal_flags_an_unusual_oi_move_on_the_card_and_ranks_funding():
                     ctx_start=ctx(T0, oi=100_000), ctx_end=ctx(T0 + 60_000, oi=100_500, funding=0.00025))
     sl = replace(sl, funding_history=m.funding_history(), oi_history=m.oi_history(60))
     sig = funding(sl)                                                 # +0.5% OI in 1m: beyond anything on record
-    assert sig.stat == "OI +0.50% · top 1%" and sig.metrics["oi_pct"] == 1.0
-    assert "the biggest 1m OI move on record" in sig.summary
-    assert "percentile of the past week" in sig.summary
+    assert sig.stat == "open interest +0.50% · top 1%" and sig.metrics["oi_pct"] == 1.0
+    assert "the biggest 1m change on record" in sig.summary
+    assert "of the past week" in sig.summary

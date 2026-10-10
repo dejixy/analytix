@@ -3,8 +3,8 @@ Flow efficiency: did price move as far as the order flow says it should have?
 
 Order-flow share ("76% sell") says who was aggressive, not whether it worked.
 The trader's question is what that aggression *did*. So we measure the coin's
-normal price impact — basis points of move per $1M of net taker flow (buys
-minus sells) — and compare each window against it:
+normal price impact: basis points of move per $1M of net taker flow (buys
+minus sells), and compare each window against it:
 
     expected move = λ(T) × net flow over the window
     impact ratio  = actual move ÷ expected move
@@ -18,11 +18,11 @@ minus sells) — and compare each window against it:
 λ(T) is fitted per timeframe from live minute bars (Kyle's lambda, OLS through
 the origin over rolling T-long stretches), because impact is not linear in
 time: part of it fades, so 60 minutes of flow moves price less than 60 × one
-minute's worth. Each timeframe waits for its own fit — 20 minutes of live bars
+minute's worth. Each timeframe waits for its own fit: 20 minutes of live bars
 for 1m, about 40 for 10m, about 4 hours for 60m. Saved bars carry over across
 restarts, so this is a one-off warm-up.
 
-A ratio is only reported when the flow was big enough to matter — when it
+A ratio is only reported when the flow was big enough to matter: when it
 "should" have moved price by at least 0.75 of a normal move for the window.
 Below that, noise swamps the ratio.
 """
