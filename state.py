@@ -1,5 +1,5 @@
 """
-MarketState — everything the engine knows about the market right now.
+MarketState: everything the engine knows about the market right now.
 
 Event data (trades, book summaries, funding ticks) goes into RingBuffers.
 State data (the order book, the latest context) is replaced on every update.
@@ -64,7 +64,7 @@ class MarketState:
 
     def apply_many(self, events: Iterable[Event]) -> None:
         """Apply one message's worth of events. A taker order fills within one block,
-        so all fills of an order arrive in the same message — group them here."""
+        so all fills of an order arrive in the same message; group them here."""
         accepted: list[Trade] = []
         for e in events:
             if isinstance(e, Trade):
@@ -113,7 +113,7 @@ class MarketState:
                 acc.bid, acc.ask = summary.bid_notional, summary.ask_notional
 
     def _apply_context(self, c: AssetContext) -> None:
-        # No timestamp on the wire — stamp it with the exchange clock.
+        # No timestamp on the wire: stamp it with the exchange clock.
         stamped = replace(c, timestamp=self.now_ms)
         self.context = stamped
         if self.now_ms:

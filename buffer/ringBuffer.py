@@ -7,7 +7,7 @@ holds everything newer than `max_seconds`, measured on the *exchange* clock.
 Three decisions worth being able to defend:
 
 1. `T` is bound to `Timestamped`, a Protocol. Anything with a `timestamp`
-   qualifies — no inheritance needed (structural typing). `RingBuffer[int]`
+   qualifies: no inheritance needed (structural typing). `RingBuffer[int]`
    is now a type error instead of a runtime crash in `_evict()`.
 
 2. "Now" is the newest item's timestamp, never `time.time()`. Every window is
@@ -62,7 +62,7 @@ class RingBuffer(Generic[T]):
         Merge older or gap-filling items into the buffer (e.g. backfilled history
         that arrives after live data has started). Items for which
         `overlaps(item)` is true are skipped. Rebuilds the deque in time order,
-        so it's O(n) — meant for occasional backfills, not the hot path.
+        so it's O(n), meant for occasional backfills, not the hot path.
         """
         keep = [i for i in items if overlaps is None or not overlaps(i)]
         if not keep:
@@ -113,7 +113,7 @@ class RingBuffer(Generic[T]):
         return self.window(WINDOWS[name], now_ms)
 
     def latest_at(self, ts_ms: int) -> T | None:
-        """The newest item at or before ts_ms — i.e. the state 'as of' that moment."""
+        """The newest item at or before ts_ms, i.e. the state 'as of' that moment."""
         for item in reversed(self._buf):
             if item.timestamp <= ts_ms:
                 return item

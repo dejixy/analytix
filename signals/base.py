@@ -2,7 +2,7 @@
 Shared inputs for signals.
 
 Signals are plain functions: WindowSlice (+ Baseline) in, SignalResult out.
-No state, no I/O, no clock — which makes each one trivially testable and means
+No state, no I/O, no clock, which makes each one trivially testable and means
 the same function serves every timeframe.
 """
 from dataclasses import dataclass
@@ -78,7 +78,7 @@ class WindowSlice:
     ctx_end: AssetContext | None
     high: float | None
     low: float | None
-    coverage: float              # 0..1 — how much of the window we have data for
+    coverage: float              # 0..1: how much of the window we have data for
     baseline: Baseline
     burst_up_bps: float = 0.0    # largest rise over any burst_span_s stretch inside the window
     burst_down_bps: float = 0.0  # largest fall over any burst_span_s stretch (negative)

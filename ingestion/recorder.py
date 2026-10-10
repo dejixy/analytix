@@ -9,7 +9,7 @@ Two recorders:
 
   JsonlRecorder     one file, appended to (short captures, tests)
   HourlyRecorder    a folder of hourly files for always-on recording. The hour being
-                    written is plain JSONL — a crash or power cut loses at most the
+                    written is plain JSONL: a crash or power cut loses at most the
                     last few hundred lines, never the file. When the hour ends it is
                     gzipped in the background (~8–10× smaller). A restart inside the
                     same hour appends to that hour's file; leftovers from earlier hours

@@ -3,7 +3,7 @@ Single source of truth for every tunable in Analytix.
 
 Rule: if a number changes behaviour, it lives here and everything else imports
 it. Add a timeframe to WINDOWS and the buffers, engine, API and frontend all
-pick it up — nothing else needs editing.
+pick it up; nothing else needs editing.
 """
 import os
 from pathlib import Path
@@ -32,7 +32,7 @@ WINDOWS: dict[str, int] = {
 MAX_WINDOW_S = max(WINDOWS.values())
 
 # Two data tiers. Windows up to an hour read tick-level buffers (every trade,
-# every book update). Longer windows read one-minute bars — an hour of trades
+# every book update). Longer windows read one-minute bars: an hour of trades
 # per coin is already the biggest thing in memory; a week of them wouldn't fit.
 TICK_WINDOW_MAX_S = 3600
 TICK_WINDOWS = {k: v for k, v in WINDOWS.items() if v <= TICK_WINDOW_MAX_S}
@@ -83,7 +83,7 @@ DEPTH_FULL_STRENGTH = 0.6      # relative depth shift at which depth strength sa
 OI_REF_PCT_PER_SQRT_MIN = 0.3  # OI change that counts as "full strength" for a 1m window
 CROWDED_FUNDING_APR = 20.0     # |funding| above this (annualised %) = crowded side
 
-# Sweeps / liquidations (heuristic — see signals/liquidations.py)
+# Sweeps / liquidations (heuristic, see signals/liquidations.py)
 MIN_SWEEP_NOTIONAL = 50_000    # USD floor for a single aggressive order to count as a sweep
 SWEEP_NOTIONAL_PCTL = 0.97     # ...and it must be in the top 3% of recent orders
 SWEEP_MIN_LEVELS = 3           # ...or walk at least this many price levels

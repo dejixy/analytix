@@ -2,14 +2,14 @@
 Walls: big resting orders near the price, and whether they're real.
 
 "Asks +94%" says offers stacked up. It doesn't say whether anyone means it.
-Large orders that vanish as price approaches are bait — they exist to steer
+Large orders that vanish as price approaches are bait: they exist to steer
 other traders, not to trade. Large orders that stand and get hit are real
 supply or demand. So every wall in the visible book is followed until it goes,
 and its exit is classified:
 
     eaten        traded into: at least half of what disappeared was filled
     pulled near  vanished while price was within 10 bps of it, mostly unfilled
-    pulled far   vanished while price was still far away (repositioning — not counted as bait)
+    pulled far   vanished while price was still far away (repositioning, not counted as bait)
 
 A wall is a level holding at least 4× the median level size of the visible
 book and at least two sweeps' worth of USD. Walls that live under 10 seconds

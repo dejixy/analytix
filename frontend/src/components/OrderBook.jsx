@@ -34,7 +34,7 @@ export default function OrderBook({ book, price, walls }) {
       <td>
         {fmtSize(l.sz)}
         {wall && (
-          <span className="wall-tag" title={`Wall: ${fmtUsd(wall.notional)} resting for ${Math.round(wall.age_s)}s · ${fmtUsd(wall.traded)} traded into it so far`}>
+          <span className="wall-tag" title={`Wall: ${fmtUsd(wall.notional)} sitting here for ${Math.round(wall.age_s)}s · ${fmtUsd(wall.traded)} traded into it so far`}>
             wall
           </span>
         )}
@@ -67,13 +67,13 @@ export default function OrderBook({ book, price, walls }) {
             {[...asks].reverse().map((l) => row(l, "ask"))}
             <tr className="spread-row">
               <td colSpan={4}>
-                Spread {price ? `${(price.best_ask - price.best_bid).toFixed(2)} · ${price.spread_bps.toFixed(2)} bps` : "—"}
+                Spread {price ? `$${(price.best_ask - price.best_bid).toFixed(2)} · ${(price.spread_bps / 100).toFixed(3)}%` : "-"}
               </td>
             </tr>
             {bids.map((l) => row(l, "bid"))}
           </tbody>
         </table>
-        <div className="meter" role="img" aria-label={`Bids are ${Math.round(bidShare * 100)}% of near-touch depth`}>
+        <div className="meter" role="img" aria-label={`Bids are ${Math.round(bidShare * 100)}% of the orders close to the price`}>
           <div className="meter-fill" style={{ width: `${bidShare * 100}%` }} />
         </div>
         <div className="panel-sub num" style={{ display: "flex", justifyContent: "space-between" }}>
@@ -83,7 +83,7 @@ export default function OrderBook({ book, price, walls }) {
         {stats && (
           <div
             className="panel-sub num wall-stats"
-            title="Big resting orders (4× a normal level) over the last 30 minutes. Real = traded into, or standing after absorbing 20%+ of its size. Pulled = vanished unfilled as price came within 10 bps: often bait."
+            title="Big orders sitting in the book (4× a normal level) over the last 30 minutes. Real = got traded into, or stayed put after filling 20% or more of its size. Pulled = cancelled without filling as price got within 0.1%, so it may have been fake."
           >
             <span>{wallLine("bid", "Bid walls")}</span>
             <span>{wallLine("ask", "Ask walls")}</span>

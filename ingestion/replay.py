@@ -82,8 +82,8 @@ def read_recordings(paths: Iterable[str | Path], max_gap_ms: int = STITCH_GAP_MS
     """(starts_new_session, recv_ms, msg) across many recordings in time order.
 
     Hourly files from one recorder run join into one continuous session, so the 60m window
-    doesn't restart its warm-up every hour. A silence longer than max_gap_ms — the recorder
-    was off — starts a fresh session."""
+    doesn't restart its warm-up every hour. A silence longer than max_gap_ms (the recorder
+    was off) starts a fresh session."""
     last: int | None = None
     for path in recording_files(paths):
         for recv, msg in read_session(path):
@@ -119,7 +119,7 @@ class ReplaySource:
                 log.info("replay finished")
                 return
             self.status.loops += 1
-            # Exchange time would jump backwards on a loop — start from a clean state.
+            # Exchange time would jump backwards on a loop: start from a clean state.
             if self.on_reset:
                 self.on_reset()
             await asyncio.sleep(1.0)

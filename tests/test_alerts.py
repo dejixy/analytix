@@ -34,8 +34,8 @@ def test_the_scripted_market_raises_the_right_alerts(session):
     twap = next(a for _, a in fired if a.kind == "twap")
     assert "selling" in twap.title and "an hour" in twap.title and twap.direction == "down"
     cascade = next(a for _, a in fired if a.kind == "cascade")
-    assert "long-liquidation cascade" in cascade.title and "liquidated" in cascade.title
-    assert any("confirmed by OI" in line for line in cascade.lines)
+    assert "of longs liquidated in" in cascade.title
+    assert any("real liquidations" in line for line in cascade.lines)
     assert len({a.id for _, a in fired}) == len(fired)                   # nothing fires twice
 
 

@@ -17,7 +17,7 @@ def _rt(request: Request):
 def _pipe(request: Request, coin: str | None):
     rt = _rt(request)
     if coin is not None and coin not in rt.pipelines:
-        raise HTTPException(404, f"Not watching '{coin}'. Watching {rt.coins} — set ANALYTIX_COINS to change.")
+        raise HTTPException(404, f"Not watching '{coin}'. Watching {rt.coins}. Set ANALYTIX_COINS to change that.")
     return rt.pipeline(coin)
 
 
@@ -51,7 +51,7 @@ def explain(window: str, request: Request, coin: str | None = None):
         raise HTTPException(404, f"Unknown window '{window}'. Choose from {list(WINDOWS)}")
     ex = _pipe(request, coin).analyzer.latest.get(window)
     if ex is None:
-        raise HTTPException(503, "Not enough data yet — the engine is warming up.")
+        raise HTTPException(503, "Not enough data yet. The engine is warming up.")
     return explanation_dict(ex)
 
 

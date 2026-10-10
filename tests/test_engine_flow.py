@@ -122,4 +122,4 @@ def test_who_survives_a_wallet_whose_orders_share_one_timestamp():
     orders = [_eng(T0, "0xw", 40_000)] + [_eng(T0, "0xw", 5_000, engine=False) for _ in range(3)]
     orders += [_eng(T0 + i * S, f"0xo{i}", 1_000, side=BUY, engine=False) for i in range(6)]
     m = who_row(replace(make_slice(seconds=60), orders=orders, twaps={("0xw", SELL): (T0, 40_000.0, 30_000)}))
-    assert m.value.startswith("1 TWAP =")
+    assert m.value.startswith("1 TWAP bot =")

@@ -6,7 +6,7 @@ Two tiers:
   • tick windows (≤ 60m) read raw trades and book updates,
   • bar windows (6h … 1w) read one-minute bars (plus backfilled candles).
 
-Driven by the exchange clock (MarketState.now_ms), not a timer — so a replay
+Driven by the exchange clock (MarketState.now_ms), not a timer, so a replay
 at 50× produces exactly the same explanations as the live session did.
 """
 import math
@@ -138,7 +138,7 @@ class Analyzer:
                               liquidity_usual_bps=self.liquidity.usual())
 
     def explain_at(self, label: str, at_ms: int) -> tuple[str, Explanation] | None:
-        """Explain the move in the window ending at a past moment — "what happened at 14:32?".
+        """Explain the move in the window ending at a past moment: "what happened at 14:32?".
 
         Uses the requested timeframe if its whole window is still in memory, otherwise the longest
         shorter one that is (the raw tick buffer holds an hour; minute bars hold a week). Returns

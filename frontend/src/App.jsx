@@ -21,16 +21,22 @@ function flowDir(ex) {
   return f.direction;
 }
 
-/** One line on whether short- and longer-term flow agree, from 1m, 10m and 60m. */
+/** "1m and 10m" / "1m, 10m and 60m" */
+const joinTf = (tfs) => (tfs.length < 2 ? tfs.join("") : `${tfs.slice(0, -1).join(", ")} and ${tfs.at(-1)}`);
+
+/** One line on which way market orders lean on 1m, 10m and 60m, e.g. "Buying on 1m and 10m, selling on 60m". */
 function agreement(explanations) {
-  const [a, b, c] = ["1m", "10m", "60m"].map((w) => flowDir(explanations[w]));
-  const glyph = (d) => (d === "up" ? "▲" : "▼");
-  if (a !== "neutral" && a === b && b === c) return { text: `Flow aligned ${glyph(a)} 1m–60m`, cls: a };
-  if (c !== "neutral" && a !== "neutral" && b !== "neutral" && a === b && a !== c)
-    return { text: `Short-term flow against the 60m ${glyph(c)}`, cls: "mixed" };
-  if (b !== "neutral" && b === c && a !== "neutral" && a !== b)
-    return { text: `1m pushing against 10m–60m ${glyph(b)}`, cls: "mixed" };
-  return { text: "Flow mixed across timeframes", cls: "neutral" };
+  const tfs = ["1m", "10m", "60m"];
+  const dirs = tfs.map((w) => flowDir(explanations[w]));
+  const up = tfs.filter((_, i) => dirs[i] === "up");
+  const down = tfs.filter((_, i) => dirs[i] === "down");
+  if (!up.length && !down.length) return { text: "Buying and selling balanced on 1m, 10m and 60m", cls: "neutral" };
+  const parts = [];
+  if (up.length) parts.push(`buying on ${joinTf(up)}`);
+  if (down.length) parts.push(`selling on ${joinTf(down)}`);
+  const text = parts.join(", ");
+  const cls = up.length === 3 ? "up" : down.length === 3 ? "down" : up.length && down.length ? "mixed" : "neutral";
+  return { text: text.charAt(0).toUpperCase() + text.slice(1), cls };
 }
 
 export default function App() {
@@ -154,7 +160,7 @@ export default function App() {
                   key={w}
                   className={`tf-tab ${!pinned && selected === w ? "active" : ""}`}
                   onClick={() => jumpTo(w)}
-                  title={f?.stat && f.stat !== "—" ? `${w} order flow: ${f.stat}` : `${w}: no flow read yet`}
+                  title={f?.stat ? `${w} market orders: ${f.stat}` : `${w}: no trades yet`}
                 >
                   {w}
                   <span className={`tf-flow ${d}`} aria-hidden="true">{d === "up" ? "▲" : d === "down" ? "▼" : "·"}</span>
@@ -164,7 +170,7 @@ export default function App() {
           </nav>
           <span
             className={`tf-agree ${agree.cls}`}
-            title="Which way aggressive order flow leans on 1m, 10m and 60m. Aligned = every timeframe agrees; against = the short term is pushing the other way."
+            title="Whether market orders lean to buying or selling on 1m, 10m and 60m. When all three agree, the move has support. When the short term goes the other way, the move may be fading or turning."
           >
             {agree.text}
           </span>

@@ -69,5 +69,5 @@ def test_absorption_is_called_out_from_measured_impact():
                 move.move_bps, move.expected_bps)
     assert im and im.verdict == "against"
     ex = explain("ETH", sl, move, [flow], im)
-    assert "absorbed it" in ex.headline and ex.impact is im
-    assert any(line.startswith("Impact: net selling of") and "The sellers were absorbed" in line for line in ex.narrative)
+    assert "sellers pushed, but buyers held" in ex.headline and ex.impact is im
+    assert any(line.startswith("Impact: net selling of") and "soaked up all the selling" in line for line in ex.narrative)

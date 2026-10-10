@@ -29,21 +29,21 @@ def test_oi_falling_with_the_cascade_reads_as_likely_liquidations():
     assert abs(info.recovered - 0.5) < 1e-6
     (ev,) = tr.events
     assert ev.kind == "cascade" and ev.direction is Direction.DOWN
-    assert ev.title.startswith("3 sell sweeps in 2s ($180K) pushed price -0.33%")
-    assert ev.detail.startswith("OI −$150K: likely liquidations · won back 50% in")
+    assert ev.title.startswith("3 big sell orders in 2s ($180K) pushed price -0.33%")
+    assert ev.detail.startswith("open interest −$150K: likely liquidations · won back 50% in")
 
 
 def test_flat_oi_reads_as_one_trader_and_the_signal_says_so():
     st, tr = _run(oi_after=100_000.0, recover_to=2985.0)
     (info,) = tr.infos(st.now_ms)
     assert info.verdict == "unlikely" and info.recovered < 0
-    assert oi_sentence(info) == "Open interest barely moved — more likely one large trader than liquidations."
+    assert oi_sentence(info) == "Open interest barely moved, so this was more likely one big trader than liquidations."
     assert recovery_text(info) == "Since then price has kept going past the cascade's low."
     sl = make_slice(list(st.trades), baseline=BASELINE, seconds=60)
     sl = sl.__class__(**{**{f: getattr(sl, f) for f in sl.__dataclass_fields__}, "cascades": (info,)})
     sig = liquidations(sl)
-    assert sig.phrase.startswith("a sell-sweep cascade (3 sweeps") and "OI didn't fall" in sig.phrase
-    assert "more likely one large trader" in sig.summary
+    assert sig.phrase.startswith("a run of sell orders (3 big orders") and "open interest didn't fall" in sig.phrase
+    assert "more likely one big trader" in sig.summary
 
 
 def test_no_event_until_the_cascade_is_over_and_oi_is_pending_at_first():
@@ -67,5 +67,5 @@ def test_without_a_fresh_oi_reading_the_cascade_says_so_instead_of_guessing():
             assert tr.events == []                          # still waiting for OI: nothing published yet
     (ev,) = tr.events
     (info,) = tr.infos(st.now_ms)
-    assert info.oi_settled and info.verdict is None and ev.detail.startswith("OI unavailable")
+    assert info.oi_settled and info.verdict is None and ev.detail.startswith("no open interest data")
     assert oi_sentence(info) == "Open interest wasn't available around it."

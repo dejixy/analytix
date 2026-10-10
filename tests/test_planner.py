@@ -120,7 +120,7 @@ def test_touch_odds_match_the_true_process(market, hours, move):
 def test_tail_odds_hold_up_when_the_market_is_already_volatile():
     """After a volatility spike the 1-week, 1-in-100 tail must stay in the right range. How long volatility
     lingers is only known to about ±0.005 in persistence from 200 days of candles, which moves a 1-week 1%
-    tail by up to ~2.5× either way — the reason each simulated path draws its own persistence from the
+    tail by up to ~2.5× either way: the reason each simulated path draws its own persistence from the
     likelihood. This seed is one of the unlucky ones (persistence estimated 0.968 vs 0.98), so the bound is loose."""
     candles, (v, px, t) = _garch_t(5000, seed=21)
     m = fit_model(candles)
@@ -328,8 +328,8 @@ def test_a_stop_past_liquidation_never_fires_and_the_plan_says_so(market):
 
 
 def test_cross_margin_uses_the_whole_account(market):
-    """Cross margin, one position: liquidation is where the account (not just the margin) runs out — the same
-    price as an isolated position at account ÷ notional leverage — and a liquidation takes the account."""
+    """Cross margin, one position: liquidation is where the account (not just the margin) runs out (the same
+    price as an isolated position at account ÷ notional leverage), and a liquidation takes the account."""
     _, _, m = market
     m40 = maintenance_rate(40)
     assert liquidation_price(100.0, 1, 5, m40, ratio=3.0) == pytest.approx(liquidation_price(100.0, 1, 5 / 3, m40))

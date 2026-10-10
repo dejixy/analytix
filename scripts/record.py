@@ -55,7 +55,7 @@ async def record(coins: list[str], minutes: float | None, folder, min_free_gb: f
         pass
     started = time.time()
     tty = sys.stdout.isatty()
-    print(f"recording {', '.join(coins)} to {folder} — Ctrl+C to stop", flush=True)
+    print(f"recording {', '.join(coins)} to {folder} (Ctrl+C to stop)", flush=True)
     last_line = 0.0
     try:
         while not stop.is_set() and (minutes is None or time.time() - started < minutes * 60):

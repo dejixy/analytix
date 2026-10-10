@@ -6,7 +6,7 @@ Why it exists: the dashboard and tests need data when there's no network, and
 a scripted session has *known answers*. We know a long-liquidation cascade
 starts at 16:00 into the session, so a test can assert the engine finds it.
 
-It is deliberately simple — not a realistic market model. Replace it with a
+It is deliberately simple, not a realistic market model. Replace it with a
 real recording (scripts/record.py) as soon as you have one.
 """
 import json
@@ -24,8 +24,8 @@ CTX_EVERY_S = 3.0
 NOISE_BPS_SQRT_S = 0.5   # random-walk volatility of the mid, on top of flow impact
 IMPACT_BPS_PER_COIN = 0.08  # each taker order nudges the mid in its direction
 BASE_LEVEL_SIZE = 12.0   # coins per book level before multipliers
-BASE_FUNDING = 0.0000125 # 0.00125%/h ≈ 11% APR — Hyperliquid's baseline
-# One algorithmic seller works a big order through the quiet stretch — a slice every 30s, no tx hash — and
+BASE_FUNDING = 0.0000125 # 0.00125%/h ≈ 11% APR, Hyperliquid's baseline
+# One algorithmic seller works a big order through the quiet stretch (a slice every 30s, no tx hash) and
 # passive bids absorb it: the "95% sell, price flat" tape that's really one TWAP.
 TWAP_START_S, TWAP_END_S, TWAP_EVERY_S, TWAP_SLICE = 680, 950, 30.0, 60.0
 
@@ -53,7 +53,7 @@ SCRIPT: list[Regime] = [
     Regime("buy_pressure", 240, 360, 0.0, 0.72, 9, 1.15, 0.45, 0.06, "B", 0.5, 0.00002,
            story="Aggressive buying into thinning asks; new longs opening"),
     Regime("absorption", 360, 540, 0.42, 0.30, 8, 1.7, 1.0, 0.0, "A", 0.05, 0.00002,
-           story="Heavy selling absorbed by refilling bids — price holds"),
+           story="Heavy selling absorbed by refilling bids; price holds"),
     Regime("short_squeeze", 540, 660, 0.1, 0.70, 10, 1.1, 0.5, 0.12, "B", -0.8, 0.00003,
            story="Short squeeze: price up while open interest falls"),
     Regime("quiet", 660, 960, -0.01, 0.49, 3.5, 1.0, 1.0, 0.0, "B", 0.05, 0.00004,
@@ -211,7 +211,7 @@ def generate_session(
 
 
 def _poisson(rng: random.Random, lam: float) -> int:
-    # Knuth — fine for the small lambdas used per step
+    # Knuth: fine for the small lambdas used per step
     l, k, p = math.exp(-lam), 0, 1.0
     while True:
         p *= rng.random()

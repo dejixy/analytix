@@ -48,8 +48,8 @@ function FeedBadge({ feed, conn }) {
   }
   if (feed.stale) {
     return (
-      <span className="badge" title="Connected, but no messages recently — exchange time has stopped advancing">
-        <span className="dot warning" /> Stale · {Math.round(feed.silence_s)}s silent
+      <span className="badge" title="Connected, but the exchange hasn't sent anything for a while">
+        <span className="dot warning" /> No updates for {Math.round(feed.silence_s)}s
       </span>
     );
   }
@@ -81,23 +81,23 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts }) {
       <div className="stats">
         <div>
           <div className="stat-label">Spread</div>
-          <div className="stat-value num">{price ? `${price.spread_bps.toFixed(2)} bps` : "—"}</div>
+          <div className="stat-value num">{price ? `${(price.spread_bps / 100).toFixed(3)}%` : "-"}</div>
         </div>
         <div>
-          <div className="stat-label">Funding (APR)</div>
-          <div className="stat-value num">{context ? fmtPct(context.funding_apr, 1) : "—"}</div>
+          <div className="stat-label">Funding / year</div>
+          <div className="stat-value num">{context ? fmtPct(context.funding_apr, 1) : "-"}</div>
         </div>
         <div>
-          <div className="stat-label">Mark − oracle</div>
-          <div className="stat-value num">{context ? `${context.premium_bps.toFixed(1)} bps` : "—"}</div>
+          <div className="stat-label" title="Hyperliquid's price compared with the index price from other big exchanges">vs index</div>
+          <div className="stat-value num">{context ? fmtPct(context.premium_bps / 100, 3) : "-"}</div>
         </div>
       </div>
 
       <div className="header-right">
-        <button className="alerts-open" onClick={onAlerts} title="Telegram and browser alerts: cascades, TWAPs, level breaks, your price levels">
+        <button className="alerts-open" onClick={onAlerts} title="Telegram and browser alerts: big liquidations, steady sellers or buyers (TWAPs), broken price levels, your own price alerts">
           Alerts
         </button>
-        <button className="plan-open" onClick={onPlan} title="Liquidation odds, the path to expect, and costs — before you take a trade">
+        <button className="plan-open" onClick={onPlan} title="Before you take a trade: your chance of liquidation, where price may go, and what it costs">
           Plan a trade
         </button>
         <FeedBadge feed={feed} conn={conn} />

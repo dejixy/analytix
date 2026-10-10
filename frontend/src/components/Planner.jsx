@@ -8,16 +8,16 @@ const REFRESH_MS = 30_000;
 
 const holdLabel = (h) => (HOLDS.find(([, v]) => v === h) || [`${h}h`])[0];
 const usd = (x, sign = false) => {
-  if (x == null) return "—";
+  if (x == null) return "-";
   const a = Math.abs(x);
   const d = a < 100 && Math.round(a * 100) % 100 !== 0 ? 2 : 0;   // $4.50, $81.51, but $50 and $220
   const s = a >= 1e6 ? `$${(a / 1e6).toFixed(2)}M` : a >= 1e4 ? `$${(a / 1e3).toFixed(1)}K`
     : `$${a.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`;
   return x < 0 ? `−${s}` : sign ? `+${s}` : s;
 };
-const pct = (x, d = 1) => (x == null ? "—" : `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(d)}%`);
+const pct = (x, d = 1) => (x == null ? "-" : `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(d)}%`);
 function chance(p) {
-  if (p == null) return "—";
+  if (p == null) return "-";
   if (p === 0) return "<0.01%";
   if (p < 0.001) return "<0.1%";
   if (p < 0.1) return `${(p * 100).toFixed(1)}%`;
@@ -80,7 +80,7 @@ function BracketSection({ b, p, hl }) {
             <dd><b>{chance(b.p_stop)}</b> <span className="down">{usd(b.pnl_stop, true)}</span></dd></>
         )}
         {b.p_liq > 0 && (<><dt>Liquidated first</dt><dd><b>{chance(b.p_liq)}</b></dd></>)}
-        <dt>Neither — closed at the end of {hl}</dt><dd><b>{chance(b.p_time)}</b></dd>
+        <dt>Neither: closed at the end of {hl}</dt><dd><b>{chance(b.p_time)}</b></dd>
         <dt><b>Average result</b> <span className="muted">after costs</span></dt>
         <dd><b className={b.ev >= 0 ? "up" : "down"}>{usd(b.ev, true)}</b></dd>
       </dl>
@@ -185,7 +185,7 @@ function Cone({ p, hl, bracket }) {
       <div className="plan-cone-tip num">
         {hover && hover[0] > 0 ? (
           <>
-            after {fmtHours(hover[0])} · half of paths {fmtPrice(hover[2])}–{fmtPrice(hover[4])} · 90% {fmtPrice(hover[1])}–{fmtPrice(hover[5])}
+            after {fmtHours(hover[0])} · half of paths {fmtPrice(hover[2])} to {fmtPrice(hover[4])} · 90% {fmtPrice(hover[1])} to {fmtPrice(hover[5])}
             {liqAt(hover[0]) != null && p.liq_price ? ` · liquidated by then ${chance(liqAt(hover[0]))}` : ""}
           </>
         ) : (
@@ -312,7 +312,7 @@ export default function Planner({ coin, mid, explanations, onClose }) {
   const p = plan && plan.coin === coin ? plan : null;
   const hl = holdLabel(hours);
   const ctxW = contextWindow(hours);
-  const ctx = explanations?.[ctxW]?.summary?.filter((m) => m.tag && m.tag !== "—" && !m.partial) || [];
+  const ctx = explanations?.[ctxW]?.summary?.filter((m) => m.tag && !m.partial) || [];
 
   return (
     <div className="planner-scrim" onClick={onClose}>
@@ -404,7 +404,7 @@ export default function Planner({ coin, mid, explanations, onClose }) {
               </div>
               {p.liq_price ? (
                 <div className="ink2">
-                  Liquidated at <b>{fmtPrice(p.liq_price)}</b> ({pct(p.liq_distance_pct)}) — {p.liq_sigmas?.toFixed(1)} typical {hl} moves away
+                  Liquidation price <b>{fmtPrice(p.liq_price)}</b> ({pct(p.liq_distance_pct)}), {p.liq_sigmas?.toFixed(1)}× a normal {hl} move away
                 </div>
               ) : (
                 <div className="ink2">A 1× long can't be liquidated.</div>
@@ -434,8 +434,8 @@ export default function Planner({ coin, mid, explanations, onClose }) {
                     .map((t) => (
                       <tr key={`${t.kind}-${t.price}`} className={`plan-row ${t.kind}`}>
                         <td className="num">{fmtPrice(t.price)}{t.kind === "liq" ? " liq" : t.kind === "entry" ? " entry" : ""}</td>
-                        <td className="num">{t.kind === "entry" ? "—" : pct(t.move_pct, Math.abs(t.move_pct) < 1 ? 2 : 1)}</td>
-                        <td className={`num ${t.pnl > 0 ? "up" : t.pnl < 0 ? "loss" : ""}`}>{t.kind === "entry" ? "—" : usd(t.pnl, true)}</td>
+                        <td className="num">{t.kind === "entry" ? "-" : pct(t.move_pct, Math.abs(t.move_pct) < 1 ? 2 : 1)}</td>
+                        <td className={`num ${t.pnl > 0 ? "up" : t.pnl < 0 ? "loss" : ""}`}>{t.kind === "entry" ? "-" : usd(t.pnl, true)}</td>
                         <td className="num">{t.kind === "entry" ? "" : chance(t.prob)}</td>
                       </tr>
                     ))}
@@ -457,7 +457,7 @@ export default function Planner({ coin, mid, explanations, onClose }) {
                 <span>{usd(p.outcome.p75, true)}</span>
                 <span className="up">{usd(p.outcome.p95, true)}</span>
               </div>
-              <div className="plan-range-caption muted">5th · 25th · median · 75th · 95th percentile</div>
+              <div className="plan-range-caption muted">1 in 20 worse · 1 in 4 worse · middle · 1 in 4 better · 1 in 20 better</div>
               <p className="plan-note">
                 In profit at exit about <b>{Math.round(p.prob_profit * 100)}%</b> of the time. Typical {hl} move ±{p.sigma_pct.toFixed(1)}%;
                 90% of the time price ends between {pct(p.range_pct[0])} and {pct(p.range_pct[1])}.
@@ -482,8 +482,8 @@ export default function Planner({ coin, mid, explanations, onClose }) {
                 <dd>{p.costs.slippage_known ? usd(p.costs.slippage) : "not included"}</dd>
                 <dt>
                   Funding over {hl}
-                  <span className="muted"> ({p.costs.funding_now_apr != null ? `${p.costs.funding_now_apr.toFixed(1)}% APR now` : "no rate yet"}
-                    {p.costs.funding_avg_apr != null ? `, ${p.costs.funding_avg_apr.toFixed(1)}% week avg` : ""})</span>
+                  <span className="muted"> ({p.costs.funding_now_apr != null ? `${p.costs.funding_now_apr.toFixed(1)}% a year now` : "no rate yet"}
+                    {p.costs.funding_avg_apr != null ? `, ${p.costs.funding_avg_apr.toFixed(1)}% on average this week` : ""})</span>
                 </dt>
                 <dd>{p.costs.funding >= 0 ? usd(p.costs.funding) : `${usd(-p.costs.funding)} received`}</dd>
                 <dt><b>Total</b></dt><dd><b>{usd(p.costs.total)}</b></dd>
@@ -515,14 +515,14 @@ export default function Planner({ coin, mid, explanations, onClose }) {
                 <>
                   {p.paths_n.toLocaleString()} simulated paths from {p.model.candles.toLocaleString()} {p.model.step_s === 3600 ? "hourly" : "5-minute"} candles
                   ({p.model.days} days), wicks included. Volatility now {p.vol_ratio.toFixed(2)}× its usual for this hour
-                  {p.model.half_life_h ? `; shocks fade with a half-life of ~${p.model.half_life_h}h` : ""}.
+                  {p.model.half_life_h ? `; after a sudden jump, the extra volatility halves in about ${p.model.half_life_h}h` : ""}.
                 </>
               ) : (
                 <>{p.paths_n.toLocaleString()} simulated paths, rough model.</>
               )}{" "}
               No direction assumed: this sizes the risk, it doesn't predict the move.{" "}
               {p.margin_mode === "cross" ? "Cross margin; liquidation counted as losing the whole account" : "Isolated margin; liquidation counted as losing the whole margin"};
-              maintenance {(p.maint * 100).toFixed(2)}% ({p.max_leverage}× max).
+              maintenance margin {(p.maint * 100).toFixed(2)}% ({p.max_leverage}× max).
               {p.notes.map((n) => (
                 <div key={n} className="plan-warn">{n}</div>
               ))}

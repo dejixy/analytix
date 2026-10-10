@@ -147,7 +147,7 @@ def _chart_step_ms() -> int:
 def bar_series(st, recent_s: int = 86_400, recent_step_s: int = 120, old_step_s: int = 900) -> list[list[float]]:
     """
     Close prices for the long-window chart: 2-minute points for the last 24h,
-    15-minute points before that — about 1,300 points for a full week.
+    15-minute points before that: about 1,300 points for a full week.
     """
     if not len(st.bars):
         return []

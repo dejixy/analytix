@@ -5,9 +5,9 @@ Logic, in order:
   1. Classify every signal against the move: supports / opposes / neutral.
   2. Rank supporters by weighted strength → headline names the top two.
      Weights depend on the horizon: sweeps matter most for 1m, positioning
-     for 60m — so the same data yields a different thesis per timeframe.
+     for 60m, so the same data yields a different thesis per timeframe.
   3. Strong opposers become "headwinds". Aggressive flow that *lost* (sellers
-     hammering while price rose) is absorption — worth calling out by name.
+     hammering while price rose) is absorption, worth calling out by name.
   4. Confidence = how one-sided the evidence is.
   5. For windows longer than a minute, describe the move's shape: one sharp
      minute (a shock) or spread out (a grind / trend).
@@ -57,7 +57,7 @@ def _align(sig: SignalResult, move: PriceMove) -> Alignment:
 
 def _absorption_sentence(flow: SignalResult, move: PriceMove) -> str:
     aggressor = "Sellers" if flow.score < 0 else "Buyers"
-    passive = "bids" if flow.score < 0 else "offers"
+    passive = "buy orders" if flow.score < 0 else "sell orders"
     pct = max(flow.metrics.get("buy_notional", 0), flow.metrics.get("sell_notional", 0))
     total = flow.metrics.get("buy_notional", 0) + flow.metrics.get("sell_notional", 0)
     share = pct / total * 100 if total else 0
@@ -67,26 +67,26 @@ def _absorption_sentence(flow: SignalResult, move: PriceMove) -> str:
         Direction.NEUTRAL: "price barely moved",
     }[move.direction if move.significance is not Significance.QUIET else Direction.NEUTRAL]
     return (
-        f"Absorption: {aggressor.lower()} took {share:.0f}% of taker volume yet {outcome} — "
-        f"resting {passive} soaked up the flow, often the sign of a patient counterparty."
+        f"Absorbed: {aggressor.lower()} made up {share:.0f}% of market orders, yet {outcome}. {passive.capitalize()} "
+        f"waiting in the book soaked it all up, often a sign of a patient big player on the other side."
     )
 
 
 def _impact_sentence(label: str, im: FlowImpact) -> str:
     buying = im.net_flow > 0
-    aggressors = "buyers" if buying else "sellers"
-    head = (f"Impact: net {'buying' if buying else 'selling'} of {fmt_usd(abs(im.net_flow))} normally moves price "
-            f"about {im.expected_bps / 100:+.2f}% over {label}; it moved {im.actual_bps / 100:+.2f}%")
+    flow = "buying" if buying else "selling"
+    head = (f"Impact: net {flow} of {fmt_usd(abs(im.net_flow))} usually moves price "
+            f"about {im.expected_bps / 100:+.2f}% over {label}. It moved {im.actual_bps / 100:+.2f}%")
     return head + {
-        "against": f" — the other way. The {aggressors} were absorbed.",
-        "absorbed": f" — {im.ratio:.1f}× the usual impact. The {aggressors} were largely absorbed.",
-        "normal": f" — about the usual impact ({im.ratio:.1f}×).",
-        "outsized": f" — {im.ratio:.1f}× the usual impact: a thin book, or a move led from other venues.",
+        "against": f", the other way, so orders waiting in the book soaked up all the {flow}.",
+        "absorbed": f", only {im.ratio:.1f}× the usual, so orders waiting in the book soaked up most of the {flow}.",
+        "normal": f", about the usual ({im.ratio:.1f}×).",
+        "outsized": f", {im.ratio:.1f}× the usual: a thin book, or a move that started on another exchange.",
     }[im.verdict]
 
 
 def _level(s: WindowSlice, flow: SignalResult):
-    """The price passive orders defended against the aggressors (tick windows only — bars carry no fill prices)."""
+    """The price passive orders defended against the aggressors (tick windows only: bars carry no fill prices)."""
     if not s.trades:
         return None
     lv = defended_level(s.trades, TradeSide.SELL if flow.score < 0 else TradeSide.BUY)
@@ -131,23 +131,23 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
         if range_bps >= SIGNIFICANT_Z * move.expected_bps:
             headline = f"{coin} little changed over {s.label} ({pct}) after a {range_bps / 100:.2f}% round trip"
             narrative.append(
-                f"Two-way swing between {move.low:,.2f} and {move.high:,.2f} — the shorter windows and the "
-                f"event log show each leg."
+                f"Price swung between {move.low:,.2f} and {move.high:,.2f} and ended about where it started. The "
+                f"shorter timeframes and the event log show each swing."
             )
         elif absorbed:
             side = "sellers" if flow.score < 0 else "buyers"
-            passive = "bids" if flow.score < 0 else "offers"
+            passive = "buyers" if flow.score < 0 else "sellers"
             level = _level(s, flow)
             at = f" at {fmt_px(level.price)}" if level else ""
-            headline = f"{coin} little changed over {s.label} ({pct}) — {side} pressed but {passive} absorbed it{at}"
+            headline = f"{coin} little changed over {s.label} ({pct}): {side} pushed, but {passive} held{at}"
             narrative.append(_absorption_sentence(flow, move))
             if level:
                 narrative.append(level_sentence(level))
         else:
-            headline = f"{coin} little changed over {s.label} ({pct}) — balanced two-way flow"
+            headline = f"{coin} little changed over {s.label} ({pct}): buying and selling balanced"
         narrative.append(
-            f"The net move is within normal noise ({abs(move.z):.1f}σ; a typical {s.label} move is "
-            f"±{move.expected_bps:.0f} bps)."
+            f"That's within normal noise: {abs(move.z):.1f}× a typical {s.label} move of "
+            f"±{move.expected_bps / 100:.2f}%."
         )
         confidence = 0.0
     shape = ""
@@ -166,32 +166,33 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
                 "mixed": ""}.get(shape, "")
         if top:
             reasons = " and ".join(sig.phrase for sig in top)
-            headline = f"{coin} {pct} in {s.label} — {lead}driven by {reasons}"
+            headline = f"{coin} {pct} in {s.label}: {lead}driven by {reasons}"
         elif flow_opposes and flow:
             level = _level(s, flow)
             at = f" at {fmt_px(level.price)}" if level else ""
-            headline = f"{coin} {pct} in {s.label} — {verb} despite {flow.phrase}: passive liquidity absorbed it{at}"
+            headline = f"{coin} {pct} in {s.label}: {verb} despite {flow.phrase}, as orders waiting in the book soaked it up{at}"
         elif flow and flow.metrics.get("activity", 1.0) < 0.8:
-            headline = f"{coin} {pct} in {s.label} — no clear driver; price drifted on light activity"
+            headline = f"{coin} {pct} in {s.label}: no clear driver, price drifted on light trading"
         else:
-            headline = f"{coin} {pct} in {s.label} — no single dominant driver; two-way flow"
+            headline = f"{coin} {pct} in {s.label}: no single driver, with buyers and sellers both active"
         narrative.append(
-            f"A {move.significance.value} move: {abs(move.z):.1f}× the typical {s.label} move "
-            f"(±{move.expected_bps:.0f} bps), range {move.low:,.2f}–{move.high:,.2f}."
+            f"A {move.significance.value} move: {abs(move.z):.1f}× a typical {s.label} move "
+            f"(±{move.expected_bps / 100:.2f}%). Range {move.low:,.2f} to {move.high:,.2f}."
         )
         if shape == "faded":
             narrative.append(
-                f"Shape: the sharpest {words} moved {move.burst_bps / 100:+.2f}%, but most of it was given back — "
-                f"net only {pct}."
+                f"Shape: the sharpest {words} moved {move.burst_bps / 100:+.2f}%, but most of it was given back, "
+                f"leaving only {pct}."
             )
         elif shape == "burst":
             narrative.append(
-                f"Shape: {move.burst_bps / 100:+.2f}% of the {pct} came in a single {words} — a shock, not a trend."
+                f"Shape: {move.burst_bps / 100:+.2f}% of the {pct} came in a single {words}. A sudden jolt, "
+                f"not a trend."
             )
         elif shape == "grind":
             narrative.append(
-                f"Shape: spread out — the sharpest {words} was only {move.burst_bps / 100:+.2f}% of the {pct}, "
-                f"so this is a trend, not a one-off shock."
+                f"Shape: spread out. The sharpest {words} was only {move.burst_bps / 100:+.2f}% of the {pct}, "
+                f"so this is a steady trend, not a one-off jolt."
             )
         narrative += [sig.summary for sig, _, _ in supporters[:3]]
         for sig, _, _ in opposers:
@@ -203,7 +204,7 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
                 if level:
                     narrative.append(level_sentence(level))
             else:
-                narrative.append(f"Headwind ({sig.label.lower()}): {sig.summary}")
+                narrative.append(f"Pushing the other way ({sig.label.lower()}): {sig.summary}")
         confidence = sup_total / (sup_total + opp_total + 0.35) if sup_total else 0.0
 
     if impact:
@@ -216,11 +217,11 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
         narrative.append(f"Positioning: {fund.summary}")
     if s.coverage < 0.95:
         have = s.seconds * s.coverage
-        narrative.append(f"Warming up — {_duration(have)} of {_duration(s.seconds)} of history so far.")
+        narrative.append(f"Warming up: {_duration(have)} of {_duration(s.seconds)} of history so far.")
     if s.resolution == "bar" and s.flow_coverage < 0.95:
         narrative.append(
-            f"Order flow, depth and OI cover the last {_duration(s.seconds * s.flow_coverage)} of this window "
-            f"(recorded live; Hyperliquid only serves price history)."
+            f"Trades, the order book and open interest only cover the last {_duration(s.seconds * s.flow_coverage)} "
+            f"of this window. They're recorded live, and Hyperliquid only provides past prices."
         )
 
     return Explanation(
