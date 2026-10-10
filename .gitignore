@@ -8,4 +8,5 @@ data/recordings/
 frontend/node_modules/
 data/*.sqlite
 data/alerts.json
+data/watch.json
 data/*.tmp
