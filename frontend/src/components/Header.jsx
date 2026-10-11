@@ -1,6 +1,6 @@
 import { fmtPct, fmtPrice, fmtTime } from "../format.js";
 
-function CoinTabs({ coins, tickers, active, onCoin, more, onMore }) {
+function CoinTabs({ coins, tickers, active, onCoin, more, onMore, outcomes, onOutcomes }) {
   if (!coins) return null;
   return (
     <nav className="coins" aria-label="Market">
@@ -8,8 +8,8 @@ function CoinTabs({ coins, tickers, active, onCoin, more, onMore }) {
         const t = tickers?.[c] || {};
         const mv = t.move_1m_pct;
         return (
-          <button key={c} className={`coin-tab ${c === active && !more ? "active" : ""}`} onClick={() => onCoin(c)}
-            aria-pressed={c === active && !more}>
+          <button key={c} className={`coin-tab ${c === active && !more && !outcomes ? "active" : ""}`} onClick={() => onCoin(c)}
+            aria-pressed={c === active && !more && !outcomes}>
             <span className="coin-name">{c}</span>
             <span className="coin-meta">
               {fmtPrice(t.mid)}{" "}
@@ -22,6 +22,11 @@ function CoinTabs({ coins, tickers, active, onCoin, more, onMore }) {
         title="Every other Hyperliquid coin, ranked by what's unusual right now">
         <span className="coin-name">More coins</span>
         <span className="coin-meta">{more && active && !coins.includes(active) ? active : "all perps"}</span>
+      </button>
+      <button className={`coin-tab ${outcomes ? "active" : ""}`} onClick={onOutcomes} aria-pressed={outcomes}
+        title="Prediction markets on Hyperliquid: Outcome, trade.xyz and the rest">
+        <span className="coin-name">Outcomes</span>
+        <span className="coin-meta">prediction markets</span>
       </button>
     </nav>
   );
@@ -66,7 +71,7 @@ function FeedBadge({ feed, conn }) {
   );
 }
 
-export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions, more, onMore }) {
+export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions, more, onMore, outcomes, onOutcomes }) {
   const { price, context, coin, feed } = snap;
   const chg = context?.change_24h_pct;
   return (
@@ -76,8 +81,10 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
         <span className="brand-tag">why did this price move?</span>
       </div>
 
-      <CoinTabs coins={snap.coins} tickers={snap.tickers} active={coin} onCoin={onCoin} more={more} onMore={onMore} />
+      <CoinTabs coins={snap.coins} tickers={snap.tickers} active={coin} onCoin={onCoin} more={more} onMore={onMore}
+        outcomes={outcomes} onOutcomes={onOutcomes} />
 
+      {!outcomes && <>
       <div className="market">
         <span className="market-sym">{coin}-PERP</span>
         <span className="market-price">{fmtPrice(price?.mid)}</span>
@@ -98,6 +105,7 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
           <div className="stat-value num">{context ? fmtPct(context.premium_bps / 100, 3) : "-"}</div>
         </div>
       </div>
+      </>}
 
       <div className="header-right">
         <button className="alerts-open" onClick={onPositions} title="Paste a wallet to see its open positions with live liquidation odds">

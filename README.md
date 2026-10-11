@@ -214,6 +214,26 @@ Clicking ETH, BTC, SOL or HYPE switches to its tab. Clicking any other coin open
 
 The data: one `metaAndAssetCtxs` call every 10 seconds covers every coin's price, index, funding, open interest and 24h volume; hourly candles load one coin every 5 seconds (busiest first) and refresh every 6 hours; a second, unrecorded WebSocket follows the trades of the 30 most traded coins and any opened coin. All well inside Hyperliquid's rate limits. Live mode only (`engine/scanner.py`, `api/scanner.py`).
 
+### Outcomes (prediction markets)
+
+The **Outcomes** tab, after More coins, covers Hyperliquid's prediction markets (HIP-4): every market listed on Hyperliquid's books, from **Outcome** (outcome.xyz) and **trade.xyz** (its Events markets) today, and any other venue that lists later. Each market has a Yes and a No side, and a contract pays $1 if it happens, so a Yes price of 0.62 reads as 62% likely. Filter by venue (All, Outcome, trade.xyz) and by kind (price, sports, other), search, and sort by volume, closing soon, gap to fair odds or 24h move.
+
+The list shows each market's odds, best bid and ask in cents, the 24h change in points, 24h volume, how many Yes contracts people hold, and when it closes. Markets that belong to one question (a match: home win, away win, draw, or "none of these") are grouped under it.
+
+What Analytix adds on top of the raw market:
+
+- **Fair odds for price markets** ("ETH above 2,538.8 at 18:30 UTC", "SILVER above 60.7"): the chance the perp ends past the line, from its live price and how much it has moved over the last 12 hours (1-minute candles, no trend assumed). The gap between that and the market's odds is shown in points, and the list notes when Yes looks cheap or rich by 5 points or more. "Touch" markets use the chance of reaching the line at any point before the close.
+- **The add-up check for questions.** Exactly one outcome of a question ends Yes, so the Yes odds should add up to 100%. When Yes on every outcome costs under $1 (or No on every outcome costs less than it pays), the difference is locked in, and the note says how much per set and how many sets the best prices allow, before fees.
+- **Who is trading** (on a market's page): the busiest wallets and which side each backed, with plain notes when two wallets are only trading with each other (that volume isn't real interest), when a wallet trades with itself, or when one wallet does most of the buying on a side.
+- **Why the odds moved:** one line over the last hour, e.g. "Odds rose 12 points (40% to 52%) over the last hour, on 280 contracts of net Yes buying, mostly from one wallet". For price markets it says whether the odds simply followed the perp, or moved on trading here while the fair odds barely changed.
+- **Book depth in dollars:** what it takes to push Yes 5 points either way.
+
+A market's page also has the odds chart (12 hours or 2 weeks, with the fair-odds line for price markets), the Yes book (No is its mirror: 100 minus these), and the trades with the wallet behind each one.
+
+These markets are small next to perps (often hundreds to a few thousand dollars a day), so Analytix doesn't look for perp-sized sweeps or cascades here; everything is scaled to the market. The fair odds are a simple estimate to compare against, not advice.
+
+The data: `outcomeMeta` once a minute for the market list; a third WebSocket follows each market's Yes book and its market data (24h volume, price a day ago, contracts held), up to 300 markets (`ANALYTIX_OUTCOME_MARKETS`; Hyperliquid allows 1000 feeds per IP); a market's trades are followed live while its page is open (4 at a time, closed after 10 minutes unviewed). Live mode only (`engine/outcomes.py`, `api/outcomes.py`, `ingestion/outcomes.py`).
+
 ### Position watch
 
 The **Positions** button opens position watch. Paste a wallet address (and a name if you like) and it shows that wallet's open Hyperliquid positions, refreshed every 20 seconds. It's read-only: Hyperliquid shows every wallet's positions publicly, so it needs no keys and can't trade. Up to 10 wallets; they're kept in `data/watch.json` on the machine running Analytix.
@@ -326,6 +346,7 @@ The recorder prints how many MB the current hour has taken, so you can see your 
 | `ANALYTIX_BINANCE_WS` / `ANALYTIX_BYBIT_WS` | their public futures feeds | override the exchange WebSocket addresses |
 | `ANALYTIX_BACKFILL` | `1` | `0` to skip downloading price candles on start |
 | `ANALYTIX_BARS_DB` | `data/bars.sqlite` | where live minute bars are saved (live mode only) |
+| `ANALYTIX_OUTCOME_MARKETS` | `300` | how many prediction markets the Outcomes tab follows live (two feeds each) |
 
 Thresholds live in `config.py`.
 
@@ -341,6 +362,7 @@ Thresholds live in `config.py`.
 | `GET /api/explain_at?t=<ms>&window=10m&coin=BTC` | "what happened at 14:32?": the explanation for the window ending at any moment still in memory (the last hour for 1m–60m, the last week for 6h+). Falls back to a shorter timeframe if the requested one reaches back past the data. This is what clicking the chart calls. |
 | `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&stop=2&target=4&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, the model behind them, and (with `stop`/`target`, % from entry) the bracket's odds. Add `account=3000` for cross margin. The first answer for a coin and hold starts the history check (`calibration_pending: true`); it's included a moment later. |
 | `GET /api/alerts` · `PUT /api/alerts` · `POST /api/alerts/levels` · `POST /api/alerts/telegram/{token,discover,test}` | alert settings (never the token), price alerts, Telegram connection and the latest alerts. |
+| `GET /api/outcomes` · `GET /api/outcomes/{id}?range=12h\|2w` | every prediction market with live odds, fair odds and the add-up check; one market's page (book, trades, who is trading, why the odds moved, odds history) |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.
@@ -355,7 +377,8 @@ Thresholds live in `config.py`.
 
 ## Roadmap
 
-- Correlate spot moves with prediction-market odds (e.g. Polymarket ETH price markets)
+- Prediction markets, next: alerts (odds jumps, locked-in edges, fair-odds gaps) and position watch for outcome positions
+- Track how often the fair odds beat the market's odds once markets settle
 - A "what happened at 14:32?" query over the saved history
 - More windows: add them to `WINDOWS` in `config.py`; anything over an hour automatically uses minute bars
 - Per-coin thresholds (a $50K sweep floor is large for SOL, small for BTC)

@@ -210,3 +210,23 @@ def positions_remove(request: Request, address: str):
 def scanner(request: Request):
     """Every Hyperliquid perp, most unusual first, with the reasons (live mode)."""
     return _rt(request).scanner.public()
+
+
+# ── prediction markets (HIP-4 outcomes) ─────────────────────────────────────
+@router.get("/outcomes")
+async def outcomes(request: Request):
+    """Every prediction market on Hyperliquid (Outcome, trade.xyz and any other venue), with live odds. Async on
+    purpose: it reads what the feed writes, so it runs on the event loop rather than in a worker thread."""
+    return _rt(request).outcomes.public()
+
+
+@router.get("/outcomes/{outcome_id}")
+async def outcome(request: Request, outcome_id: int, range: str = "12h"):
+    """One market's page: odds history, book, trades, who is trading, fair odds for price markets."""
+    svc = _rt(request).outcomes
+    if not svc.enabled:
+        raise HTTPException(404, "Prediction markets are read live, so they only show in live mode.")
+    d = await svc.detail(outcome_id, range)
+    if d is None:
+        raise HTTPException(404, "That market isn't listed any more. It may have settled.")
+    return d
