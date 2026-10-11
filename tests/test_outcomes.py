@@ -212,3 +212,24 @@ def test_the_socket_asks_for_the_right_feeds():
     assert kinds == {"l2Book", "activeAssetCtx"}                 # replies arrive on activeSpotAssetCtx
     assert {"type": "activeAssetCtx", "coin": "#112140"} in [s["subscription"] for s in sent]
     assert svc.feed_status()["feeds"] == 16
+
+
+def test_matchups_read_as_a_vs_b_and_partial_questions_say_so():
+    from engine.outcomes import market_from
+    m = market_from({"outcome": 1, "name": "template:sportsContestWinner", "venue": "out",
+                     "description": "competition:NFL|participantA:Pittsburgh Steelers|participantB:Indianapolis Colts|"
+                                    "shortNameA:PIT|shortNameB:IND|scheduledStart:20261012-1700"})
+    assert m.title == "Pittsburgh Steelers vs Indianapolis Colts" and m.sub == "NFL · starts 12 Oct 17:00 UTC"
+    part = sum_check([(0.2, 1, 0.21, 1, 0.205), (0.1, 1, 0.12, 1, 0.11), (None, 0, None, 0, None)])
+    assert part.note == "2 of 3 outcomes have a price; those add up to 32%."
+
+
+def test_a_market_with_no_orders_and_no_trades_has_no_odds():
+    svc = _svc()
+    asyncio.run(svc.refresh_meta())
+    svc.on_message({"channel": "activeSpotAssetCtx", "data": {"coin": "#108230", "ctx": {
+        "markPx": "0.5", "prevDayPx": "0.5", "dayBaseVlm": "0", "circulatingSupply": "45000"}}})
+    assert svc.quote(svc.markets[10823])[4] is None             # the 0.5 mark is a placeholder, not a price
+    svc.on_message({"channel": "activeSpotAssetCtx", "data": {"coin": "#108230", "ctx": {
+        "markPx": "0.03", "prevDayPx": "0.02", "dayBaseVlm": "120", "circulatingSupply": "45000"}}})
+    assert svc.quote(svc.markets[10823])[4] == 0.03             # traded today: the mark counts

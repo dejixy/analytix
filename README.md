@@ -218,7 +218,7 @@ The data: one `metaAndAssetCtxs` call every 10 seconds covers every coin's price
 
 The **Outcomes** tab, after More coins, covers Hyperliquid's prediction markets (HIP-4): every market listed on Hyperliquid's books, from **Outcome** (outcome.xyz) and **trade.xyz** (its Events markets) today, and any other venue that lists later. Each market has a Yes and a No side, and a contract pays $1 if it happens, so a Yes price of 0.62 reads as 62% likely. Filter by venue (All, Outcome, trade.xyz) and by kind (price, sports, other), search, and sort by volume, closing soon, gap to fair odds or 24h move.
 
-The list shows each market's odds, best bid and ask in cents, the 24h change in points, 24h volume, how many Yes contracts people hold, and when it closes. Markets that belong to one question (a match: home win, away win, draw, or "none of these") are grouped under it.
+The list has two parts. **Price markets** are grouped by the asset they settle on (ETH, BTC, SILVER…), each as a ladder: when it closes, the line, the market's odds, the fair odds and the gap. **Events** are one card each: a question's outcomes (a match: home win, away win, draw, or "none of these"; a tournament or award's candidates) with an odds bar, the odds and the 24h change, or a single market's two sides. A card's footer says whether the odds add up, when there's a locked-in edge, or when nobody is quoting. A market with no orders and no trades today shows no odds rather than a placeholder price. Markets past their closing time are hidden unless **Closed** is on.
 
 What Analytix adds on top of the raw market:
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fmtTime, fmtUsd } from "../format.js";
+import { fmtPrice, fmtTime, fmtUsd } from "../format.js";
 
 /* Prediction markets on Hyperliquid (HIP-4): every market from Outcome, trade.xyz and anyone else listing on
    Hyperliquid's books. A contract pays $1 if it happens, so a price of 0.62 reads as 62%. */
@@ -11,10 +11,10 @@ const KINDS = [
   ["other", "Other"],
 ];
 const SORTS = [
-  ["volume", "Most traded"],
-  ["closing", "Closing soon"],
-  ["edge", "Gap to fair odds"],
-  ["move", "Biggest 24h move"],
+  ["volume", "Most traded", "Most traded in the last 24 hours"],
+  ["closing", "Closing soon", "Closest to closing first"],
+  ["move", "Biggest 24h move", "The biggest change in odds over 24 hours"],
+  ["edge", "Edges", "Price markets furthest from fair odds; events with a locked-in edge"],
 ];
 
 export const pct = (x) => (x == null ? "-" : `${(x * 100).toFixed(x < 0.1 || x > 0.9 ? 1 : 0)}%`);
@@ -32,19 +32,28 @@ function until(ms, now) {
   return `in ${Math.round(s / 86400)}d`;
 }
 
-/** The short read on one market for the list. */
+/** The short read on one market, for a card's footer. */
 function marketNote(r) {
-  if (r.settled) return "settled";
+  if (r.settled) return "Settled.";
   if (r.edge != null && Math.abs(r.edge) >= 5) {
-    return r.edge > 0
-      ? `Yes looks cheap: fair odds ${pct(r.fair)}`
-      : `Yes looks rich: fair odds ${pct(r.fair)}`;
+    return `Yes looks ${r.edge > 0 ? "cheap" : "rich"}: fair odds ${pct(r.fair)} vs the market's ${pct(r.odds)}.`;
   }
-  if (r.bid == null && r.ask == null) return "no orders yet";
-  if (r.spread != null && r.spread > 10) return "wide spread";
-  if (!r.volume_24h) return "no trades today";
+  if (r.bid == null && r.ask == null) return "Nobody is quoting it yet.";
+  if (r.spread != null && r.spread > 10) return `Wide spread (${r.spread.toFixed(0)} pts): the odds come from the last trade.`;
   return null;
 }
+
+/** "22.8¢ / 22.9¢": one decimal, or two when one would hide the spread. */
+export function bidAsk(bid, ask) {
+  if (bid == null && ask == null) return "no orders";
+  const d = bid != null && ask != null && (bid * 100).toFixed(1) === (ask * 100).toFixed(1) ? 2 : 1;
+  const c = (x) => (x == null ? "-" : `${(x * 100).toFixed(d)}¢`);
+  return `${c(bid)} / ${c(ask)}`;
+}
+
+const isClosed = (r, now) => r.settled || (r.expiry_ms != null && r.expiry_ms <= now);
+const sumBy = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
+const lineText = (r) => `${r.kind === "touch" ? "touches" : "above"} ${r.threshold?.toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
 
 function useJson(url, everyMs) {
   const [data, setData] = useState(null);
@@ -77,67 +86,175 @@ function useJson(url, everyMs) {
 
 const VenueTag = ({ name }) => <span className="scan-tag">{name}</span>;
 
-/** The list: every market, grouped by question, filterable by venue and kind. */
+/** One outcome as a line: name, odds bar, odds, 24h change. */
+function OddsRow({ r, label, odds = r.odds, chg = r.chg_24h, onOpen }) {
+  const priced = odds != null;
+  return (
+    <button className={`oc-row ${priced ? "" : "dim"}`} onClick={() => onOpen(r.id)}
+      title={`${r.title}\nBid / ask for Yes: ${bidAsk(r.bid, r.ask)}${r.volume_24h ? `\nTraded today: ${fmtUsd(r.volume_24h)}` : ""}`}>
+      <span className="oc-row-name">{label}</span>
+      <span className="oc-bar" aria-hidden="true"><span style={{ width: `${priced ? Math.max(0.5, odds * 100) : 0}%` }} /></span>
+      <span className="oc-row-odds num">{priced ? pct(odds) : "-"}</span>
+      <span className={`oc-row-chg num ${cls(chg)}`}>{chg == null || Math.abs(chg) < 0.05 ? "" : pts(chg)}</span>
+    </button>
+  );
+}
+
+const SHOWN = 5;
+
+/** A question (several outcomes, one ends Yes) or a single market with its two sides. */
+function EventCard({ ev, now, onOpen }) {
+  const [all, setAll] = useState(false);
+  const r0 = ev.rows[0];
+  const vol = sumBy(ev.rows, (r) => r.volume_24h);
+  const sub = [ev.sub, until(ev.expiry_ms, now) === "-" ? null : `closes ${until(ev.expiry_ms, now)}`,
+    vol ? `${fmtUsd(vol)} traded today` : "no trades today"].filter(Boolean).join(" · ");
+  const note = ev.q ? ev.q.sum.note : marketNote(r0);
+  const edge = ev.q ? !!ev.q.sum.way : r0.edge != null && Math.abs(r0.edge) >= 5;
+  const shown = all ? ev.rows : ev.rows.slice(0, SHOWN);
+  return (
+    <article className="oc-card">
+      <header className="oc-card-head">
+        <h3>{ev.title}</h3>
+        <VenueTag name={ev.venue_name} />
+      </header>
+      <div className="oc-card-sub">{sub}</div>
+      <div className="oc-rows">
+        {ev.q ? (
+          shown.map((r) => <OddsRow key={r.id} r={r} label={r.label} onOpen={onOpen} />)
+        ) : (
+          <>
+            <OddsRow r={r0} label={r0.sides[0]} onOpen={onOpen} />
+            <OddsRow r={r0} label={r0.sides[1]} odds={r0.odds == null ? null : 1 - r0.odds}
+              chg={r0.chg_24h == null ? null : -r0.chg_24h} onOpen={onOpen} />
+          </>
+        )}
+      </div>
+      {ev.q && ev.rows.length > SHOWN && (
+        <button className="oc-more" onClick={() => setAll(!all)}>{all ? "Show fewer" : `+${ev.rows.length - SHOWN} more`}</button>
+      )}
+      {note && <div className={`oc-card-note ${edge ? "oc-edge" : ""}`}>{note}</div>}
+    </article>
+  );
+}
+
+/** Every price market on one asset, as a ladder: when it closes, the line, the market's odds and the fair odds. */
+function PriceCard({ g, now, sort, onOpen }) {
+  const [all, setAll] = useState(false);
+  const rows = [...g.rows].sort(sort === "edge"
+    ? (a, b) => Math.abs(b.edge ?? 0) - Math.abs(a.edge ?? 0)
+    : (a, b) => (a.expiry_ms - b.expiry_ms) || (a.threshold - b.threshold));
+  const shown = all ? rows : rows.slice(0, 8);
+  const venues = [...new Set(g.rows.map((r) => r.venue_name))];
+  const vol = sumBy(g.rows, (r) => r.volume_24h);
+  return (
+    <article className="oc-card">
+      <header className="oc-card-head">
+        <h3>{g.asset} <span className="oc-spot num">{g.spot ? fmtPrice(g.spot) : ""}</span></h3>
+        <span>{venues.map((v) => <VenueTag key={v} name={v} />)}</span>
+      </header>
+      <div className="oc-card-sub">
+        {g.rows.length} market{g.rows.length === 1 ? "" : "s"} · {vol ? `${fmtUsd(vol)} traded today` : "no trades today"}
+      </div>
+      <table className="oc-ladder">
+        <thead>
+          <tr>
+            <th>Closes</th>
+            <th title="Yes if the price ends at or above the line (or touches it, for touch markets)">Line</th>
+            <th title="The market's odds for Yes">Market</th>
+            <th title="The chance from the perp's live price and how much it has been moving">Fair</th>
+            <th title="Fair minus market, in points. Positive: Yes looks cheap. Negative: Yes looks rich">Gap</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((r) => (
+            <tr key={r.id} onClick={() => onOpen(r.id)} title={`${r.title}\nBid / ask for Yes: ${bidAsk(r.bid, r.ask)}`}
+              className={r.odds == null ? "dim" : ""}>
+              <td>{until(r.expiry_ms, now).replace("in ", "")}</td>
+              <td>{lineText(r)}</td>
+              <td className="num"><b>{pct(r.odds)}</b></td>
+              <td className="num">{pct(r.fair)}</td>
+              <td className={`num ${cls(r.edge)}`}>{r.edge == null ? "-" : `${r.edge >= 0 ? "+" : "−"}${Math.abs(r.edge).toFixed(0)}`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > 8 && (
+        <button className="oc-more" onClick={() => setAll(!all)}>{all ? "Show fewer" : `+${rows.length - 8} more`}</button>
+      )}
+    </article>
+  );
+}
+
+const PAGE = 48;
+
+/** Every market: price markets as a ladder per asset, everything else as one card per event. */
 function MarketList({ onOpen }) {
   const { data, error } = useJson("/api/outcomes", 5000);
   const [venue, setVenue] = useState("all");
   const [kind, setKind] = useState("all");
   const [sort, setSort] = useState("volume");
   const [q, setQ] = useState("");
+  const [showClosed, setShowClosed] = useState(false);
+  const [limit, setLimit] = useState(PAGE);
 
-  const groups = useMemo(() => {
-    if (!data?.markets) return [];
+  const { prices, events, nPrice } = useMemo(() => {
+    if (!data?.markets) return { prices: [], events: [], nPrice: 0 };
+    const now = data.now_ms;
     const term = q.trim().toLowerCase();
-    const keep = (r) =>
-      (venue === "all" || r.venue === venue) && (kind === "all" || r.kind === kind) &&
-      (!term || r.title.toLowerCase().includes(term));
+    const open = (r) => showClosed || !isClosed(r, now);
+    const inVenue = (r) => venue === "all" || r.venue === venue;
     const byId = Object.fromEntries(data.markets.map((r) => [r.id, r]));
-    const out = [];
-    const inQuestion = new Set();
+
+    // price markets, grouped by the asset they settle on
+    const groups = {};
+    let nPrice = 0;
+    if (kind === "all" || kind === "price") {
+      for (const r of data.markets) {
+        if ((r.kind !== "price" && r.kind !== "touch") || !open(r) || !inVenue(r)) continue;
+        if (term && !r.title.toLowerCase().includes(term)) continue;
+        const asset = (r.underlying || "?").split(":").pop();
+        (groups[asset] ||= { asset, spot: r.spot, rows: [] }).rows.push(r);
+        nPrice += 1;
+      }
+    }
+    const prices = Object.values(groups).sort((a, b) => sumBy(b.rows, (r) => r.volume_24h) - sumBy(a.rows, (r) => r.volume_24h)
+      || b.rows.length - a.rows.length);
+
+    // events: questions, then single markets that aren't price markets
+    const evs = [];
+    const inQ = new Set();
     for (const qu of data.questions) {
       const rows = qu.outcomes.map((id) => byId[id]).filter(Boolean);
-      rows.forEach((r) => inQuestion.add(r.id));
-      if (rows.some(keep) || (term && qu.title.toLowerCase().includes(term) && rows.length)) out.push({ q: qu, rows });
+      rows.forEach((r) => inQ.add(r.id));
+      if (!rows.length || !inVenue(rows[0]) || (kind !== "all" && rows[0].kind !== kind)) continue;
+      if (!showClosed && rows.every((r) => isClosed(r, now))) continue;
+      if (term && !qu.title.toLowerCase().includes(term) && !rows.some((r) => r.label.toLowerCase().includes(term))) continue;
+      rows.sort((a, b) => (b.odds ?? -1) - (a.odds ?? -1));
+      evs.push({ key: `q${qu.id}`, q: qu, title: qu.title, sub: qu.sub, venue_name: qu.venue_name, rows,
+                 expiry_ms: qu.expiry_ms ?? Math.min(...rows.map((r) => r.expiry_ms ?? Infinity)) });
     }
-    for (const r of data.markets) if (!inQuestion.has(r.id) && keep(r)) out.push({ q: null, rows: [r] });
-    const now = data.now_ms;
-    const vol = (g) => g.rows.reduce((s, r) => s + (r.volume_24h || 0), 0);
-    const close = (g) => {
-      const e = Math.min(...g.rows.map((r) => r.expiry_ms || Infinity));
-      return e < now ? Infinity : e;
-    };
-    const edge = (g) => Math.max(g.q?.sum?.locked ? g.q.sum.locked * 100 : 0, ...g.rows.map((r) => Math.abs(r.edge ?? 0)));
-    const move = (g) => Math.max(...g.rows.map((r) => Math.abs(r.chg_24h ?? 0)));
-    const key = { volume: (g) => -vol(g), closing: close, edge: (g) => -edge(g), move: (g) => -move(g) }[sort];
-    out.sort((a, b) => key(a) - key(b));
-    for (const g of out) if (g.q) g.rows.sort((a, b) => (b.odds ?? -1) - (a.odds ?? -1));
-    return out;
-  }, [data, venue, kind, sort, q]);
+    for (const r of data.markets) {
+      if (inQ.has(r.id) || r.kind === "price" || r.kind === "touch" || !open(r) || !inVenue(r)) continue;
+      if (kind !== "all" && r.kind !== kind) continue;
+      if (term && !r.title.toLowerCase().includes(term)) continue;
+      evs.push({ key: `m${r.id}`, q: null, title: r.title, sub: r.sub, venue_name: r.venue_name, rows: [r], expiry_ms: r.expiry_ms });
+    }
+    const vol = (e) => sumBy(e.rows, (r) => r.volume_24h);
+    const move = (e) => Math.max(0, ...e.rows.map((r) => Math.abs(r.chg_24h ?? 0)));
+    const edge = (e) => (e.q ? (e.q.sum.locked ?? 0) * 100 : Math.abs(e.rows[0].edge ?? 0));
+    const soon = (e) => (e.expiry_ms && e.expiry_ms > now ? e.expiry_ms : Infinity);
+    const key = { volume: (e) => -vol(e), closing: soon, move: (e) => -move(e), edge: (e) => -edge(e) }[sort];
+    evs.sort((a, b) => key(a) - key(b) || vol(b) - vol(a));
+    return { prices, events: evs, nPrice };
+  }, [data, venue, kind, sort, q, showClosed]);
 
   const now = data?.now_ms || Date.now();
-  const row = (r, inQ) => {
-    const note = marketNote(r);
-    return (
-      <tr key={r.id} className={inQ ? "oc-child" : ""} onClick={() => onOpen(r.id)} title="Open this market">
-        <td className="left oc-name">
-          {inQ ? r.label : <b>{r.title}</b>}
-          {!inQ && <VenueTag name={r.venue_name} />}
-          {!r.followed && !r.settled && <span className="scan-tag" title="Past the live limit: the price refreshes when you open it">not live</span>}
-        </td>
-        <td className="num"><b>{pct(r.odds)}</b></td>
-        <td className="num">{cents(r.bid)} / {cents(r.ask)}</td>
-        <td className={`num ${cls(r.chg_24h)}`}>{pts(r.chg_24h)}</td>
-        <td className="num">{fmtUsd(r.volume_24h)}</td>
-        <td className="num">{fmtUsd(r.open)}</td>
-        <td className="num">{inQ ? "" : until(r.expiry_ms, now)}</td>
-        <td className="num">
-          {r.fair == null ? "-" : pct(r.fair)}
-          {r.edge != null && <span className={`sub ${cls(r.edge)}`}>{pts(r.edge, 0)}</span>}
-        </td>
-        <td className="left scan-why">{note && <span className="scan-reason">{note}</span>}</td>
-      </tr>
-    );
-  };
+  const chip = (on, set, id, label, title) => (
+    <button key={id} className={`plan-chip ${on === id ? "on" : ""}`} onClick={() => set(id)} aria-pressed={on === id} title={title}>
+      {label}
+    </button>
+  );
 
   return (
     <section className="panel scan">
@@ -145,11 +262,7 @@ function MarketList({ onOpen }) {
         <h2 className="panel-title">Prediction markets</h2>
         <span className="panel-sub">
           {data?.enabled
-            ? <>
-                {data.total} markets on Hyperliquid
-                {data.venues?.length > 0 && ` (${data.venues.map((v) => `${v.count} ${v.name}`).join(", ")})`}
-                {" · "}a contract pays $1 if it happens, so its price is the market's odds
-              </>
+            ? [`${data.total} markets on Hyperliquid`, ...data.venues.map((v) => `${v.count} ${v.name}`)].join(" · ")
             : "Outcome, trade.xyz and every other prediction market on Hyperliquid"}
         </span>
       </div>
@@ -160,87 +273,57 @@ function MarketList({ onOpen }) {
         <div className="empty">Loading…</div>
       ) : (
         <>
-          <div className="scan-tools">
+          <div className="scan-tools oc-tools">
             <div className="oc-filters">
               <div className="plan-holds" role="group" aria-label="Venue">
-                {[{ id: "all", name: "All" }, ...data.venues].map((v) => (
-                  <button key={v.id} className={`plan-chip ${venue === v.id ? "on" : ""}`} onClick={() => setVenue(v.id)}
-                    aria-pressed={venue === v.id}>
-                    {v.name}
-                  </button>
-                ))}
+                {[{ id: "all", name: "All venues" }, ...data.venues].map((v) => chip(venue, setVenue, v.id, v.name))}
               </div>
               <div className="plan-holds" role="group" aria-label="Kind">
-                {KINDS.map(([id, label]) => (
-                  <button key={id} className={`plan-chip ${kind === id ? "on" : ""}`} onClick={() => setKind(id)}
-                    aria-pressed={kind === id}>
-                    {label}
-                  </button>
-                ))}
+                {KINDS.map(([id, label]) => chip(kind, setKind, id, label))}
               </div>
               <div className="plan-holds" role="group" aria-label="Sort">
-                {SORTS.map(([id, label]) => (
-                  <button key={id} className={`plan-chip ${sort === id ? "on" : ""}`} onClick={() => setSort(id)}
-                    aria-pressed={sort === id}>
-                    {label}
-                  </button>
-                ))}
+                {SORTS.map(([id, label, title]) => chip(sort, setSort, id, label, title))}
               </div>
+              <button className={`plan-chip ${showClosed ? "on" : ""}`} onClick={() => setShowClosed(!showClosed)}
+                aria-pressed={showClosed} title="Markets past their closing time that haven't settled yet">
+                Closed
+              </button>
             </div>
             <span className="plan-input scan-search">
               <input className="left" placeholder="find a market" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Find a market" />
             </span>
           </div>
+          <p className="oc-explain muted">
+            A contract pays $1 if it happens, so its price is the market's odds. Click any line for its chart, book, trades
+            and who is trading.
+          </p>
           {data.error && <p className="plan-note" style={{ padding: "0 12px" }}>{data.error}</p>}
           {data.feed && !data.feed.connected && (
             <p className="plan-note" style={{ padding: "0 12px" }}>Live prices are reconnecting to Hyperliquid. Opening a market still reads its book.</p>
           )}
-          {data.feed?.connected && data.feed.books === 0 && data.total > 0 && (
-            <p className="plan-note" style={{ padding: "0 12px" }}>Waiting for the first live prices…</p>
+
+          {prices.length > 0 && (
+            <>
+              <h3 className="oc-section">Price markets <span className="muted">{nPrice} on {prices.length} assets</span></h3>
+              <div className="oc-grid oc-grid-wide">
+                {prices.map((g) => <PriceCard key={g.asset} g={g} now={now} sort={sort} onOpen={onOpen} />)}
+              </div>
+            </>
           )}
-          <div className="scan-scroll">
-            <table className="scan-table">
-              <thead>
-                <tr>
-                  <th className="left">Market</th>
-                  <th title="The market's odds for Yes: the middle of the best bid and ask, or the last trade when the spread is wide">Yes</th>
-                  <th title="Best bid and ask for Yes, in cents. No is the mirror: No's ask is 100 minus Yes's bid">Bid / Ask</th>
-                  <th title="Change in the odds over 24 hours, in percentage points">24h</th>
-                  <th title="Contracts traded in the last 24 hours. Each pays $1, so this is also the dollars both sides put in">Volume 24h</th>
-                  <th title="Yes contracts people hold right now (each pays $1 if Yes)">Held</th>
-                  <th>Closes</th>
-                  <th title="Price markets only: the chance the price ends past the line, from the perp's live price and how much it has been moving. The gap is fair odds minus the market's odds">Fair odds</th>
-                  <th className="left">Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {groups.map((g) =>
-                  g.q ? (
-                    [
-                      <tr key={`q${g.q.id}`} className="oc-q">
-                        <td className="left" colSpan={6}>
-                          <b>{g.q.title}</b>
-                          <VenueTag name={g.q.venue_name} />
-                          {g.q.sub && <span className="sub">{g.q.sub}</span>}
-                        </td>
-                        <td className="num">{until(g.q.expiry_ms, now)}</td>
-                        <td />
-                        <td className="left scan-why">
-                          <span className={`scan-reason ${g.q.sum.way ? "oc-edge" : ""}`} title="Exactly one outcome ends Yes, so the Yes odds should add up to 100%">
-                            {g.q.sum.note}
-                          </span>
-                        </td>
-                      </tr>,
-                      ...g.rows.map((r) => row(r, true)),
-                    ]
-                  ) : (
-                    row(g.rows[0], false)
-                  ),
-                )}
-              </tbody>
-            </table>
-            {groups.length === 0 && <div className="empty">No markets match.</div>}
-          </div>
+          {events.length > 0 && (
+            <>
+              <h3 className="oc-section">Events <span className="muted">{events.length}</span></h3>
+              <div className="oc-grid">
+                {events.slice(0, limit).map((ev) => <EventCard key={ev.key} ev={ev} now={now} onOpen={onOpen} />)}
+              </div>
+              {events.length > limit && (
+                <button className="oc-more oc-more-page" onClick={() => setLimit(limit + PAGE)}>
+                  Show {Math.min(PAGE, events.length - limit)} more of {events.length - limit}
+                </button>
+              )}
+            </>
+          )}
+          {!prices.length && !events.length && <div className="empty">No markets match.</div>}
         </>
       )}
     </section>
@@ -434,7 +517,7 @@ function MarketPage({ id, onBack, onOpen }) {
         <button className="plan-chip" onClick={onBack}>‹ All markets</button>
         <span><b>{r.title}</b></span>
         <VenueTag name={r.venue_name} />
-        <span className="muted">{r.settled ? "settled" : `closes ${until(r.expiry_ms, d.now_ms)}`}</span>
+        <span className="muted">{[r.sub, r.settled ? "settled" : `closes ${until(r.expiry_ms, d.now_ms)}`].filter(Boolean).join(" · ")}</span>
       </div>
       {error && <div className="plan-error">{error}</div>}
       <section className="panel">
@@ -442,7 +525,7 @@ function MarketPage({ id, onBack, onOpen }) {
           <div className="oc-tiles">
             <div className="tile"><div className="tile-label">{r.sides[0]} odds</div><div className="tile-value">{pct(r.odds)}</div>
               <div className="tile-sub">{r.sides[1]} {pct(r.odds == null ? null : 1 - r.odds)}</div></div>
-            <div className="tile"><div className="tile-label">Bid / Ask</div><div className="tile-value">{cents(r.bid)} / {cents(r.ask)}</div>
+            <div className="tile"><div className="tile-label">Bid / Ask</div><div className="tile-value">{bidAsk(r.bid, r.ask)}</div>
               <div className="tile-sub">spread {r.spread == null ? "-" : `${r.spread.toFixed(1)} pts`}</div></div>
             <div className="tile"><div className="tile-label">24h</div><div className={`tile-value ${cls(r.chg_24h)}`}>{pts(r.chg_24h)}</div>
               <div className="tile-sub">1h {pts(r.chg_1h)}</div></div>
@@ -499,7 +582,7 @@ function MarketPage({ id, onBack, onOpen }) {
                   <tr key={o.id} onClick={() => onOpen(o.id)} className={o.id === r.id ? "oc-here" : ""}>
                     <td className="left">{o.label}</td>
                     <td className="num"><b>{pct(o.odds)}</b></td>
-                    <td className="num">{cents(o.bid)} / {cents(o.ask)}</td>
+                    <td className="num">{bidAsk(o.bid, o.ask)}</td>
                     <td className={`num ${cls(o.chg_24h)}`}>{pts(o.chg_24h)}</td>
                     <td className="num">{fmtUsd(o.volume_24h)}</td>
                   </tr>

@@ -240,7 +240,10 @@ class OutcomeService:
         bid, ask = (b.bid, b.ask) if b else (None, None)
         bsz = b.bids[0][1] if b and b.bids else 0.0
         asz = b.asks[0][1] if b and b.asks else 0.0
-        return bid, bsz, ask, asz, odds(bid, ask, self.last_px.get(m.yes_coin) or c.get("mark"))
+        last = self.last_px.get(m.yes_coin)
+        if last is None and (bid is not None or ask is not None or (c.get("volume") or 0) > 0):
+            last = c.get("mark")              # a market with no orders and no trades today has no real price
+        return bid, bsz, ask, asz, odds(bid, ask, last)
 
     def spot(self, perp: str | None) -> float | None:
         """The live price of the perp a market settles on: the dashboard's own feed when it has one, then
@@ -284,7 +287,7 @@ class OutcomeService:
         then = self._odds_then(m, now - 3_600_000, candles)
         fair = self.fair(m, now) if m.kind in ("price", "touch") else None
         return {
-            "id": m.outcome, "title": m.title, "label": m.label, "question": m.question, "venue": m.venue,
+            "id": m.outcome, "title": m.title, "label": m.label, "sub": m.sub, "question": m.question, "venue": m.venue,
             "venue_name": m.venue_name, "kind": m.kind, "sides": list(m.sides), "template": m.template,
             "odds": od, "bid": bid, "ask": ask, "bid_sz": bsz, "ask_sz": asz,
             "spread": (ask - bid) * 100 if bid is not None and ask is not None else None,

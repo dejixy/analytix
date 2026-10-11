@@ -30,7 +30,8 @@ TOUCH_TEMPLATES = {"priceTouch"}                    # Yes if the price reaches t
 LABEL_KEYS = ("participant", "candidate", "company", "nominee", "team", "player", "option", "label", "name")
 DETAIL_KEYS = ("threshold", "line", "spread", "total", "marketCap", "value", "targetPrice")
 QUIET_KEYS = {"resolutionDeadline", "officialSource", "priceDescription", "seconds", "time", "expiry", "countedPlay",
-              "season", "sport", "scheduledStart", "stage", "contestType", "class", "period"}
+              "season", "sport", "scheduledStart", "stage", "contestType", "class", "period", "shortNameA", "shortNameB",
+              "shortName", "participantA", "participantB", "competition", "awardingBody", "field"}
 WIDE_SPREAD = 0.10        # wider than 10 points, the mid says little: odds come from the last trade instead
 MIN_LOCKED_EDGE = 0.005   # half a cent per set before the add-up check calls it out
 STEADY_POINTS = 2.0       # an odds change smaller than this many points reads as "steady"
@@ -52,6 +53,7 @@ class Market:
     expiry_ms: int | None = None
     question: int | None = None
     settled: bool = False
+    sub: str = ""                  # context under the title: "NFL · starts 12 Oct 17:00 UTC"
 
     @property
     def yes_coin(self) -> str:
@@ -147,9 +149,27 @@ def _side_name(spec: dict, default: str) -> str:
     return n[len("template:"):] if n.startswith("template:") else n
 
 
+def _details(f: dict) -> list[str]:
+    return [f"{humanize(k).lower()} {f[k]}" for k in DETAIL_KEYS if f.get(k)]
+
+
+def matchup(f: dict) -> str | None:
+    a, b = f.get("participantA"), f.get("participantB")
+    return f"{a} vs {b}" if a and b else None
+
+
+def context_line(f: dict) -> str:
+    """"NFL · Week 6 · starts 12 Oct 17:00 UTC"""
+    parts = [x for x in (f.get("competition"), f.get("stage"), f.get("awardingBody")) if x]
+    starts = parse_time(f.get("scheduledStart"))
+    if starts:
+        parts.append(f"starts {fmt_when(starts)}")
+    return " · ".join(parts)
+
+
 def generic_label(template: str, f: dict) -> str:
-    main = next((f[k] for k in LABEL_KEYS if f.get(k)), None)
-    extra = [f"{humanize(k).lower()} {f[k]}" for k in DETAIL_KEYS if f.get(k)]
+    main = next((f[k] for k in LABEL_KEYS if f.get(k)), None) or matchup(f)
+    extra = _details(f)
     if main:
         return main + (f" ({', '.join(extra)})" if extra else "")
     rest = [f"{humanize(k)} {v}" for k, v in f.items() if k not in QUIET_KEYS and v]
@@ -174,18 +194,21 @@ def market_from(raw: dict) -> Market | None:
             a, when = asset_name(under), fmt_when(expiry)
             title = f"{a} touches {fmt_line(line)} by {when}" if touch else f"{a} above {fmt_line(line)} at {when}"
             return Market(oid, template, venue, f, sides, "touch" if touch else "price", title, title,
-                          under, line, expiry)
+                          under, line, expiry, sub=f.get("priceDescription", ""))
     if template == "fallback":
         label = "None of these"
     elif template.startswith("sportsContestDraw"):
         label = "Draw"
+    elif matchup(f):
+        extra = _details(f)
+        label = matchup(f) + (f" ({', '.join(extra)})" if extra else "")
     elif raw.get("name") and not str(raw.get("name")).startswith("template"):
         label = str(raw["name"])
     else:
         label = generic_label(template, f)
     kind = "sports" if template.startswith("sports") else "other"
     expiry = parse_time(f.get("resolutionDeadline") or f.get("time") or f.get("expiry"))
-    return Market(oid, template, venue, f, sides, kind, label, label, expiry_ms=expiry)
+    return Market(oid, template, venue, f, sides, kind, label, label, expiry_ms=expiry, sub=context_line(f))
 
 
 def question_title(template: str, f: dict) -> tuple[str, str]:
@@ -231,6 +254,7 @@ def build_markets(meta: dict) -> tuple[dict[int, Market], dict[int, Question]]:
             m = markets[oid]
             m.question = q["question"]
             m.title = f"{title}: {m.label}"
+            m.sub = sub
             m.settled = oid in settled
             if m.expiry_ms is None:
                 m.expiry_ms = expiry
@@ -372,8 +396,8 @@ def sum_check(quotes: list[tuple[float | None, float, float | None, float, float
     """quotes: one (bid, bid size, ask, ask size, odds) per outcome of a question. Exactly one outcome ends
     Yes, so one Yes on each pays exactly $1 and one No on each pays exactly n - 1 dollars."""
     n = len(quotes)
-    mids = [q[4] for q in quotes]
-    mid_sum = sum(mids) if n and all(x is not None for x in mids) else None
+    mids = [q[4] for q in quotes if q[4] is not None]
+    mid_sum = sum(mids) if mids else None
     asks_ok = n > 1 and all(q[2] is not None for q in quotes)
     bids_ok = n > 1 and all(q[0] is not None for q in quotes)
     ask_sum = sum(q[2] for q in quotes) if asks_ok else None
@@ -390,7 +414,12 @@ def sum_check(quotes: list[tuple[float | None, float, float | None, float, float
         note = (f"No on all {n} costs ${n - bid_sum:.3f} and pays ${n - 1}, so {edge * 100:.1f}¢ is locked in per set "
                 f"({sets:,.0f} sets at these prices, before fees).")
         return SumCheck(n, mid_sum, ask_sum, bid_sum, edge, sets, "no", note)
-    note = f"The odds add up to {mid_sum * 100:.0f}%." if mid_sum is not None else "Not every outcome has a price yet."
+    if mid_sum is None:
+        note = "No outcome has a price yet."
+    elif len(mids) == n:
+        note = f"The odds add up to {mid_sum * 100:.0f}%."
+    else:
+        note = f"{len(mids)} of {n} outcomes have a price; those add up to {mid_sum * 100:.0f}%."
     return SumCheck(n, mid_sum, ask_sum, bid_sum, None, None, None, note)
 
 

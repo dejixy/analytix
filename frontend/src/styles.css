@@ -521,13 +521,44 @@ tr.wall td { color: var(--ink); }
 
 /* ── Outcomes (prediction markets) ──────────────────────────────────────── */
 .oc-filters { display: flex; flex-wrap: wrap; gap: 6px 14px; }
-.scan-table tr.oc-q { cursor: default; background: var(--surface-2); }
-.scan-table tr.oc-q:hover { background: var(--surface-2); }
-.scan-table tr.oc-q .sub { display: inline; margin-left: 8px; }
-.scan-table tr.oc-child td.oc-name { padding-left: 22px; color: var(--ink-2); }
+.oc-explain { margin: 0 12px 4px; font-size: 11px; }
+.oc-section { display: flex; align-items: baseline; gap: 8px; margin: 14px 12px 8px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-2); }
+.oc-section::before { content: "▍"; color: var(--up); margin-right: -4px; }
+.oc-section .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.oc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr)); gap: 8px; padding: 0 12px 12px; align-items: start; }
+.oc-grid-wide { grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); }
+.oc-card { background: var(--surface-2); border: 1px solid var(--grid); border-radius: 2px; padding: 10px 12px;
+  display: grid; gap: 6px; align-content: start; min-width: 0; }
+.oc-card:hover { border-color: var(--axis); }
+.oc-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.oc-card-head h3 { margin: 0; font-size: 12.5px; font-weight: 700; color: var(--ink); line-height: 1.35; }
+.oc-card-head .scan-tag { margin-left: 4px; white-space: nowrap; }
+.oc-spot { font-weight: 400; color: var(--ink-2); margin-left: 6px; }
+.oc-card-sub { font-size: 10.5px; color: var(--muted); }
+.oc-rows { display: grid; }
+.oc-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px 46px 66px; align-items: center; gap: 8px;
+  background: none; border: 0; border-top: 1px solid var(--grid); padding: 5px 0; text-align: left; cursor: pointer; color: var(--ink); }
+.oc-row:first-child { border-top: 0; }
+.oc-row:hover .oc-row-name { color: var(--up-bright); }
+.oc-row.dim { color: var(--muted); }
+.oc-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.oc-bar { height: 5px; background: var(--surface-3); border-radius: 1px; overflow: hidden; }
+.oc-bar > span { display: block; height: 100%; background: var(--up); }
+.oc-row-odds { text-align: right; font-weight: 700; font-size: 12px; }
+.oc-row-chg { text-align: right; font-size: 10.5px; color: var(--muted); }
+.oc-row-chg.up { color: var(--up-bright); }
+.oc-row-chg.down { color: var(--down); }
+.oc-more { background: none; border: 0; color: var(--muted); cursor: pointer; text-align: left; padding: 2px 0; font-size: 11px; }
+.oc-more:hover { color: var(--ink); }
+.oc-more-page { margin: 0 12px 14px; }
+.oc-card-note { font-size: 10.5px; color: var(--muted); border-top: 1px solid var(--grid); padding-top: 6px; }
+.oc-card-note.oc-edge, .oc-note.oc-edge { color: var(--up-bright); }
+.oc-ladder td { padding: 4px 6px; border-top: 1px solid var(--grid); white-space: nowrap; }
+.oc-ladder tbody tr { cursor: pointer; }
+.oc-ladder tbody tr:hover { background: var(--surface-3); }
+.oc-ladder tr.dim td { color: var(--muted); }
 .scan-table tr.oc-here td { background: var(--up-deep); }
-.oc-name { white-space: normal !important; min-width: 220px; max-width: 420px; }
-.scan-reason.oc-edge, .oc-note.oc-edge { border-color: var(--up); color: var(--up-bright); }
 .oc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .oc-why { margin: 12px 0 0; font-size: 13px; color: var(--ink); }
 .oc-how { margin: 6px 0 0; font-size: 11px; }
