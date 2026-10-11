@@ -23,6 +23,9 @@ from ingestion.recorder import HourlyRecorder, JsonlRecorder
 
 log = logging.getLogger("analytix.ingestion")
 
+SEND_BATCH = 25                   # subscribe messages sent back to back before a short pause, so a socket with
+SEND_PAUSE_S = 0.05               # hundreds of feeds (the prediction markets) doesn't flood Hyperliquid at once
+
 OnMessage = Callable[[dict[str, Any]], None]
 
 
@@ -43,6 +46,8 @@ class HyperliquidClient:
         self.status.source = url
         self._subs: dict[str, dict] = {_key(s): s for c in coins for s in subscriptions(c)}
         self._ws = None
+        self.server_error: str | None = None      # the last error Hyperliquid sent (e.g. a rejected subscription)
+        self._error_logged = 0.0
 
     def set_subscriptions(self, subs: list[dict]) -> None:
         """Listen to exactly these feeds from now on; takes effect at once if connected, else on connect."""
@@ -51,26 +56,29 @@ class HyperliquidClient:
         removed = [s for k, s in self._subs.items() if k not in wanted]
         self._subs = wanted
         ws = self._ws
-        if ws is None:
+        if ws is None or not (added or removed):
             return
-        for s in removed:
-            asyncio.create_task(self._send(ws, {"method": "unsubscribe", "subscription": s["subscription"]}))
-        for s in added:
-            asyncio.create_task(self._send(ws, s))
+        msgs = [{"method": "unsubscribe", "subscription": s["subscription"]} for s in removed] + added
+        asyncio.create_task(self._send_all(ws, msgs))
 
     @staticmethod
-    async def _send(ws, msg: dict) -> None:
+    async def _send_all(ws, msgs: list[dict]) -> None:
         try:
-            await ws.send(json.dumps(msg))
+            for i, msg in enumerate(msgs):
+                if i and i % SEND_BATCH == 0:
+                    await asyncio.sleep(SEND_PAUSE_S)
+                await ws.send(json.dumps(msg))
         except Exception as exc:                  # the socket is closing: the next connect resubscribes
-            log.debug("couldn't send %s: %s", msg, exc)
+            log.debug("couldn't send subscriptions: %s", exc)
 
     async def run(self) -> None:
         backoff = 1.0
         while True:
             try:
                 async with websockets.connect(self.url, ping_interval=None, open_timeout=10, max_size=2**23) as ws:
-                    for sub in list(self._subs.values()):
+                    for i, sub in enumerate(list(self._subs.values())):
+                        if i and i % SEND_BATCH == 0:
+                            await asyncio.sleep(SEND_PAUSE_S)
                         await ws.send(json.dumps(sub))
                     self._ws = ws
                     self.status.connected = True
@@ -97,7 +105,14 @@ class HyperliquidClient:
 
     def _handle(self, raw: str | bytes) -> None:
         msg = json.loads(raw)
-        if msg.get("channel") == "pong":
+        ch = msg.get("channel")
+        if ch == "pong":
+            return
+        if ch == "error":                         # e.g. a subscription Hyperliquid doesn't accept
+            self.server_error = str(msg.get("data"))[:300]
+            if time.time() - self._error_logged > 60:
+                self._error_logged = time.time()
+                log.warning("Hyperliquid replied with an error on %s: %s", self.url, self.server_error)
             return
         self.status.touch()
         if self.recorder:

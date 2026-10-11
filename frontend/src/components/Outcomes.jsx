@@ -192,6 +192,12 @@ function MarketList({ onOpen }) {
             </span>
           </div>
           {data.error && <p className="plan-note" style={{ padding: "0 12px" }}>{data.error}</p>}
+          {data.feed && !data.feed.connected && (
+            <p className="plan-note" style={{ padding: "0 12px" }}>Live prices are reconnecting to Hyperliquid. Opening a market still reads its book.</p>
+          )}
+          {data.feed?.connected && data.feed.books === 0 && data.total > 0 && (
+            <p className="plan-note" style={{ padding: "0 12px" }}>Waiting for the first live prices…</p>
+          )}
           <div className="scan-scroll">
             <table className="scan-table">
               <thead>
