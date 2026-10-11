@@ -214,6 +214,7 @@ class IntelService:
                 p = touch_prob(surf, spot, m.threshold, m.expiry_ms, now)
             if p is None:
                 return None
+            p = min(0.995, max(0.005, p))
             iv = implied_vol_at(surf, spot, m.threshold, m.expiry_ms, now)
             return {"p": p, "source": "options",
                     "label": f"Options market (Deribit), implied vol {iv * 100:.0f}% a year at this line" if iv else "Options market (Deribit)"}
@@ -233,7 +234,8 @@ class IntelService:
             p = probs.get(role)
         if p is None:
             return None
-        return {"p": min(1.0, max(0.0, p)), "source": src, "label": label}
+        lo, hi = (0.0, 1.0) if src == "final" else (0.005, 0.995)      # a model is never certain; a final score is
+        return {"p": min(hi, max(lo, p)), "source": src, "label": label}
 
     # ── news ───────────────────────────────────────────────────────────────
     def news_targets(self) -> list[tuple[str, str, float]]:

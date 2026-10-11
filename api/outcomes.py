@@ -356,7 +356,8 @@ class OutcomeService:
         model = self.fair(m, now) if m.kind in ("price", "touch") else None
         ref = self.intel.reference(m, now)
         if ref is None and model is not None:
-            ref = {"p": model, "source": "moves", "label": "Recent moves of the perp (no options market for it)"}
+            ref = {"p": min(0.99, max(0.01, model)), "source": "moves",
+                   "label": "Recent moves of the perp (no options market for it)"}
         fair = ref["p"] if ref else None
         days = (m.expiry_ms - now) / 86_400_000 if m.expiry_ms and m.expiry_ms > now else None
         flow = self.intel.sharp.flow(m.outcome, now - 6 * 3_600_000)
