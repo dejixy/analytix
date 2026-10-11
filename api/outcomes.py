@@ -22,8 +22,8 @@ from collections import Counter, deque
 from dataclasses import asdict
 
 from engine.outcomes import (
-    VENUES, Book, Market, Question, build_markets, fair_above, fair_odds, fair_series, flow_of, odds, parse_levels,
-    push_cost, sigma_per_sqrt_s, sum_check, who, why_line,
+    VENUES, Book, Market, Question, build_markets, fair_above, fair_odds, fair_series, flow_of, ladder_check, odds,
+    parse_levels, push_cost, sigma_per_sqrt_s, sum_check, trade_edge, who, why_line,
 )
 from ingestion.account import _num
 from ingestion.backfill import fetch_candles
@@ -36,8 +36,11 @@ log = logging.getLogger("analytix.outcomes")
 META_EVERY_S = 60
 SAMPLE_EVERY_S = 30
 SAMPLES_KEPT = 6 * 3600 // SAMPLE_EVERY_S
-VOL_EVERY_S = 300
-VOL_CANDLES = 720                    # 1-minute candles: the last 12 hours
+VOL_WINDOWS = {                      # how much a perp moves, measured over a span that suits the market's length
+    "short": ("1m", 720, 60, 300),   # closing within SHORT_S: 1-minute candles, the last 12 hours, every 5 min
+    "long": ("1h", 336, 3600, 1800), # longer: hourly candles, the last 2 weeks (weekdays and weekends), every 30 min
+}
+SHORT_S = 6 * 3600
 DEX_EVERY_S = 15
 MAX_MARKETS = int(os.getenv("ANALYTIX_OUTCOME_MARKETS", "300"))   # two feeds each; Hyperliquid allows 1000 an IP
 MAX_OPEN = 4                         # market pages whose trades are followed live at once
@@ -83,7 +86,7 @@ class OutcomeService:
         self.under_hist: dict[str, deque] = {}           # perp → [(ms, price)] every 30s, last 6 hours
         self.trades: dict[int, list[dict]] = {}          # outcome with a page open → its recent trades, oldest first
         self.opened: dict[int, float] = {}               # outcome → when its page was last viewed
-        self.vol: dict[str, tuple[float, float | None]] = {}   # perp → (fetched at, sigma per sqrt second)
+        self.vol: dict[tuple, tuple[float, float | None]] = {}   # (perp, "short"|"long") → (fetched at, sigma/sqrt s)
         self.dex_marks: dict[str, float] = {}            # "xyz:SILVER" → mark
         self._candles: dict[tuple, tuple[float, list]] = {}
         self._rest_books: dict[str, float] = {}
@@ -133,9 +136,10 @@ class OutcomeService:
     async def _vol_loop(self) -> None:
         while True:
             for perp in self.underlyings():
-                if time.time() - self.vol.get(perp, (0.0, None))[0] > VOL_EVERY_S:
-                    await self.refresh_vol(perp)
-                    await asyncio.sleep(2)
+                for window, (_, _, _, every_s) in VOL_WINDOWS.items():
+                    if time.time() - self.vol.get((perp, window), (0.0, None))[0] > every_s:
+                        await self.refresh_vol(perp, window)
+                        await asyncio.sleep(2)
             await asyncio.sleep(30)
 
     async def _dex_loop(self) -> None:
@@ -261,21 +265,36 @@ class OutcomeService:
         c = scanner.contexts.get(perp) if scanner is not None else None
         return (c or {}).get("mark")
 
-    async def refresh_vol(self, perp: str) -> float | None:
+    async def refresh_vol(self, perp: str, window: str = "short") -> float | None:
+        interval, n, step_s, _ = VOL_WINDOWS[window]
         try:
-            rows = await self.fetch_candles(perp, "1m", n=VOL_CANDLES)
-            sigma = sigma_per_sqrt_s([float(r["c"]) for r in rows], 60)
+            rows = await self.fetch_candles(perp, interval, n=n)
+            sigma = sigma_per_sqrt_s([float(r["c"]) for r in rows], step_s)
         except Exception as exc:
             log.warning("candles for %s unavailable: %s", perp, exc)
-            sigma = self.vol.get(perp, (0.0, None))[1]
-        self.vol[perp] = (time.time(), sigma)
+            sigma = self.vol.get((perp, window), (0.0, None))[1]
+        self.vol[(perp, window)] = (time.time(), sigma)
         return sigma
 
-    def sigma(self, perp: str | None) -> float | None:
-        return self.vol.get(perp, (0.0, None))[1] if perp else None
+    @staticmethod
+    def window_for(tau_s: float) -> str:
+        return "short" if tau_s <= SHORT_S else "long"
+
+    def sigma(self, perp: str | None, tau_s: float = 0.0) -> float | None:
+        """How much `perp` moves (per square-root second), measured over the window that suits a market closing in
+        tau_s seconds; the other window if that one isn't in yet."""
+        if not perp:
+            return None
+        first = self.window_for(tau_s)
+        for w in (first, "long" if first == "short" else "short"):
+            s = self.vol.get((perp, w), (0.0, None))[1]
+            if s:
+                return s
+        return None
 
     def fair(self, m: Market, now: int) -> float | None:
-        return fair_odds(m, self.spot(m.underlying), self.sigma(m.underlying), now)
+        tau = ((m.expiry_ms or now) - now) / 1000
+        return fair_odds(m, self.spot(m.underlying), self.sigma(m.underlying, tau), now)
 
     def _odds_then(self, m: Market, t: int, candles: list | None = None):
         then = _at(list(self.samples.get(m.outcome) or ()), t)
@@ -298,7 +317,7 @@ class OutcomeService:
             "volume_24h": c.get("volume"), "open": c.get("open"), "expiry_ms": m.expiry_ms,
             "underlying": m.underlying, "spot": self.spot(m.underlying) if m.underlying else None,
             "threshold": m.threshold, "fair": fair,
-            "edge": (fair - od) * 100 if fair is not None and od is not None else None,
+            "edge": trade_edge(fair, bid, ask),
             "followed": m.outcome in self._followed, "settled": m.settled,
         }
 
@@ -322,13 +341,21 @@ class OutcomeService:
             questions.append({"id": q.question, "title": q.title, "sub": q.sub, "venue": venue,
                               "venue_name": VENUES.get(venue, venue), "expiry_ms": q.expiry_ms, "starts_ms": q.starts_ms,
                               "outcomes": list(q.outcomes), "sum": asdict(self.sum_for(q))})
+        rows = [self.row(m, now) for m in self.markets.values()]
+        by_asset: dict[tuple, list] = {}
+        for r in rows:
+            if r["kind"] == "price" and not r["settled"] and (r["expiry_ms"] or 0) > now:
+                # same perp, same venue, same settlement price: only then must the ladder be in order
+                by_asset.setdefault((r["underlying"], r["venue"], r["sub"]), []).append(r)
+        ladders = [f for group in by_asset.values() for f in ladder_check(group)]
         return {
             "enabled": self.enabled, "updated_ms": self.updated_ms, "error": self.error, "now_ms": now,
             "total": len(self.markets), "followed": len(self._followed), "max_followed": self.max_markets,
             "feed": self.feed_status(),
             "venues": [{"id": v, "name": VENUES.get(v, v or "Hyperliquid"), "count": n} for v, n in venues.most_common()],
-            "markets": [self.row(m, now) for m in self.markets.values()],
+            "markets": rows,
             "questions": questions,
+            "ladders": ladders,
         }
 
     # ── one market's page ──────────────────────────────────────────────────
@@ -385,11 +412,13 @@ class OutcomeService:
         now = int(time.time() * 1000)
         hist = await self.candles(m.yes_coin, rng)
         under_hist: list = []
+        tau = ((m.expiry_ms or now) - now) / 1000
+        window = self.window_for(tau)
         if m.underlying:
-            if m.underlying not in self.vol:
-                await self.refresh_vol(m.underlying)
+            if (m.underlying, window) not in self.vol:
+                await self.refresh_vol(m.underlying, window)
             under_hist = await self.candles(m.underlying, rng)
-        sigma = self.sigma(m.underlying)
+        sigma = self.sigma(m.underlying, tau)
         bid, bsz, ask, asz, od = self.quote(m)
         spot = self.spot(m.underlying)
         fair = self.fair(m, now) if m.kind in ("price", "touch") else None
@@ -420,7 +449,8 @@ class OutcomeService:
             "who": who(trades),
             "why": why_line(m, od, then, span, flow_of(trades, hour_ago), fair, fair_then, spot, spot_then),
             "fair": None if fair is None else {
-                "odds": fair, "spot": spot, "sigma_day_pct": sigma * (86_400 ** 0.5) * 100 if sigma else None},
+                "odds": fair, "spot": spot, "sigma_day_pct": sigma * (86_400 ** 0.5) * 100 if sigma else None,
+                "window": "the last 12 hours" if window == "short" else "the last 2 weeks"},
             "chart": {"odds": odds_pts, "fair": fair_pts},
             "question": None if q is None else {
                 "id": q.question, "title": q.title, "sub": q.sub, "sum": asdict(self.sum_for(q)),

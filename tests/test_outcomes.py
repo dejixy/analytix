@@ -258,3 +258,36 @@ def test_an_event_page_charts_its_likeliest_outcomes():
     assert [s["label"] for s in d["series"]] == ["RB Leipzig", "PSV Eindhoven", "Draw"]   # listing order, priced only
     assert d["series"][0]["points"][-1][1] == pytest.approx(0.31)
     assert asyncio.run(svc.question_detail(999)) is None
+
+
+def test_edges_are_measured_against_prices_you_can_trade():
+    from engine.outcomes import trade_edge
+    assert trade_edge(0.60, 0.40, 0.50) == pytest.approx(10.0)         # fair above the ask: buy Yes
+    assert trade_edge(0.30, 0.40, 0.50) == pytest.approx(-10.0)        # fair below the bid: sell Yes
+    assert trade_edge(0.45, 0.40, 0.50) == 0.0                         # inside the spread: nothing to do
+    assert trade_edge(0.0, None, None) is None                         # no orders: a stale mark proves nothing
+    assert trade_edge(0.0, None, 0.99) == 0.0
+
+
+def test_the_ladder_check_flags_a_higher_line_selling_above_a_lower_line():
+    from engine.outcomes import ladder_check
+    t = 1_800_000_000_000
+    rows = [{"id": 1, "kind": "price", "threshold": 1950, "expiry_ms": t, "bid": None, "bid_sz": 0, "ask": 0.02, "ask_sz": 40},
+            {"id": 2, "kind": "price", "threshold": 2050, "expiry_ms": t, "bid": 0.10, "bid_sz": 25, "ask": 0.97, "ask_sz": 5},
+            {"id": 3, "kind": "price", "threshold": 1600, "expiry_ms": t, "bid": 0.99, "bid_sz": 9, "ask": None, "ask_sz": 0}]
+    found = ladder_check(rows)
+    assert [(f["low"], f["high"]) for f in found] == [(1, 2)]
+    assert found[0]["locked"] == pytest.approx(0.08) and found[0]["pairs"] == 25
+    assert "Yes on 1,950 plus No on 2,050 locks in 8.0¢ a pair" in found[0]["note"]
+    fine = [dict(rows[0], ask=0.12), rows[1]]
+    assert ladder_check(fine) == []
+
+
+def test_fair_odds_use_volatility_that_suits_the_market_length():
+    svc = _svc()
+    svc.vol[("ETH", "short")] = (time.time(), 0.00001)                 # a sleepy weekend afternoon
+    svc.vol[("ETH", "long")] = (time.time(), 0.0002)                   # two normal weeks
+    assert svc.sigma("ETH", 3600) == 0.00001 and svc.sigma("ETH", 4 * 86_400) == 0.0002
+    assert svc.sigma("BTC", 3600) is None
+    del svc.vol[("ETH", "short")]
+    assert svc.sigma("ETH", 3600) == 0.0002                            # falls back to what it has
