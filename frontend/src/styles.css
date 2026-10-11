@@ -509,7 +509,6 @@ tr.wall td { color: var(--ink); }
 .scan-table th:last-child { text-align: left; }
 .scan-table tbody tr { cursor: pointer; }
 .scan-table tbody tr:hover { background: var(--surface-2); }
-.scan-table tr.hot td:first-child { box-shadow: inset 2px 0 0 var(--up); }
 .scan-table .sub { display: block; font-size: 10px; color: var(--muted); }
 .scan-table .sub.up { color: var(--up); }
 .scan-table .sub.down { color: var(--down); }

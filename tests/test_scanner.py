@@ -105,6 +105,29 @@ def test_trade_reads_find_the_flow_big_orders_and_runs():
     assert row.traded and row.big_orders == 4 and any(r.startswith("run of 4 big sell orders") for r in row.reasons)
 
 
+def test_small_trades_on_a_small_coin_are_not_an_event():
+    st, now = _state_with_trades()
+    rd = trade_reads(st, now)
+    small = rd.__class__(**{**{f: getattr(rd, f) for f in rd.__dataclass_fields__},
+                            "liquidated_usd": 20_000.0, "cascades": ()})
+    row = score_coin("DOGE", _ctx(mark=0.199, prev=0.2, oracle=0.199), None,
+                     Baseline(0.01, 200_000.0, 4.8e6, T0), small, now)           # 5% of its hour is just $10K
+    assert not any("liquidated" in r for r in row.reasons) and row.kind_scores["trades"] < 1
+    big = rd.__class__(**{**{f: getattr(small, f) for f in rd.__dataclass_fields__}, "liquidated_usd": 150_000.0})
+    row = score_coin("DOGE", _ctx(mark=0.199, prev=0.2, oracle=0.199), None,
+                     Baseline(0.01, 200_000.0, 4.8e6, T0), big, now)
+    assert "$150K liquidated in 15m" in row.reasons and row.kind_scores["trades"] == 1.5
+
+
+def test_each_kind_of_reading_has_its_own_score_for_filtering():
+    h, now = _hist(100.0, 103.0, 1_000, 1_100)
+    r = score_coin("BBB", _ctx(mark=103.0, oracle=103.0, vol=60e6, funding=0.00006), h, BASE, None, now)
+    assert set(r.kind_scores) >= {"move", "volume", "positions", "funding", "index"}
+    assert r.score == max(r.kind_scores.values())
+    assert [n["kind"] for n in r.notes][:1] and all(n["score"] >= 1 for n in r.notes)
+    assert r.kind_scores["funding"] == pytest.approx(52.56 / 40, abs=1e-3)
+
+
 # ── the service ─────────────────────────────────────────────────────────────
 def _scanner():
     rt = SimpleNamespace(mode="live", coins=["ETH"], pipelines={})
