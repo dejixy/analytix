@@ -29,6 +29,7 @@ def health(request: Request):
         "status": "ok",
         "coins": {c: {"now_ms": p.state.now_ms, "engine_runs": p.analyzer.runs, "trades_buffered": len(p.state.trades)}
                   for c, p in rt.pipelines.items()},
+        "other_exchanges": rt.external.status() if rt.external else None,
         "feed": rt.status.to_dict(),
     }
 

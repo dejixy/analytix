@@ -52,6 +52,18 @@ class PriceMove:
 
 
 @dataclass(frozen=True, slots=True)
+class Origin:
+    """Where a move started: on Hyperliquid or on a bigger exchange first (engine/origin.py)."""
+    verdict: str              # "elsewhere" | "here" | "together" | "here_only"
+    venue: str                # the exchange compared with ("Binance")
+    lead_s: float             # positive: the other exchange got halfway first, by this many seconds
+    here_pct: float           # Hyperliquid's move over the compared stretch, %
+    there_pct: float          # the other exchange's move over the same stretch, %
+    span_s: int               # how long the compared stretch was
+    label: str                # short plain text: "started on Binance"
+
+
+@dataclass(frozen=True, slots=True)
 class FlowImpact:
     """How far price moved compared with what the window's net taker flow normally does (engine/impact.py)."""
     net_flow: float          # USD, taker buys − taker sells
@@ -121,6 +133,7 @@ class Explanation:
     flow_coverage: float = 1.0
     impact: FlowImpact | None = None
     level: DefendedLevel | None = None
+    origin: Origin | None = None            # tick windows with other exchanges' prices: where the move started
     summary: tuple[Metric, ...] = ()        # the card's rows, chosen for this timeframe
     range_ratio: float | None = None        # the window's high–low range ÷ its usual range
 

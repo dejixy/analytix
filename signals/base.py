@@ -97,6 +97,7 @@ class WindowSlice:
     vwap: float | None = None                # volume-weighted average price of the window's trades
     funding_history: tuple[float, ...] = ()  # sorted hourly funding rates, past week (engine/positioning.py)
     oi_history: tuple[float, ...] = ()       # sorted |ΔOI %| over this timeframe, from saved live bars
+    ext_paths: dict | None = None            # tick windows: venue → ((time, mid), ...) on other exchanges
 
     @property
     def price_start(self) -> float | None:

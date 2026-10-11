@@ -91,6 +91,11 @@ export default function ExplanationCard({ ex, window, selected, onSelect }) {
         <span>
           {move.significance === "quiet" ? "no move to explain" : `confidence ${Math.round(ex.confidence * 100)}%`}
           {ex.shape_label && <span className="shape-tag"> · {ex.shape_label}</span>}
+          {ex.origin && (
+            <span className="shape-tag" title={`Which exchange got halfway to the move first: Hyperliquid, or ${ex.origin.venue}`}>
+              {" "}· {ex.origin.label}
+            </span>
+          )}
         </span>
         <span>
           {ex.coverage < 0.95

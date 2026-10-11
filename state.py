@@ -28,10 +28,11 @@ from models.barModel import Bar, BarAccumulator
 from models.bookModel import BookSummary, OrderBook
 from models.contextModel import AssetContext
 from engine.engineFlow import EngineFlow
+from models.externalModel import ExternalQuote
 from models.orderModel import AggressiveOrder, group_orders, is_sweep
 from models.tradeModel import Trade
 
-Event = Trade | OrderBook | AssetContext
+Event = Trade | OrderBook | AssetContext | ExternalQuote
 
 
 class MarketState:
@@ -57,6 +58,8 @@ class MarketState:
         self.engine = EngineFlow()                  # engine-executed fills: TWAP slices vs liquidations
         self._bar: BarAccumulator | None = None
         self._last_close: float | None = None
+        # the same coin on other exchanges (venue → quotes on that venue's clock), for "where did it start?"
+        self.external: dict[str, RingBuffer[ExternalQuote]] = {}
 
     # ── writes ──────────────────────────────────────────────────────────────
     def apply(self, event: Event) -> None:
@@ -74,6 +77,12 @@ class MarketState:
                 self._apply_book(e)
             elif isinstance(e, AssetContext):
                 self._apply_context(e)
+            elif isinstance(e, ExternalQuote):
+                buf = self.external.get(e.venue)
+                if buf is None:
+                    buf = self.external[e.venue] = RingBuffer(max_seconds=self.history_seconds)
+                if e.bid > 0 and e.ask >= e.bid:
+                    buf.push(e)                         # never moves Hyperliquid's clock
         if accepted:
             for order in group_orders(accepted, LIQUIDATOR_ADDRESSES):
                 if order.engine:

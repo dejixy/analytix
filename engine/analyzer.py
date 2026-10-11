@@ -273,6 +273,7 @@ class Analyzer:
             walls=walls,
             path=tuple(path),
             vwap=vwap,
+            ext_paths=_ext_paths(st, seconds, now_ms),
         )
 
     # ── slicing: bar windows ─────────────────────────────────────────────────
@@ -363,6 +364,16 @@ def _bar_vwap(bars) -> float | None:
 def _std(xs: list[float]) -> float:
     mean = sum(xs) / len(xs)
     return math.sqrt(sum((x - mean) ** 2 for x in xs) / (len(xs) - 1))
+
+
+def _ext_paths(st, seconds: int, now_ms: int) -> dict | None:
+    """The same coin's mid on other exchanges over the window (and a little before it), if we have it."""
+    out = {}
+    for venue, buf in st.external.items():
+        pts = tuple((q.timestamp, q.mid) for q in buf.window(min(seconds + 30, buf.max_seconds), now_ms))
+        if pts:
+            out[venue] = pts
+    return out or None
 
 
 def _bursts(path: list[tuple[int, float]], span_ms: int) -> tuple[float, float, int, int]:
