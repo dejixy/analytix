@@ -10,6 +10,8 @@ Alerts: the moments worth a ping, checked once a second for every coin.
     price         price crosses a level you set (one-shot)
     position      a watched wallet's chance of liquidation rises past N% (raised by api/positions.py)
     scanner       a coin outside the main tabs gets N× past "worth a look" in More coins (api/scanner.py)
+    pm_edge       a prediction market trades at least N% expected value away from an independent estimate (options,
+                  the live game or the final score), with $50+ available at that price (api/outcomes.py)
 
 Every alert has a cooldown key (per coin and type, or per level / wallet where each one is
 its own story), so a messy hour can't send twenty pings. Nothing fires in the first five
@@ -27,7 +29,7 @@ from models.orderModel import AggressiveOrder
 from models.tradeModel import TradeSide
 from signals.base import fmt_px, fmt_usd
 
-KINDS = ("cascade", "liquidation", "twap", "level", "absorbed", "volatility", "price", "position", "scanner")
+KINDS = ("cascade", "liquidation", "twap", "level", "absorbed", "volatility", "price", "position", "scanner", "pm_edge")
 DEFAULT_RULES: dict[str, dict] = {
     "cascade": {"on": True, "min_usd": 1_000_000},
     "liquidation": {"on": True, "min_usd": 500_000},
@@ -38,6 +40,7 @@ DEFAULT_RULES: dict[str, dict] = {
     "price": {"on": True},
     "position": {"on": True, "min_pct": 5.0},
     "scanner": {"on": True, "min_score": 3.0},
+    "pm_edge": {"on": True, "min_ev_pct": 8.0},
 }
 DEFAULT_COOLDOWN_MIN = 15
 WARMUP_MS = 5 * 60_000

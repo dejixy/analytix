@@ -10,6 +10,7 @@ const RULES = [
   { kind: "volatility", label: "Volatility spike", help: "The last 10 minutes covered this many times the normal range", field: "min_ratio", unit: "×", hint: "times usual" },
   { kind: "price", label: "Price alerts", help: "Your levels below; each fires once when price crosses it" },
   { kind: "scanner", label: "Unusual coin (More coins)", help: "A coin outside your four tabs gets this many times past its \"worth a look\" line: a big move, volume, open interest, funding or big orders", field: "min_score", unit: "×", hint: "times the line" },
+  { kind: "pm_edge", label: "Prediction market edge", help: "A prediction market trades this far from an independent estimate (the options market, the live game or the final score), with $50+ available at that price", field: "min_ev_pct", unit: "%", hint: "expected value" },
   { kind: "position", label: "Position risk", help: "A watched wallet's chance of liquidation in the next 24h (or the next hour) goes above this", field: "min_pct", unit: "%", hint: "chance" },
 ];
 const NOTIFY_KEY = "analytix.notify";

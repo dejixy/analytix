@@ -234,6 +234,28 @@ These markets are small next to perps (often hundreds to a few thousand dollars 
 
 The data: `outcomeMeta` once a minute for the market list; a third WebSocket follows each market's Yes book and its market data (24h volume, price a day ago, contracts held), up to 300 markets (`ANALYTIX_OUTCOME_MARKETS`; Hyperliquid allows 1000 feeds per IP); a market's trades are followed live while its page is open (4 at a time, closed after 10 minutes unviewed). Live mode only (`engine/outcomes.py`, `api/outcomes.py`, `ingestion/outcomes.py`).
 
+### Edges on prediction markets (independent of the order book)
+
+Hyperliquid's prediction-market books are thin, and arbitrage bots keep them close to Polymarket and Kalshi, so those venues add little. Analytix compares each market with estimates that **don't come from any prediction-market book**:
+
+| Source | For | How |
+|---|---|---|
+| **Options market** (Deribit) | price markets on BTC, ETH, SOL | the implied-volatility surface, interpolated in time (total variance) and across strikes; "above K at T" is priced as a digital option with the smile correction, P = N(d2) − F·φ(d1)·√T·∂σ/∂K, measured from Hyperliquid's own price; "touch" markets use the reflection rule |
+| **The game** (ESPN) | matches (NFL, college football, NBA, MLB, NHL, the main soccer leagues and European cups) | the final score once a game ends; live, ESPN's own win model for American football, and for soccer a goals model (each side scores at a steady rate fitted to the pre-match line; only the goals still to come are random); before kick-off, the sportsbook line with the margin taken out |
+| **Recent moves** | price markets with no options market (trade.xyz stocks and commodities, HYPE) | the perp's own volatility, over a window that suits the market's length |
+
+From that estimate and the prices you can actually trade (never a stale last trade):
+
+- **Edge board** at the top of Outcomes: the best trades right now (+3% expected value or more, $20+ available): which side to buy, the price, the estimate and where it comes from, expected value per $1, a quarter-Kelly stake (full Kelly assumes the estimate is exact), what's available, and the return if right (and per year).
+- **Cards and ladders** show the estimate as a tick on each odds bar, an "Edge:" line, LIVE/FINAL game chips, and the ladder's **implied distribution** (where the price ends, by band) next to the estimate's.
+- **Sharp wallets.** Every trade on the 100 busiest markets is checked 15 minutes and 2 hours later. Wallets with 15+ trades, +1.5 points on average and a t-stat of 2+ are marked sharp (the mirror image: usually wrong). Cards show which way sharp wallets have traded in the last 6 hours; market pages list the known wallets. Learned live, kept across restarts.
+- **Calibration.** Each market's odds 24h, 6h and 1h before its close are noted and compared with how it ended, in 10-point bands, to measure biases like overpriced long shots on Hyperliquid's own markets. Shows once 30 markets have settled; kept across restarts.
+- **News pulse** (GDELT): a chip only when coverage of a market's teams or names is 3× its own normal or more; the page shows the counts, keyword flags from the headlines (injury, suspended, leaves, legal, delay, deal) and 3 headline links. No summaries.
+- **Rules** in plain words (what counts, the official source, when it settles).
+- **Prediction market edge** alert (Telegram): a market trades at least N% expected value from the estimate with $50+ available (default 8%), once per market and side until it closes back below half that.
+
+Sources refresh on their own (options every minute; scoreboards every 20 seconds while a game is on; one news query every 6 seconds, rotating). `/api/health` → `prediction_markets.sources` shows each one's state; `python -m scripts.probeIntel` on the server checks them all. Not advice: every estimate has its own error.
+
 ### Position watch
 
 The **Positions** button opens position watch. Paste a wallet address (and a name if you like) and it shows that wallet's open Hyperliquid positions, refreshed every 20 seconds. It's read-only: Hyperliquid shows every wallet's positions publicly, so it needs no keys and can't trade. Up to 10 wallets; they're kept in `data/watch.json` on the machine running Analytix.
@@ -377,7 +399,7 @@ Thresholds live in `config.py`.
 
 ## Roadmap
 
-- Prediction markets, next: alerts (odds jumps, locked-in edges, fair-odds gaps) and position watch for outcome positions
+- Prediction markets, next: position watch for outcome positions; an Elo model for tournament winners
 - Track how often the fair odds beat the market's odds once markets settle
 - A "what happened at 14:32?" query over the saved history
 - More windows: add them to `WINDOWS` in `config.py`; anything over an hour automatically uses minute bars
