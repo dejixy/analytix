@@ -24,6 +24,7 @@ run-up. Two tests:
      If no shift matches well (correlation under MIN_CORR), no claim is made.
 """
 import math
+from bisect import bisect_right
 
 import numpy as np
 
@@ -37,6 +38,40 @@ MIN_CORR = 0.15
 ONLY_HERE = 0.3                                            # the other exchange moved less than 30% as far
 MIN_POINTS = 4
 RUN_UP_S = 30
+
+
+def clip(path, start_ms: int, end_ms: int) -> tuple:
+    """The part of a (time, price) path from the last point at or before start_ms through end_ms."""
+    lo = max(0, bisect_right(path, start_ms, key=lambda p: p[0]) - 1)
+    hi = bisect_right(path, end_ms, key=lambda p: p[0])
+    return tuple(path[lo:hi])
+
+
+def external_paths(buffers: dict, start_ms: int, end_ms: int) -> dict:
+    """venue → ((time, mid), ...) for [start_ms, end_ms] plus the quote just before, read from the newest end."""
+    out = {}
+    for venue, buf in buffers.items():
+        pts = []
+        for q in reversed(buf._buf):
+            if q.timestamp > end_ms:
+                continue
+            pts.append((q.timestamp, q.mid))
+            if q.timestamp <= start_ms:
+                break
+        if pts:
+            out[venue] = tuple(reversed(pts))
+    return out
+
+
+def origin_for(here_path, buffers: dict | None, start_ms: int, end_ms: int, seconds: int, burst_end_ms: int,
+               burst_span_s: int, sign: int) -> Origin | None:
+    """Where a window's move started, reading only the stretch that's compared (cheap enough to run on every
+    window that's moving; never run on quiet ones)."""
+    if not buffers or sign == 0:
+        return None
+    t0, t1 = segment(start_ms, end_ms, seconds, burst_end_ms, burst_span_s)
+    return find_origin(clip(here_path, t0 - 1_000, t1), external_paths(buffers, t0 - MAX_LAG_S * 1000 - 1_000, t1),
+                       t0, t1, sign)
 
 
 def segment(start_ms: int, end_ms: int, seconds: int, burst_end_ms: int, burst_span_s: int) -> tuple[int, int]:

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from config import MIN_SWEEP_NOTIONAL
 from models.orderModel import is_sweep
 from models.tradeModel import TradeSide
 from signals.base import fmt_usd
@@ -140,21 +141,35 @@ class TradeReads:
 
 
 def trade_reads(state, now_ms: int, seconds: int = TRADE_WINDOW_S) -> TradeReads | None:
-    """The last 15 minutes of one coin's trades (a MarketState fed from the trades feed)."""
+    """The last 15 minutes of one coin's trades (a MarketState fed from the trades feed). One pass over the
+    orders; the full big-order test only runs on the few that are big enough to possibly pass it."""
     if state is None or not state.now_ms:
         return None
     span = min(seconds, state.orders.max_seconds)
-    orders = [o for o in state.orders.window(span, state.now_ms)]
+    orders = state.orders.window(span, state.now_ms)
     if not orders:
         return TradeReads(0.0, 0.0, 0, 0, 0.0, 0.0, (), ())
-    buy = sum(o.notional for o in orders if o.side is TradeSide.BUY)
-    sell = sum(o.notional for o in orders if o.side is TradeSide.SELL)
-    sizes = np.array([o.notional for o in orders])
-    threshold = max(BIG_ORDER_FLOOR, float(np.percentile(sizes, 99)) if len(sizes) >= 200 else 2.5 * BIG_ORDER_FLOOR)
-    twaps = state.engine.twaps
-    big = [o for o in orders if is_sweep(o, threshold, twaps)]
-    forced = state.engine.forced
-    liquidated = sum(o.notional for o in orders if o.engine and (o.timestamp, o.taker) in forced)
+    buy = sell = 0.0
+    sizes = np.empty(len(orders))
+    for i, o in enumerate(orders):
+        n = o.notional
+        sizes[i] = n
+        if o.side is TradeSide.BUY:
+            buy += n
+        else:
+            sell += n
+    if len(sizes) >= 200:
+        k = int(0.99 * (len(sizes) - 1))
+        threshold = max(BIG_ORDER_FLOOR, float(np.partition(sizes, k)[k]))
+    else:
+        threshold = 2.5 * BIG_ORDER_FLOOR
+    twaps, forced = state.engine.twaps, state.engine.forced
+    floor = min(threshold, MIN_SWEEP_NOTIONAL)            # below both bars no order can count as big
+    idx = np.flatnonzero(sizes >= floor)
+    big = [o for o in (orders[i] for i in idx) if is_sweep(o, threshold, twaps)]
+    big += [o for o in orders if o.confirmed_liquidation and o.notional < floor]
+    big.sort(key=lambda o: o.timestamp)
+    liquidated = sum(o.notional for o in orders if o.engine and (o.timestamp, o.taker) in forced) if forced else 0.0
     cascades = tuple({"side": "buy" if c.side is TradeSide.BUY else "sell", "orders": c.sweeps, "usd": c.notional,
                       "seconds": max(1.0, (c.end_ms - c.start_ms) / 1000), "ts": c.start_ms}
                      for c in find_cascades(big))

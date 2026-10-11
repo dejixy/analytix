@@ -30,6 +30,7 @@ def health(request: Request):
         "coins": {c: {"now_ms": p.state.now_ms, "engine_runs": p.analyzer.runs, "trades_buffered": len(p.state.trades)}
                   for c, p in rt.pipelines.items()},
         "other_exchanges": rt.external.status() if rt.external else None,
+        "speed_since_last_report": rt.perf.report(reset=False),
         "feed": rt.status.to_dict(),
     }
 

@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 168 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 169 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -161,7 +161,7 @@ sudo systemctl enable --now analytix
 journalctl -u analytix -f          # a status line every 5 minutes
 ```
 
-The recordings carry on in the same folder (a switch inside one hour appends to that hour's file). View the dashboard from your laptop:
+Every 5 minutes the log also prints a speed line: `screen delay` (how late a task that should run every quarter second actually ran; small means nothing is waiting), and how long the engine, the scanner and each round of browser updates take. `/api/health` shows the same numbers. Every 5 minutes the log also prints a speed line: `screen delay` (how late a task that should run every quarter second actually ran; small means nothing is waiting), and how long the engine, the scanner and each round of browser updates take. `/api/health` shows the same numbers. Every 5 minutes the log also prints a speed line: `screen delay` (how late a task that should run every quarter second actually ran; small means nothing is waiting), and how long the engine, the scanner and each round of browser updates take. `/api/health` shows the same numbers. The recordings carry on in the same folder (a switch inside one hour appends to that hour's file). View the dashboard from your laptop:
 
 ```bash
 ssh -N -L 8001:127.0.0.1:8000 you@SERVER_IP      # leave this running, then open http://localhost:8001
