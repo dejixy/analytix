@@ -93,3 +93,20 @@ def test_a_replay_where_binance_leads_says_so(tmp_path):
 def test_a_replay_where_binance_lags_says_hyperliquid_moved_first(tmp_path):
     seen = _replay_with_binance(tmp_path, -3_000)
     assert seen and sum(e.origin.verdict == "here" for e in seen) > 0.6 * len(seen)
+
+
+def test_the_speed_meter_reports_and_resets():
+    import asyncio
+    from api.speed import Speed
+    sp = Speed()
+    for ms in (2.0, 4.0, 30.0):
+        sp.engine.add(ms)
+
+    async def tick():
+        task = asyncio.create_task(sp.watch())
+        await asyncio.sleep(0.6)
+        task.cancel()
+    asyncio.run(tick())
+    r = sp.report(reset=False)
+    assert r["engine_run"] == {"avg_ms": 12.0, "worst_ms": 30.0, "count": 3} and r["screen_delay"]["count"] >= 1
+    assert sp.line().startswith("screen delay avg") and sp.report()["engine_run"]["count"] == 0

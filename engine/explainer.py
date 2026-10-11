@@ -19,7 +19,7 @@ from signals import weights_for
 from signals.base import WindowSlice, fmt_px, fmt_usd
 from models.tradeModel import TradeSide
 from engine.levels import defended_level, level_sentence
-from engine.origin import find_origin, origin_sentence, segment
+from engine.origin import origin_for, origin_sentence
 
 ABSORPTION_STRENGTH = 0.5
 IMPACT_ABSORPTION_STRENGTH = 0.3
@@ -196,9 +196,9 @@ def explain(coin: str, s: WindowSlice, move: PriceMove, signals: list[SignalResu
                 f"Shape: spread out. The sharpest {words} was only {move.burst_bps / 100:+.2f}% of the {pct}, "
                 f"so this is a steady trend, not a one-off jolt."
             )
-        if s.ext_paths and move.direction is not Direction.NEUTRAL:
-            t0, t1 = segment(s.start_ms, s.end_ms, s.seconds, move.burst_end_ms, move.burst_span_s)
-            origin = find_origin(s.path, s.ext_paths, t0, t1, 1 if move.direction is Direction.UP else -1)
+        if s.external and move.direction is not Direction.NEUTRAL:
+            origin = origin_for(s.path, s.external, s.start_ms, s.end_ms, s.seconds, move.burst_end_ms,
+                                move.burst_span_s, 1 if move.direction is Direction.UP else -1)
             if origin:
                 narrative.append(origin_sentence(origin))
         narrative += [sig.summary for sig, _, _ in supporters[:3]]

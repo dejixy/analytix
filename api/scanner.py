@@ -112,8 +112,12 @@ class Scanner:
             del self.history[gone]
         if time.time() - self._top_at >= TOP_EVERY_S or not self.top:
             self._pick_top()
+        t = time.perf_counter()
         self.rows = self.rank(now)
         self.updated_ms = now
+        perf = getattr(self.rt, "perf", None)
+        if perf is not None:
+            perf.scanner.add((time.perf_counter() - t) * 1000)
 
     def _pick_top(self) -> None:
         self._top_at = time.time()

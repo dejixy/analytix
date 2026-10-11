@@ -41,6 +41,7 @@ from api.alerts import AlertService
 from api.planner import PlannerService
 from api.positions import PositionWatch
 from api.scanner import Scanner
+from api.speed import Speed
 from ingestion.backfill import backfill
 from ingestion.external import ExternalFeed
 from ingestion.feedStatus import FeedStatus
@@ -95,6 +96,9 @@ class Runtime:
         self.planner = PlannerService(self)
         self.alerts = AlertService(self, alerts_file)
         self.positions = PositionWatch(self, watch_file)
+        self.perf = Speed()
+        for pipe in self.pipelines.values():
+            pipe.analyzer.on_run_ms = self.perf.engine.add
         self.scanner = Scanner(self)
         self.scanner.on_top_change = self._resubscribe_aux
         self.aux: HyperliquidClient | None = None       # second socket: scanner trades and coins opened from More coins
@@ -142,6 +146,7 @@ class Runtime:
             self._tasks.append(asyncio.create_task(self._backfill(), name="backfill"))
         if self.mode == "live":
             self._tasks.append(asyncio.create_task(self._heartbeat(), name="heartbeat"))
+            self._tasks.append(asyncio.create_task(self.perf.watch(), name="speed"))
             self._tasks.append(asyncio.create_task(self._save_events_loop(), name="events"))
             self.aux = HyperliquidClient([], self._on_aux, FeedStatus(mode="live"))
             self._tasks.append(asyncio.create_task(self.aux.run(), name="aux"))
@@ -257,6 +262,7 @@ class Runtime:
             pipe.analyzer.archived_moves = self.event_store.load(coin, "move", keep, EVENTS_KEPT)
             pipe.analyzer.archived_market = self.event_store.load(coin, "market", keep, EVENTS_KEPT)
         self.scanner.states.pop(coin, None)
+        pipe.analyzer.on_run_ms = self.perf.engine.add
         self.pipelines[coin] = pipe
         self.extra[coin] = time.time()
         self._resubscribe_aux()
@@ -335,6 +341,7 @@ class Runtime:
                 line += (f" · recording this hour {self._recorder.hour_bytes / 1e6:.0f} MB"
                          + (" · PAUSED: disk nearly full" if self._recorder.paused else ""))
             log.info(line)
+            log.info("speed: %s", self.perf.line())
 
     async def _broadcast_loop(self) -> None:
         while True:
@@ -342,6 +349,7 @@ class Runtime:
             if not self.clients:
                 continue
             self._broadcasts += 1
+            t = time.perf_counter()
             with_bars = self._broadcasts % BARS_EVERY_N_BROADCASTS == 0
             payloads: dict[str, str] = {}   # one snapshot per watched coin, shared by its viewers
             dead = []
@@ -355,6 +363,7 @@ class Runtime:
                     dead.append(ws)
             for ws in dead:
                 self.clients.pop(ws, None)
+            self.perf.push.add((time.perf_counter() - t) * 1000)
 
     @property
     def speed_label(self) -> str:

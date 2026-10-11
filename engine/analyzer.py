@@ -10,6 +10,7 @@ Driven by the exchange clock (MarketState.now_ms), not a timer, so a replay
 at 50× produces exactly the same explanations as the live session did.
 """
 import math
+import time
 from dataclasses import replace
 
 from config import (
@@ -67,6 +68,7 @@ class Analyzer:
         self._baseline_ms = 0
         self._bar_baseline_ms = 0
         self._window_ms: dict[str, int] = {}   # when each window was last recomputed
+        self.on_run_ms = None                   # optional callback with each run's duration (api/speed.py)
 
     def reset(self) -> None:
         self.__init__(self.state, self.windows, self.interval_ms)
@@ -75,7 +77,10 @@ class Analyzer:
         now = self.state.now_ms
         if not now or self.state.book is None or now - self._last_run_ms < self.interval_ms:
             return False
+        t = time.perf_counter()
         self.run(now)
+        if self.on_run_ms:
+            self.on_run_ms((time.perf_counter() - t) * 1000)
         return True
 
     def run(self, now_ms: int) -> dict[str, Explanation]:
@@ -273,7 +278,7 @@ class Analyzer:
             walls=walls,
             path=tuple(path),
             vwap=vwap,
-            ext_paths=_ext_paths(st, seconds, now_ms),
+            external=st.external or None,
         )
 
     # ── slicing: bar windows ─────────────────────────────────────────────────
@@ -364,16 +369,6 @@ def _bar_vwap(bars) -> float | None:
 def _std(xs: list[float]) -> float:
     mean = sum(xs) / len(xs)
     return math.sqrt(sum((x - mean) ** 2 for x in xs) / (len(xs) - 1))
-
-
-def _ext_paths(st, seconds: int, now_ms: int) -> dict | None:
-    """The same coin's mid on other exchanges over the window (and a little before it), if we have it."""
-    out = {}
-    for venue, buf in st.external.items():
-        pts = tuple((q.timestamp, q.mid) for q in buf.window(min(seconds + 30, buf.max_seconds), now_ms))
-        if pts:
-            out[venue] = pts
-    return out or None
 
 
 def _bursts(path: list[tuple[int, float]], span_ms: int) -> tuple[float, float, int, int]:
