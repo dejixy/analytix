@@ -3,7 +3,8 @@ Outcomes: Hyperliquid's prediction markets (HIP-4), live. Covers every venue tha
 Outcome (outcome.xyz) and trade.xyz today.
 
     every 60s     outcomeMeta: the market list (new markets in, settled ones out)
-    live          a third socket follows each market's Yes book (l2Book) and market data (activeSpotAssetCtx:
+    live          a third socket follows each market's Yes book (l2Book) and market data (activeAssetCtx, which
+                  replies on the activeSpotAssetCtx channel:
                   24h volume, price a day ago, contracts held), up to MAX_MARKETS markets
     every 30s     each market's odds (and each price market's perp price) kept for the last 6 hours
     every 5 min   how much each price market's perp has been moving (1-minute candles, last 12 hours)
@@ -184,14 +185,14 @@ class OutcomeService:
         self._followed = {m.outcome for m in followed}
         if self.sock is None:
             return
-        subs = [s for m in followed for s in (_sub("l2Book", m.yes_coin), _sub("activeSpotAssetCtx", m.yes_coin))]
+        subs = [s for m in followed for s in (_sub("l2Book", m.yes_coin), _sub("activeAssetCtx", m.yes_coin))]
         subs += [_sub("trades", self.markets[o].yes_coin) for o in self.opened if o in self.markets]
         self.sock.set_subscriptions(subs)
 
     # ── the live feed ──────────────────────────────────────────────────────
     def on_message(self, msg: dict) -> None:
         ch, data = msg.get("channel"), msg.get("data")
-        if ch == "activeSpotAssetCtx" and isinstance(data, dict):
+        if ch in ("activeSpotAssetCtx", "activeAssetCtx") and isinstance(data, dict):
             c = data.get("ctx") or {}
             self.ctx[data.get("coin")] = {"mark": _num(c.get("markPx")), "prev_day": _num(c.get("prevDayPx")),
                                           "volume": _num(c.get("dayBaseVlm")), "open": _num(c.get("circulatingSupply"))}
@@ -296,6 +297,12 @@ class OutcomeService:
             "followed": m.outcome in self._followed, "settled": m.settled,
         }
 
+    def feed_status(self) -> dict:
+        st = self.status
+        return {"connected": st.connected, "reconnects": st.reconnects, "messages": st.messages,
+                "last_error": st.last_error, "server_said": self.sock.server_error if self.sock else None,
+                "books": len(self.books), "contexts": len(self.ctx), "feeds": 2 * len(self._followed)}
+
     def sum_for(self, q: Question):
         return sum_check([self.quote(self.markets[o]) for o in q.outcomes if o in self.markets])
 
@@ -313,7 +320,7 @@ class OutcomeService:
         return {
             "enabled": self.enabled, "updated_ms": self.updated_ms, "error": self.error, "now_ms": now,
             "total": len(self.markets), "followed": len(self._followed), "max_followed": self.max_markets,
-            "feed": {"connected": self.status.connected},
+            "feed": self.feed_status(),
             "venues": [{"id": v, "name": VENUES.get(v, v or "Hyperliquid"), "count": n} for v, n in venues.most_common()],
             "markets": [self.row(m, now) for m in self.markets.values()],
             "questions": questions,

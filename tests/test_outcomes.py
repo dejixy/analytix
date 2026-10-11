@@ -201,3 +201,14 @@ def test_a_market_page_follows_its_trades_and_prices_the_fair_odds():
                                                    "time": int(time.time() * 1000), "tid": 8, "users": ["0xccc", "0xddd"]}]})
     assert [t["tid"] for t in svc.trades[11214]] == [7, 8]
     assert asyncio.run(svc.detail(424242)) is None
+
+
+def test_the_socket_asks_for_the_right_feeds():
+    svc = _svc()
+    sent = []
+    svc.sock = SimpleNamespace(set_subscriptions=lambda subs: sent.extend(subs), server_error=None)
+    asyncio.run(svc.refresh_meta())
+    kinds = {s["subscription"]["type"] for s in sent}
+    assert kinds == {"l2Book", "activeAssetCtx"}                 # replies arrive on activeSpotAssetCtx
+    assert {"type": "activeAssetCtx", "coin": "#112140"} in [s["subscription"] for s in sent]
+    assert svc.feed_status()["feeds"] == 16
