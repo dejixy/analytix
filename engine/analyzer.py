@@ -51,6 +51,9 @@ class Analyzer:
         self.interval_ms = interval_ms
         self.latest: dict[str, Explanation] = {}
         self.events = EventLog()
+        # events from before the last restart (live mode), as the dashboard JSON: shown below the new ones
+        self.archived_moves: list[dict] = []
+        self.archived_market: list[dict] = []
         self.baseline: Baseline | None = None
         self.bar_baseline: Baseline | None = None
         self.impact_model: ImpactModel | None = None

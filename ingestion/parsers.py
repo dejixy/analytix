@@ -105,6 +105,10 @@ def coin_of(msg: dict[str, Any]) -> str | None:
     return None
 
 
+def trade_subscription(coin: str) -> dict[str, Any]:
+    return {"method": "subscribe", "subscription": {"type": "trades", "coin": coin}}
+
+
 def subscriptions(coin: str) -> list[dict[str, Any]]:
     return [
         {"method": "subscribe", "subscription": {"type": "trades", "coin": coin}},

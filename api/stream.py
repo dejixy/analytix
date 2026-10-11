@@ -14,7 +14,7 @@ router = APIRouter()
 async def stream(ws: WebSocket):
     rt = ws.app.state.runtime
     coin = ws.query_params.get("coin")
-    coin = coin if coin in rt.pipelines else rt.default_coin
+    coin = coin if coin and rt.open_coin(coin) else rt.default_coin
     await ws.accept()
     await ws.send_text(json.dumps(rt.snapshot(coin), separators=(",", ":")))
     rt.clients[ws] = coin
@@ -25,7 +25,7 @@ async def stream(ws: WebSocket):
                 wanted = json.loads(msg).get("coin")
             except (ValueError, AttributeError):
                 continue
-            if wanted in rt.pipelines:
+            if wanted and rt.open_coin(wanted):
                 rt.clients[ws] = wanted
                 await ws.send_text(json.dumps(rt.snapshot(wanted), separators=(",", ":")))
     except WebSocketDisconnect:

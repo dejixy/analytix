@@ -72,8 +72,10 @@ class AlertService:
 
     def check_once(self) -> list[Alert]:
         fired: list[Alert] = []
-        for coin, pipe in self.rt.pipelines.items():
-            fired += self.engine.check(coin, pipe)
+        for coin in self.rt.coins:                     # the configured coins, not ones opened from More coins
+            pipe = self.rt.pipelines.get(coin)
+            if pipe is not None:
+                fired += self.engine.check(coin, pipe)
         for a in fired:
             self.push(a)
         return fired

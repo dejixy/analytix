@@ -12,6 +12,7 @@ import Toasts from "./components/Toasts.jsx";
 import Planner from "./components/Planner.jsx";
 import AlertsPanel, { notifyEnabled } from "./components/AlertsPanel.jsx";
 import PositionWatch from "./components/PositionWatch.jsx";
+import Scanner from "./components/Scanner.jsx";
 
 const FLOW_MIN_STRENGTH = 0.25;
 
@@ -49,6 +50,7 @@ export default function App() {
   const [planning, setPlanning] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [watchOpen, setWatchOpen] = useState(false);
+  const [scanning, setScanning] = useState(false); // the More coins list is showing
   const seenAlerts = useRef(null); // ids already shown, so only new alerts notify
 
   // Desktop notifications for new alerts while the dashboard sits in a background tab
@@ -144,13 +146,36 @@ export default function App() {
         conn={conn}
         onCoin={(c) => {
           setPinned(null);
+          setScanning(false);
           setCoin(c);
         }}
+        more={scanning || !!snap.extra}
+        onMore={() => setScanning(true)}
         onPlan={() => setPlanning(true)}
         onAlerts={() => setAlertsOpen(true)}
         onPositions={() => setWatchOpen(true)}
       />
 
+      {scanning ? (
+        <Scanner
+          onOpen={(c) => {
+            setPinned(null);
+            setScanning(false);
+            setCoin(c);
+          }}
+        />
+      ) : (
+      <>
+      {snap.extra && (
+        <div className="extra-bar">
+          <button className="plan-chip" onClick={() => setScanning(true)}>‹ More coins</button>
+          <span><b>{snap.coin}</b> · opened from More coins</span>
+          <span className="muted">
+            The short timeframes fill in over the next few minutes; longer ones start from Hyperliquid's price
+            history. It closes again after 10 minutes with nobody watching.
+          </span>
+        </div>
+      )}
       <section className="rail-wrap" aria-label="Explanations by timeframe">
         <div className="rail-head">
           <nav className="tf-tabs" aria-label="Timeframe">
@@ -224,6 +249,8 @@ export default function App() {
       </section>
 
       <EventLog events={snap.events} marketEvents={snap.market_events || []} pinned={pinned} onPick={pin} />
+      </>
+      )}
       <Toasts coin={snap.coin} nowMs={snap.now_ms} marketEvents={snap.market_events || []} />
       {alertsOpen && <AlertsPanel coin={snap.coin} onClose={() => setAlertsOpen(false)} />}
       {watchOpen && <PositionWatch onClose={() => setWatchOpen(false)} />}

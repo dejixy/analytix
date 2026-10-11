@@ -1,14 +1,15 @@
 import { fmtPct, fmtPrice, fmtTime } from "../format.js";
 
-function CoinTabs({ coins, tickers, active, onCoin }) {
-  if (!coins || coins.length < 2) return null;
+function CoinTabs({ coins, tickers, active, onCoin, more, onMore }) {
+  if (!coins) return null;
   return (
     <nav className="coins" aria-label="Market">
       {coins.map((c) => {
         const t = tickers?.[c] || {};
         const mv = t.move_1m_pct;
         return (
-          <button key={c} className={`coin-tab ${c === active ? "active" : ""}`} onClick={() => onCoin(c)} aria-pressed={c === active}>
+          <button key={c} className={`coin-tab ${c === active && !more ? "active" : ""}`} onClick={() => onCoin(c)}
+            aria-pressed={c === active && !more}>
             <span className="coin-name">{c}</span>
             <span className="coin-meta">
               {fmtPrice(t.mid)}{" "}
@@ -17,6 +18,11 @@ function CoinTabs({ coins, tickers, active, onCoin }) {
           </button>
         );
       })}
+      <button className={`coin-tab ${more ? "active" : ""}`} onClick={onMore} aria-pressed={more}
+        title="Every other Hyperliquid coin, ranked by what's unusual right now">
+        <span className="coin-name">More coins</span>
+        <span className="coin-meta">{more && active && !coins.includes(active) ? active : "all perps"}</span>
+      </button>
     </nav>
   );
 }
@@ -60,7 +66,7 @@ function FeedBadge({ feed, conn }) {
   );
 }
 
-export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions }) {
+export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions, more, onMore }) {
   const { price, context, coin, feed } = snap;
   const chg = context?.change_24h_pct;
   return (
@@ -70,7 +76,7 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
         <span className="brand-tag">why did this price move?</span>
       </div>
 
-      <CoinTabs coins={snap.coins} tickers={snap.tickers} active={coin} onCoin={onCoin} />
+      <CoinTabs coins={snap.coins} tickers={snap.tickers} active={coin} onCoin={onCoin} more={more} onMore={onMore} />
 
       <div className="market">
         <span className="market-sym">{coin}-PERP</span>

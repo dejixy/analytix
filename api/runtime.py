@@ -39,18 +39,24 @@ from config import (
 from api.alerts import AlertService
 from api.planner import PlannerService
 from api.positions import PositionWatch
+from api.scanner import Scanner
 from ingestion.backfill import backfill
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
-from ingestion.parsers import coin_of
+from ingestion.parsers import coin_of, subscriptions, trade_subscription
 from ingestion.recorder import HourlyRecorder, JsonlRecorder
 from ingestion.replay import ReplaySource, coins_in
 from ingestion.synthetic import generate_session
 from pipeline import Pipeline
 from storage.barStore import BarStore
+from storage.eventStore import KEEP_MS, EventStore
 
 BARS_EVERY_N_BROADCASTS = 10
 HEARTBEAT_S = 300   # the long-window chart changes slowly; send it every ~5s, not twice a second
+EVENTS_KEPT = 200                 # per coin and kind, loaded back after a restart
+EVENTS_SAVE_S = 30
+MAX_EXTRA = 3                     # coins opened from More coins with a full dashboard at once
+EXTRA_IDLE_S = 600                # an opened coin nobody has viewed for this long is closed
 
 log = logging.getLogger("analytix.runtime")
 
@@ -82,10 +88,16 @@ class Runtime:
         self.bars_db = bars_db if mode == "live" else None
         self.backfill_enabled = backfill_enabled and mode == "live"
         self.store: BarStore | None = None
+        self.event_store: EventStore | None = None
         self._broadcasts = 0
         self.planner = PlannerService(self)
         self.alerts = AlertService(self, alerts_file)
         self.positions = PositionWatch(self, watch_file)
+        self.scanner = Scanner(self)
+        self.scanner.on_top_change = self._resubscribe_aux
+        self.aux: HyperliquidClient | None = None       # second socket: scanner trades and coins opened from More coins
+        self.extra: dict[str, float] = {}               # coin opened from More coins → when it was last viewed
+        self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
     def pipeline(self, coin: str | None = None) -> Pipeline:
@@ -124,11 +136,17 @@ class Runtime:
             self._tasks.append(asyncio.create_task(self._backfill(), name="backfill"))
         if self.mode == "live":
             self._tasks.append(asyncio.create_task(self._heartbeat(), name="heartbeat"))
+            self._tasks.append(asyncio.create_task(self._save_events_loop(), name="events"))
+            self.aux = HyperliquidClient([], self._on_aux, FeedStatus(mode="live"))
+            self._tasks.append(asyncio.create_task(self.aux.run(), name="aux"))
+            self._tasks.append(asyncio.create_task(self._extras_loop(), name="extras"))
+        await self.scanner.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
 
     async def stop(self) -> None:
+        await self.scanner.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
@@ -136,6 +154,9 @@ class Runtime:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._recorder:
             self._recorder.close()
+        self._save_events()
+        if self.event_store:
+            self.event_store.close()
         if self.store:
             self.store.close()
 
@@ -154,9 +175,132 @@ class Runtime:
         except Exception:
             log.exception("could not open the bar history at %s, so long windows will start empty", self.bars_db)
             self.store = None
+        try:
+            self.event_store = EventStore(self.bars_db)
+            since = int(time.time() * 1000) - KEEP_MS
+            self.event_store.prune(since)
+            for coin, pipe in self.pipelines.items():
+                an = pipe.analyzer
+                an.archived_moves = self.event_store.load(coin, "move", since, EVENTS_KEPT)
+                an.archived_market = self.event_store.load(coin, "market", since, EVENTS_KEPT)
+                log.info("loaded %d saved events for %s", len(an.archived_moves) + len(an.archived_market), coin)
+        except Exception:
+            log.exception("could not open the saved event log, so it starts empty")
+            self.event_store = None
+
+    def _save_events(self) -> None:
+        """Write new and changed events to disk (live mode), so a restart doesn't empty the event log."""
+        if not self.event_store:
+            return
+        for coin in list(self.pipelines):
+            self._save_coin_events(coin)
+
+    def _save_coin_events(self, coin: str) -> None:
+        from api.serializers import market_record, move_record
+        pipe = self.pipelines.get(coin)
+        if not self.event_store or pipe is None:
+            return
+        an, rows = pipe.analyzer, []
+        for e in an.events.recent(EVENTS_KEPT):              # only what's new or changed since the last save
+            fp = (e.peak_ms, e.ended_ms)
+            if self._saved_fp.get((coin, "m", e.id)) != fp:
+                self._saved_fp[(coin, "m", e.id)] = fp
+                rows.append(move_record(e))
+        for e in an.market_events():
+            fp = (e.title, e.detail)
+            if self._saved_fp.get((coin, "x", e.id, e.ts)) != fp:
+                self._saved_fp[(coin, "x", e.id, e.ts)] = fp
+                rows.append(market_record(e))
+        if rows:
+            self.event_store.save(coin, rows)
+
+    async def _save_events_loop(self, every_s: float = EVENTS_SAVE_S) -> None:
+        while True:
+            await asyncio.sleep(every_s)
+            try:
+                self._save_events()
+            except Exception:
+                log.exception("saving the event log failed")
+
+    # ── More coins: dashboards opened on demand ─────────────────────────────
+    def open_coin(self, coin: str) -> bool:
+        """Make sure `coin` has a live pipeline. Coins outside the configured list are opened on demand (live
+        mode, any listed perp), up to MAX_EXTRA at a time, and closed again once nobody has viewed them for a
+        while. Returns False when it can't be opened."""
+        if coin in self.pipelines:
+            if coin in self.extra:
+                self.extra[coin] = time.time()
+            return True
+        if self.mode != "live" or not self.scanner.knows(coin):
+            return False
+        if len(self.extra) >= MAX_EXTRA:
+            viewed = set(self.clients.values())
+            idle = [c for c in self.extra if c not in viewed]
+            if not idle:
+                return False
+            self.close_coin(min(idle, key=lambda c: self.extra[c]))
+        pipe = Pipeline(coin)
+        since = int(time.time() * 1000) - BAR_HISTORY_S * 1000
+        if self.store:
+            pipe.state.merge_bars(self.store.load(coin, since))
+            pipe.state.on_bar = self.store.save
+        if self.event_store:
+            keep = int(time.time() * 1000) - KEEP_MS
+            pipe.analyzer.archived_moves = self.event_store.load(coin, "move", keep, EVENTS_KEPT)
+            pipe.analyzer.archived_market = self.event_store.load(coin, "market", keep, EVENTS_KEPT)
+        self.scanner.states.pop(coin, None)
+        self.pipelines[coin] = pipe
+        self.extra[coin] = time.time()
+        self._resubscribe_aux()
+        if self.backfill_enabled:
+            asyncio.get_running_loop().create_task(self._backfill_one(coin))
+        log.info("opened %s from More coins", coin)
+        return True
+
+    def close_coin(self, coin: str) -> None:
+        if coin not in self.extra:
+            return
+        self._save_coin_events(coin)
+        self.extra.pop(coin, None)
+        self.pipelines.pop(coin, None)
+        self._resubscribe_aux()
+        log.info("closed %s (nobody viewing it)", coin)
+
+    def _resubscribe_aux(self) -> None:
+        if self.aux is None:
+            return
+        subs = [trade_subscription(c) for c in self.scanner.trade_coins()]
+        subs += [s for c in self.extra for s in subscriptions(c)]
+        self.aux.set_subscriptions(subs)
+
+    def _on_aux(self, msg: dict[str, Any]) -> None:
+        coin = coin_of(msg) or ""
+        if coin in self.extra and coin in self.pipelines:
+            self.pipelines[coin].on_message(msg)
+        else:
+            self.scanner.on_message(msg)
+
+    async def _extras_loop(self, every_s: float = 60) -> None:
+        while True:
+            await asyncio.sleep(every_s)
+            viewed, now = set(self.clients.values()), time.time()
+            for coin in list(self.extra):
+                if coin in viewed:
+                    self.extra[coin] = now
+                elif now - self.extra[coin] > EXTRA_IDLE_S:
+                    self.close_coin(coin)
+
+    async def _backfill_one(self, coin: str) -> None:
+        try:
+            bars = await backfill(coin, BAR_HISTORY_S)
+            pipe = self.pipelines.get(coin)
+            if pipe is not None:
+                log.info("backfill %s: %d candles merged", coin, pipe.state.merge_bars(bars))
+        except Exception as exc:
+            log.warning("backfill for %s failed: %s", coin, exc)
 
     async def _backfill(self) -> None:
-        for coin, pipe in self.pipelines.items():
+        for coin, pipe in list(self.pipelines.items()):
             try:
                 bars = await backfill(coin, BAR_HISTORY_S)
                 added = pipe.state.merge_bars(bars)

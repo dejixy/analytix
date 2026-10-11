@@ -2,7 +2,9 @@
 Live Hyperliquid WebSocket client.
 
 Subscribes to trades, l2Book and activeAssetCtx for each coin on one socket, keeps it
-alive with pings, and reconnects with exponential backoff. Every raw message is
+alive with pings, and reconnects with exponential backoff. What a socket listens to can
+change while it runs (set_subscriptions): the second, unrecorded socket follows the
+scanner's most traded coins and any coin opened from More coins. Every raw message is
 handed to `on_message` untouched: parsing happens downstream so live and
 replay share one code path.
 """
@@ -39,24 +41,49 @@ class HyperliquidClient:
         self.url = url
         self.recorder = recorder
         self.status.source = url
+        self._subs: dict[str, dict] = {_key(s): s for c in coins for s in subscriptions(c)}
+        self._ws = None
+
+    def set_subscriptions(self, subs: list[dict]) -> None:
+        """Listen to exactly these feeds from now on; takes effect at once if connected, else on connect."""
+        wanted = {_key(s): s for s in subs}
+        added = [s for k, s in wanted.items() if k not in self._subs]
+        removed = [s for k, s in self._subs.items() if k not in wanted]
+        self._subs = wanted
+        ws = self._ws
+        if ws is None:
+            return
+        for s in removed:
+            asyncio.create_task(self._send(ws, {"method": "unsubscribe", "subscription": s["subscription"]}))
+        for s in added:
+            asyncio.create_task(self._send(ws, s))
+
+    @staticmethod
+    async def _send(ws, msg: dict) -> None:
+        try:
+            await ws.send(json.dumps(msg))
+        except Exception as exc:                  # the socket is closing: the next connect resubscribes
+            log.debug("couldn't send %s: %s", msg, exc)
 
     async def run(self) -> None:
         backoff = 1.0
         while True:
             try:
                 async with websockets.connect(self.url, ping_interval=None, open_timeout=10, max_size=2**23) as ws:
-                    for coin in self.coins:
-                        for sub in subscriptions(coin):
-                            await ws.send(json.dumps(sub))
+                    for sub in list(self._subs.values()):
+                        await ws.send(json.dumps(sub))
+                    self._ws = ws
                     self.status.connected = True
                     self.status.last_error = None
-                    log.info("connected to %s, subscribed to %s", self.url, ", ".join(self.coins))
+                    coins = sorted({s["subscription"].get("coin", "") for s in self._subs.values()})
+                    log.info("connected to %s, subscribed to %s", self.url, ", ".join(coins) or "nothing yet")
                     backoff = 1.0
                     pinger = asyncio.create_task(self._ping(ws))
                     try:
                         async for raw in ws:
                             self._handle(raw)
                     finally:
+                        self._ws = None
                         pinger.cancel()
             except asyncio.CancelledError:
                 raise
@@ -85,3 +112,7 @@ class HyperliquidClient:
         while True:
             await asyncio.sleep(PING_INTERVAL_S)
             await ws.send(json.dumps({"method": "ping"}))
+
+
+def _key(sub: dict) -> str:
+    return json.dumps(sub.get("subscription"), sort_keys=True)

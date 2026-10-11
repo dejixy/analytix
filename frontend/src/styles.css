@@ -493,3 +493,30 @@ tr.wall td { color: var(--ink); }
 .pw-wallet-head h3 { margin: 0; }
 .pw-sub { font-size: 10.5px; margin-top: 2px; }
 .pw-name { width: 130px !important; flex: 0 0 auto !important; }
+
+/* More coins (the scanner) */
+.scan-head { flex-wrap: wrap; gap: 4px 12px; }
+.scan-tools { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 12px 8px; }
+.scan-search { width: 180px !important; }
+.scan-scroll { overflow-x: auto; }
+.scan-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.scan-table th { text-align: right; font-weight: 500; color: var(--muted); font-size: 10.5px; padding: 6px 8px; white-space: nowrap;
+  border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+.scan-table th.sortable { cursor: pointer; }
+.scan-table th.sortable:hover, .scan-table th.on { color: var(--ink); }
+.scan-table td { text-align: right; padding: 6px 8px; border-top: 1px solid var(--grid); white-space: nowrap; vertical-align: top; }
+.scan-table .left, .scan-table th .left-label { text-align: left; }
+.scan-table th:last-child { text-align: left; }
+.scan-table tbody tr { cursor: pointer; }
+.scan-table tbody tr:hover { background: var(--surface-2); }
+.scan-table tr.hot td:first-child { box-shadow: inset 2px 0 0 var(--up); }
+.scan-table .sub { display: block; font-size: 10px; color: var(--muted); }
+.scan-table .sub.up { color: var(--up); }
+.scan-table .sub.down { color: var(--down); }
+.scan-tag { margin-left: 6px; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+  border: 1px solid var(--border); padding: 0 4px; border-radius: 2px; }
+.scan-why { white-space: normal !important; min-width: 260px; }
+.scan-reason { display: inline-block; margin: 0 4px 3px 0; padding: 1px 6px; border: 1px solid var(--border);
+  border-radius: 2px; background: var(--surface-2); color: var(--ink); font-size: 10.5px; }
+.extra-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11.5px; padding: 6px 2px 8px; }
+.extra-bar .muted { font-size: 10.5px; }

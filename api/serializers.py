@@ -61,6 +61,26 @@ def event_dict(ev: MoveEvent) -> dict:
     }
 
 
+def move_record(ev: MoveEvent) -> tuple[str, str, int, dict]:
+    """A move event as stored across restarts: a key that stays unique when the engine's ids start over."""
+    key = f"move-{ev.window}-{ev.started_ms}"
+    return key, "move", ev.peak_ms, {**event_dict(ev), "id": key, "active": False}
+
+
+def market_record(ev) -> tuple[str, str, int, dict]:
+    key = f"{ev.id}@{ev.ts}"
+    return key, "market", ev.ts, {**to_jsonable(ev), "id": key}
+
+
+def event_feed(an, limit: int) -> tuple[list[dict], list[dict]]:
+    """The newest move events and market events, this run's first and then the ones saved before a restart."""
+    moves = [event_dict(e) for e in an.events.recent(limit)] + an.archived_moves
+    moves.sort(key=lambda d: -(d.get("peak_ms") or 0))
+    market = [to_jsonable(e) for e in an.market_events()] + an.archived_market
+    market.sort(key=lambda d: -(d.get("ts") or 0))
+    return moves[:limit], market[:limit]
+
+
 def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int = 30,
                    include_bars: bool = True) -> dict:
     pipe = runtime.pipeline(coin)
@@ -105,7 +125,8 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
     return to_jsonable({
         "coin": st.coin,
         "coins": runtime.coins,
-        "tickers": {c: _ticker(p) for c, p in runtime.pipelines.items()},
+        "tickers": {c: _ticker(runtime.pipelines[c]) for c in runtime.coins if c in runtime.pipelines},
+        "extra": st.coin not in runtime.coins,
         "now_ms": st.now_ms,
         "feed": runtime.status.to_dict(),
         "windows": WINDOWS,
@@ -118,8 +139,7 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
         "series": [[t, m] for t, m in st.mid_series(MAX_TICK_WINDOW_S, step_ms=_chart_step_ms())],
         "chart_span_s": MAX_TICK_WINDOW_S,
         **({"bar_series": bar_series(st)} if include_bars else {}),
-        "events": [event_dict(e) for e in an.events.recent(events_limit)],
-        "market_events": sorted(an.market_events(), key=lambda e: -e.ts)[:events_limit],
+        **dict(zip(("events", "market_events"), event_feed(an, events_limit))),
         "levels": [{"side": t.side, "price": t.price, "absorbed": t.absorbed, "window": t.window,
                     "created_ms": t.created_ms} for t in an.levels.active()],
         "walls": {

@@ -4,9 +4,18 @@ export function fmtPrice(p) {
   return p.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
-export const fmtPct = (x, digits = 2) => (x == null ? "-" : `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(digits)}%`);
+const round0 = (x, digits) => (Math.abs(x) < 0.5 * 10 ** -digits ? 0 : x);   // no "−0.00"
+export const fmtPct = (x, digits = 2) => {
+  if (x == null) return "-";
+  const v = round0(x, digits);
+  return `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(digits)}%`;
+};
 
-export const fmtSigned = (x, digits = 2) => (x == null ? "-" : `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(digits)}`);
+export const fmtSigned = (x, digits = 2) => {
+  if (x == null) return "-";
+  const v = round0(x, digits);
+  return `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(digits)}`;
+};
 
 export function fmtUsd(x) {
   if (x == null) return "-";
