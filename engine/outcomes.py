@@ -392,6 +392,46 @@ def fair_series(m: Market, prices: list[tuple[int, float]], sigma_s: float | Non
     return out
 
 
+def trade_edge(fair: float | None, bid: float | None, ask: float | None) -> float | None:
+    """How far the fair odds sit outside the prices you can trade, in points: positive when fair is above the ask
+    (buy Yes), negative when it's below the bid (sell Yes, i.e. buy No), 0 inside the spread. Never measured
+    against a last trade or mark, which on a thin market can be days old."""
+    if fair is None or (bid is None and ask is None):
+        return None
+    if ask is not None and fair > ask:
+        return (fair - ask) * 100
+    if bid is not None and fair < bid:
+        return (fair - bid) * 100
+    return 0.0
+
+
+def ladder_check(rows: list[dict]) -> list[dict]:
+    """Price markets on one asset closing at the same moment: "above" a higher line can never be likelier than
+    "above" a lower one. When the higher line's Yes sells (bid) for more than the lower line's Yes costs (ask),
+    buying Yes on the lower and No on the higher pays at least $1 whatever happens, for less than $1.
+    rows: {"id", "kind", "threshold", "expiry_ms", "bid", "bid_sz", "ask", "ask_sz"}."""
+    found = []
+    by_close: dict[int, list[dict]] = defaultdict(list)
+    for r in rows:
+        if r.get("kind") == "price" and r.get("threshold") is not None and r.get("expiry_ms"):
+            by_close[r["expiry_ms"]].append(r)
+    for group in by_close.values():
+        group.sort(key=lambda r: r["threshold"])
+        for i, lo in enumerate(group):
+            for hi in group[i + 1:]:
+                if lo.get("ask") is None or hi.get("bid") is None or hi["threshold"] <= lo["threshold"]:
+                    continue
+                locked = hi["bid"] - lo["ask"]
+                if locked >= MIN_LOCKED_EDGE:
+                    pairs = min(lo.get("ask_sz") or 0, hi.get("bid_sz") or 0)
+                    a, b = fmt_line(lo["threshold"]), fmt_line(hi["threshold"])
+                    found.append({"low": lo["id"], "high": hi["id"], "locked": locked, "pairs": pairs, "note": (
+                        f"Above {b} sells for {hi['bid'] * 100:.1f}¢ but above {a} costs {lo['ask'] * 100:.1f}¢. Price "
+                        f"can't end above {b} without ending above {a}, so Yes on {a} plus No on {b} locks in "
+                        f"{locked * 100:.1f}¢ a pair ({pairs:,.0f} pairs at these prices, before fees).")})
+    return sorted(found, key=lambda f: -f["locked"])
+
+
 # ── questions: do the odds add up? ──────────────────────────────────────────
 @dataclass(slots=True)
 class SumCheck:

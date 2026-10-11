@@ -36,7 +36,9 @@ function until(ms, now) {
 function marketNote(r) {
   if (r.settled) return "Settled.";
   if (r.edge != null && Math.abs(r.edge) >= 5) {
-    return `Yes looks ${r.edge > 0 ? "cheap" : "rich"}: fair odds ${pct(r.fair)} vs the market's ${pct(r.odds)}.`;
+    return r.edge > 0
+      ? `Fair odds ${pct(r.fair)} are above the ask (${bidAsk(null, r.ask).split(" / ")[1]}): Yes looks cheap.`
+      : `Fair odds ${pct(r.fair)} are below the bid (${bidAsk(r.bid, null).split(" / ")[0]}): Yes looks rich.`;
   }
   if (r.bid == null && r.ask == null) return "Nobody is quoting it yet.";
   if (r.spread != null && r.spread > 10) return `Wide spread (${r.spread.toFixed(0)} pts): the odds come from the last trade.`;
@@ -147,13 +149,15 @@ function EventCard({ ev, now, onOpen, onEvent }) {
 }
 
 /** Every price market on one asset, as a ladder: when it closes, the line, the market's odds and the fair odds. */
-function PriceCard({ g, now, sort, onOpen }) {
+function PriceCard({ g, now, sort, onOpen, ladders }) {
   const [all, setAll] = useState(false);
   const rows = [...g.rows].sort(sort === "edge"
     ? (a, b) => Math.abs(b.edge ?? 0) - Math.abs(a.edge ?? 0)
     : (a, b) => (a.expiry_ms - b.expiry_ms) || (a.threshold - b.threshold));
   const shown = all ? rows : rows.slice(0, 8);
   const venues = [...new Set(g.rows.map((r) => r.venue_name))];
+  const ids = new Set(g.rows.map((r) => r.id));
+  const notes = (ladders || []).filter((n) => ids.has(n.low) && ids.has(n.high)).slice(0, 2);
   const vol = sumBy(g.rows, (r) => r.volume_24h);
   return (
     <article className="oc-card">
@@ -169,20 +173,24 @@ function PriceCard({ g, now, sort, onOpen }) {
           <tr>
             <th>Closes</th>
             <th title="Yes if the price ends at or above the line (or touches it, for touch markets)">Line</th>
-            <th title="The market's odds for Yes">Market</th>
-            <th title="The chance from the perp's live price and how much it has been moving">Fair</th>
-            <th title="Fair minus market, in points. Positive: Yes looks cheap. Negative: Yes looks rich">Gap</th>
+            <th title="The best price someone will pay for Yes (sell Yes here)">Bid</th>
+            <th title="The best price someone will sell Yes for (buy Yes here)">Ask</th>
+            <th title="The chance from the perp's live price and how much it moves (the last 12 hours for markets closing within 6 hours, the last 2 weeks for longer ones)">Fair</th>
+            <th title="How far fair odds sit outside the bid and ask, in points. Positive: fair is above the ask (Yes looks cheap). Negative: fair is below the bid (Yes looks rich). Blank: fair is inside the spread">Edge</th>
           </tr>
         </thead>
         <tbody>
           {shown.map((r) => (
-            <tr key={r.id} onClick={() => onOpen(r.id)} title={`${r.title}\nBid / ask for Yes: ${bidAsk(r.bid, r.ask)}`}
-              className={r.odds == null ? "dim" : ""}>
+            <tr key={r.id} onClick={() => onOpen(r.id)} className={r.bid == null && r.ask == null ? "dim" : ""}
+              title={`${r.title}${r.volume_24h ? `\nTraded today: ${fmtUsd(r.volume_24h)}` : "\nNo trades today"}`}>
               <td>{until(r.expiry_ms, now).replace("in ", "")}</td>
               <td>{lineText(r)}</td>
-              <td className="num"><b>{pct(r.odds)}</b></td>
+              <td className="num">{r.bid == null ? "-" : cents(r.bid)}</td>
+              <td className="num">{r.ask == null ? "-" : cents(r.ask)}</td>
               <td className="num">{pct(r.fair)}</td>
-              <td className={`num ${cls(r.edge)}`}>{r.edge == null ? "-" : `${r.edge >= 0 ? "+" : "−"}${Math.abs(r.edge).toFixed(0)}`}</td>
+              <td className={`num ${cls(r.edge)}`}>
+                {r.edge == null || Math.abs(r.edge) < 0.5 ? "" : `${r.edge > 0 ? "+" : "−"}${Math.abs(r.edge).toFixed(0)}`}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -190,6 +198,7 @@ function PriceCard({ g, now, sort, onOpen }) {
       {rows.length > 8 && (
         <button className="oc-more" onClick={() => setAll(!all)}>{all ? "Show fewer" : `+${rows.length - 8} more`}</button>
       )}
+      {notes.map((n) => <div key={`${n.low}-${n.high}`} className="oc-card-note oc-edge">{n.note}</div>)}
     </article>
   );
 }
@@ -314,7 +323,7 @@ function MarketList({ onOpen, onEvent }) {
             <>
               <h3 className="oc-section">Price markets <span className="muted">{nPrice} on {prices.length} assets</span></h3>
               <div className="oc-grid oc-grid-wide">
-                {prices.map((g) => <PriceCard key={g.asset} g={g} now={now} sort={sort} onOpen={onOpen} />)}
+                {prices.map((g) => <PriceCard key={g.asset} g={g} now={now} sort={sort} onOpen={onOpen} ladders={data.ladders} />)}
               </div>
             </>
           )}
@@ -754,10 +763,12 @@ function MarketPage({ id, onBack, onOpen, onEvent }) {
             <div className="tile"><div className="tile-label">Volume 24h</div><div className="tile-value">{fmtUsd(r.volume_24h)}</div>
               <div className="tile-sub">held {fmtUsd(r.open)}</div></div>
             {d.fair && (
-              <div className="tile" title={`If ${(r.underlying || "").split(":").pop()} keeps moving like it has over the last 12 hours (about ${d.fair.sigma_day_pct?.toFixed(1)}% a day), with no trend. A simple estimate to compare against, not advice.`}>
+              <div className="tile" title={`If ${(r.underlying || "").split(":").pop()} keeps moving like it has over ${d.fair.window} (about ${d.fair.sigma_day_pct?.toFixed(1)}% a day), with no trend. A simple estimate to compare against, not advice.`}>
                 <div className="tile-label">Fair odds</div><div className="tile-value">{pct(d.fair.odds)}</div>
                 <div className={`tile-sub ${cls(r.edge)}`}>
-                  {r.edge == null ? "" : r.edge >= 0 ? `Yes ${Math.abs(r.edge).toFixed(0)} pts cheap` : `Yes ${Math.abs(r.edge).toFixed(0)} pts rich`}
+                  {r.edge == null ? "no orders to compare"
+                    : Math.abs(r.edge) < 0.5 ? "inside the bid / ask"
+                    : r.edge > 0 ? `${r.edge.toFixed(0)} pts above the ask` : `${Math.abs(r.edge).toFixed(0)} pts below the bid`}
                   {d.fair.spot ? ` · now ${d.fair.spot.toLocaleString()}` : ""}
                 </div>
               </div>
