@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 160 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 166 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -144,6 +144,7 @@ The four signals say *what happened*. These reads turn them into things a trader
 | **Walls: real or pulled** | order book `wall` tags and `real · pulled` counts; Book depth summary | Levels ≥ 4× the median visible level and ≥ 2 sweeps' worth of USD, followed until they go. Eaten = at least half of what vanished was traded; pulled = vanished unfilled with price within 10 bps. | "Asks +94%" may be bait. If the stacking side keeps pulling its walls, the Book depth summary says so. Hyperliquid shows 20 levels a side, so this only sees walls near the touch. |
 | **Percentiles** | Positions row: `−1.40% (−$21.3M) · top 5%`; Positioning panel | Funding vs the past week's hourly readings; each window's open interest change vs every one over the same timeframe in the saved live bars. | Normal for one coin is extreme for another. A percentile says whether this move is unusual for *this* coin. |
 | **Timeframe agreement** | ▲/▼ on each tab; `Buying on 1m and 10m, selling on 60m` beside them | Which way aggressive flow leans (strength ≥ 0.25) on 1m, 10m, 60m. | Aligned flow is a trend; short-term flow pushing against the 60m is a pullback or a turn. |
+| **Where it started** | card footer: `started on Binance`, `moved with Binance`, `started on Hyperliquid`, `Hyperliquid only`; Why panel; cascade and volatility alerts | Binance and Bybit perps' best bid and ask (public feeds, recorded alongside Hyperliquid's) over the move: the whole 1m window, or the sharpest minute of 10m and 60m. If the other exchange moved under 30% as far, the move was Hyperliquid's own. Otherwise the standard lead-lag test: both prices on a 0.25s grid, the shift (up to ±10s) where their changes match best is how far one led. ≥ 1s either way names the leader; less is "moved with". No good match, no claim. | A market-wide move arriving here and a Hyperliquid-only move (a local cascade, a whale) are different trades: the second tends to get pulled back toward other exchanges' prices by arbitrage. |
 
 ### Running Analytix on the server
 
@@ -320,6 +321,8 @@ The recorder prints how many MB the current hour has taken, so you can see your 
 | `ANALYTIX_ALERTS_FILE` | `data/alerts.json` | alert settings, price levels and the Telegram bot token |
 | `ANALYTIX_RECORD_FILE` | none | in live mode, also record raw messages to this one file |
 | `ANALYTIX_LIQUIDATORS` | none | comma-separated addresses |
+| `ANALYTIX_EXTERNAL` | `binance,bybit` | other exchanges to compare with for "where it started" (live mode); empty to turn off |
+| `ANALYTIX_BINANCE_WS` / `ANALYTIX_BYBIT_WS` | their public futures feeds | override the exchange WebSocket addresses |
 | `ANALYTIX_BACKFILL` | `1` | `0` to skip downloading price candles on start |
 | `ANALYTIX_BARS_DB` | `data/bars.sqlite` | where live minute bars are saved (live mode only) |
 

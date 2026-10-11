@@ -21,6 +21,7 @@ import html
 import time
 from dataclasses import dataclass, field
 
+from engine.origin import origin_alert_line
 from models.orderModel import AggressiveOrder
 from models.tradeModel import TradeSide
 from signals.base import fmt_px, fmt_usd
@@ -123,8 +124,10 @@ class AlertEngine:
 
         ctx = self._context(an)
         if self._on("cascade"):
+            ex1 = an.latest.get("1m")
+            where = (origin_alert_line(ex1.origin),) if ex1 is not None and ex1.origin else ()
             for t in new_cascades:
-                out += self._cascade(coin, t, st, now, ctx)
+                out += self._cascade(coin, t, st, now, where + ctx)
         if self._on("liquidation"):
             for (wallet, start), (side, usd, px) in liqs.items():
                 if usd >= self.rules["liquidation"]["min_usd"]:
@@ -177,7 +180,8 @@ class AlertEngine:
                     f"vol-{coin}-{now}", coin, "volatility", now, ex.move.direction.value,
                     f"{coin} is moving fast: the last 10 minutes covered {rr:.1f}× the normal range",
                     (f"Between {fmt_px(ex.move.low)} and {fmt_px(ex.move.high)}, now {fmt_px(ex.move.end_price)} "
-                     f"({_pct(ex.move.move_bps / 100)} in 10m).",)), (coin, "volatility"))
+                     f"({_pct(ex.move.move_bps / 100)} in 10m).",)
+                    + ((origin_alert_line(ex.origin),) if ex.origin else ())), (coin, "volatility"))
         return out
 
     # ── pieces ───────────────────────────────────────────────────────────

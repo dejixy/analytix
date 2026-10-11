@@ -18,6 +18,10 @@ if COIN not in COINS:
     COINS.insert(0, COIN)
 HL_WS_URL = os.getenv("ANALYTIX_WS_URL", "wss://api.hyperliquid.xyz/ws")
 HL_INFO_URL = os.getenv("ANALYTIX_INFO_URL", "https://api.hyperliquid.xyz/info")
+# Other exchanges' prices, for "where did the move start?" (live mode; empty ANALYTIX_EXTERNAL turns it off)
+EXTERNAL_VENUES = tuple(v.strip() for v in os.getenv("ANALYTIX_EXTERNAL", "binance,bybit").split(",") if v.strip())
+BINANCE_WS_URL = os.getenv("ANALYTIX_BINANCE_WS", "wss://fstream.binance.com/stream")
+BYBIT_WS_URL = os.getenv("ANALYTIX_BYBIT_WS", "wss://stream.bybit.com/v5/public/linear")
 
 # ── Timeframes ──────────────────────────────────────────────────────────────
 WINDOWS: dict[str, int] = {

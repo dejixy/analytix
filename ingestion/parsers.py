@@ -16,6 +16,7 @@ from typing import Any
 from config import LIQUIDATOR_ADDRESSES
 from models.bookModel import BookLevel, OrderBook
 from models.contextModel import AssetContext
+from models.externalModel import ExternalQuote
 from models.tradeModel import Trade, TradeSide
 from state import Event
 
@@ -92,6 +93,11 @@ def parse_message(msg: dict[str, Any], coin: str) -> list[Event]:
         return [parse_book(data)]
     if channel == "activeAssetCtx" and data.get("coin") == coin and "ctx" in data:
         return [parse_asset_ctx(data)]
+    if channel == "ext" and data.get("coin") == coin:            # another exchange's quote (ingestion/external.py)
+        try:
+            return [ExternalQuote(int(data["ts"]), str(data["venue"]), coin, float(data["bid"]), float(data["ask"]))]
+        except (KeyError, TypeError, ValueError):
+            return []
     return []
 
 

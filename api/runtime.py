@@ -27,6 +27,7 @@ from config import (
     BROADCAST_INTERVAL_S,
     COIN,
     COINS,
+    EXTERNAL_VENUES,
     RECORD,
     RECORD_DIR,
     RECORD_FILE,
@@ -41,6 +42,7 @@ from api.planner import PlannerService
 from api.positions import PositionWatch
 from api.scanner import Scanner
 from ingestion.backfill import backfill
+from ingestion.external import ExternalFeed
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
 from ingestion.parsers import coin_of, subscriptions, trade_subscription
@@ -97,6 +99,7 @@ class Runtime:
         self.scanner.on_top_change = self._resubscribe_aux
         self.aux: HyperliquidClient | None = None       # second socket: scanner trades and coins opened from More coins
         self.extra: dict[str, float] = {}               # coin opened from More coins → when it was last viewed
+        self.external: ExternalFeed | None = None       # Binance and Bybit prices, for where moves start
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -130,6 +133,9 @@ class Runtime:
                 log.info("recording the live feed to %s", RECORD_DIR)
             self._load_history()
             source = HyperliquidClient(self.coins, self.on_message, self.status, recorder=self._recorder)
+            if EXTERNAL_VENUES:
+                self.external = ExternalFeed(self.coins, self.on_message, recorder=self._recorder,
+                                             venues=EXTERNAL_VENUES)
         self._tasks = [asyncio.create_task(source.run(), name="source"),
                        asyncio.create_task(self._broadcast_loop(), name="broadcast")]
         if self.backfill_enabled:
@@ -140,6 +146,8 @@ class Runtime:
             self.aux = HyperliquidClient([], self._on_aux, FeedStatus(mode="live"))
             self._tasks.append(asyncio.create_task(self.aux.run(), name="aux"))
             self._tasks.append(asyncio.create_task(self._extras_loop(), name="extras"))
+            if self.external:
+                self._tasks.append(asyncio.create_task(self.external.run(), name="external"))
         await self.scanner.start()
         await self.alerts.start()
         await self.positions.start()
@@ -320,6 +328,9 @@ class Runtime:
             st = self.status
             line = (f"feed {'connected' if st.connected else 'reconnecting'} · {st.messages:,} messages · "
                     f"{st.reconnects} reconnects · {len(self.clients)} browsers")
+            if self.external:
+                line += " · " + ", ".join(f"{v} {'up' if s['connected'] else 'down'} ({s['quotes']:,} quotes)"
+                                          for v, s in self.external.status().items())
             if isinstance(self._recorder, HourlyRecorder):
                 line += (f" · recording this hour {self._recorder.hour_bytes / 1e6:.0f} MB"
                          + (" · PAUSED: disk nearly full" if self._recorder.paused else ""))
