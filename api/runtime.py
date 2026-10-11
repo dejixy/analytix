@@ -38,6 +38,7 @@ from config import (
     WATCH_FILE,
 )
 from api.alerts import AlertService
+from api.outcomes import OutcomeService
 from api.planner import PlannerService
 from api.positions import PositionWatch
 from api.scanner import Scanner
@@ -104,6 +105,7 @@ class Runtime:
         self.aux: HyperliquidClient | None = None       # second socket: scanner trades and coins opened from More coins
         self.extra: dict[str, float] = {}               # coin opened from More coins → when it was last viewed
         self.external: ExternalFeed | None = None       # Binance and Bybit prices, for where moves start
+        self.outcomes = OutcomeService(self)            # Hyperliquid's prediction markets (HIP-4), own socket
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -154,12 +156,14 @@ class Runtime:
             if self.external:
                 self._tasks.append(asyncio.create_task(self.external.run(), name="external"))
         await self.scanner.start()
+        await self.outcomes.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
 
     async def stop(self) -> None:
         await self.scanner.stop()
+        await self.outcomes.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
@@ -337,6 +341,10 @@ class Runtime:
             if self.external:
                 line += " · " + ", ".join(f"{v} {'up' if s['connected'] else 'down'} ({s['quotes']:,} quotes)"
                                           for v, s in self.external.status().items())
+            if self.outcomes.enabled:
+                o = self.outcomes
+                line += (f" · prediction markets: {len(o.markets)} listed, {len(o._followed)} followed, feed "
+                         f"{'up' if o.status.connected else 'down'}")
             if isinstance(self._recorder, HourlyRecorder):
                 line += (f" · recording this hour {self._recorder.hour_bytes / 1e6:.0f} MB"
                          + (" · PAUSED: disk nearly full" if self._recorder.paused else ""))

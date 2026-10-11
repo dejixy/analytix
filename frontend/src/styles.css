@@ -519,3 +519,19 @@ tr.wall td { color: var(--ink); }
   border-radius: 2px; background: var(--surface-2); color: var(--ink); font-size: 10.5px; }
 .extra-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11.5px; padding: 6px 2px 8px; }
 .extra-bar .muted { font-size: 10.5px; }
+
+/* ── Outcomes (prediction markets) ──────────────────────────────────────── */
+.oc-filters { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.scan-table tr.oc-q { cursor: default; background: var(--surface-2); }
+.scan-table tr.oc-q:hover { background: var(--surface-2); }
+.scan-table tr.oc-q .sub { display: inline; margin-left: 8px; }
+.scan-table tr.oc-child td.oc-name { padding-left: 22px; color: var(--ink-2); }
+.scan-table tr.oc-here td { background: var(--up-deep); }
+.oc-name { white-space: normal !important; min-width: 220px; max-width: 420px; }
+.scan-reason.oc-edge, .oc-note.oc-edge { border-color: var(--up); color: var(--up-bright); }
+.oc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.oc-why { margin: 12px 0 0; font-size: 13px; color: var(--ink); }
+.oc-how { margin: 6px 0 0; font-size: 11px; }
+.oc-note { margin: 0 0 8px; font-size: 11.5px; color: var(--ink-2); }
+.oc-push { margin-top: 8px; font-size: 10.5px; }
+.oc-chart { display: block; }

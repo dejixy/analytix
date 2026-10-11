@@ -13,6 +13,7 @@ import Planner from "./components/Planner.jsx";
 import AlertsPanel, { notifyEnabled } from "./components/AlertsPanel.jsx";
 import PositionWatch from "./components/PositionWatch.jsx";
 import Scanner from "./components/Scanner.jsx";
+import Outcomes from "./components/Outcomes.jsx";
 
 const FLOW_MIN_STRENGTH = 0.25;
 
@@ -51,6 +52,7 @@ export default function App() {
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [watchOpen, setWatchOpen] = useState(false);
   const [scanning, setScanning] = useState(false); // the More coins list is showing
+  const [predicting, setPredicting] = useState(false); // the prediction markets (Outcomes) view is showing
   const seenAlerts = useRef(null); // ids already shown, so only new alerts notify
 
   // Desktop notifications for new alerts while the dashboard sits in a background tab
@@ -147,16 +149,24 @@ export default function App() {
         onCoin={(c) => {
           setPinned(null);
           setScanning(false);
+          setPredicting(false);
           setCoin(c);
         }}
-        more={scanning || !!snap.extra}
-        onMore={() => setScanning(true)}
+        more={(scanning || !!snap.extra) && !predicting}
+        onMore={() => {
+          setPredicting(false);
+          setScanning(true);
+        }}
+        outcomes={predicting}
+        onOutcomes={() => setPredicting(true)}
         onPlan={() => setPlanning(true)}
         onAlerts={() => setAlertsOpen(true)}
         onPositions={() => setWatchOpen(true)}
       />
 
-      {scanning ? (
+      {predicting ? (
+        <Outcomes />
+      ) : scanning ? (
         <Scanner
           onOpen={(c) => {
             setPinned(null);
