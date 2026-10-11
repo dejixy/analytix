@@ -31,7 +31,8 @@ def health(request: Request):
                   for c, p in rt.pipelines.items()},
         "other_exchanges": rt.external.status() if rt.external else None,
         "speed_since_last_report": rt.perf.report(reset=False),
-        "prediction_markets": {"listed": len(rt.outcomes.markets), **rt.outcomes.feed_status()}
+        "prediction_markets": {"listed": len(rt.outcomes.markets), **rt.outcomes.feed_status(),
+                               "sources": rt.outcomes.intel.public_status()}
         if rt.outcomes.enabled else None,
         "feed": rt.status.to_dict(),
     }

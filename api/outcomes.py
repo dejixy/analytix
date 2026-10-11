@@ -25,6 +25,9 @@ from engine.outcomes import (
     VENUES, Book, Market, Question, build_markets, fair_above, fair_odds, fair_series, flow_of, ladder_check, odds,
     parse_levels, push_cost, sigma_per_sqrt_s, sum_check, trade_edge, who, why_line,
 )
+from api.intel import IntelService
+from engine.intel import best_trade, returns, rules_line
+from engine.sharp import resolved_value
 from ingestion.account import _num
 from ingestion.backfill import fetch_candles
 from ingestion.feedStatus import FeedStatus
@@ -49,6 +52,12 @@ TRADES_KEPT = 500
 BOOK_DEPTH = 20
 CANDLES_TTL_S = 120
 RANGES = {"12h": ("1m", 720), "2w": ("1h", 336)}
+FLOW_MARKETS = 100                   # the busiest markets also have their trades followed (sharp-wallet markouts)
+EDGE_MIN_EV = 0.03                   # the edge board: at least +3% expected value…
+EDGE_MIN_USD = 20                    # …and this many dollars available at that price
+EDGE_BOARD = 12
+EDGE_ALERT_USD = 50
+EDGE_WARMUP_SAMPLES = 4              # no edge alerts for the first two minutes: books and sources are still arriving
 EVENT_RANGES = {"12h": ("5m", 144), "2w": ("1h", 336)}   # lighter candles for an event's several lines
 CHART_LINES = 5                      # an event's chart shows its five likeliest outcomes
 
@@ -91,6 +100,11 @@ class OutcomeService:
         self._candles: dict[tuple, tuple[float, list]] = {}
         self._rest_books: dict[str, float] = {}
         self._followed: set[int] = set()
+        self._flow: set[int] = set()                     # markets whose trades are followed for sharp-wallet markouts
+        self.last_odds: dict[int, float] = {}            # outcome → its latest odds (how it ended, once it's gone)
+        self._edge_armed: dict[tuple, bool] = {}
+        self._samples_taken = 0
+        self.intel = IntelService(self)
         self.updated_ms: int | None = None
         self.error: str | None = None
         self.status = FeedStatus(mode="live")
@@ -113,11 +127,13 @@ class OutcomeService:
                  ("outcomes-samples", self._sample_loop()), ("outcomes-vol", self._vol_loop()),
                  ("outcomes-dex", self._dex_loop()), ("outcomes-idle", self._idle_loop()))
         self._tasks = [asyncio.create_task(coro, name=name) for name, coro in loops]
+        await self.intel.start(getattr(self.rt, "bars_db", None))
 
     async def stop(self) -> None:
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        await self.intel.stop()
 
     async def _meta_loop(self) -> None:
         while True:
@@ -164,6 +180,11 @@ class OutcomeService:
     async def refresh_meta(self) -> None:
         meta = await self.fetch_meta()
         markets, questions = build_markets(meta if isinstance(meta, dict) else {})
+        for gone in [o for o in self.markets if o not in markets]:          # settled: note how it ended
+            result = resolved_value(self.last_odds.pop(gone, None))
+            row = self.intel.calib.resolve(gone, result) if result is not None else self.intel.calib.snaps.pop(gone, None)
+            if result is not None and row and self.intel.store:
+                self.intel.store.save_result(gone, row[1], result)
         self.markets, self.questions = markets, questions
         live = {m.yes_coin for m in markets.values()}
         for d in (self.books, self.ctx, self.last_px):
@@ -192,7 +213,10 @@ class OutcomeService:
         if self.sock is None:
             return
         subs = [s for m in followed for s in (_sub("l2Book", m.yes_coin), _sub("activeAssetCtx", m.yes_coin))]
-        subs += [_sub("trades", self.markets[o].yes_coin) for o in self.opened if o in self.markets]
+        busy = sorted((m for m in followed if ((self.ctx.get(m.yes_coin) or {}).get("volume") or 0) > 0),
+                      key=lambda m: -((self.ctx.get(m.yes_coin) or {}).get("volume") or 0))[:FLOW_MARKETS]
+        self._flow = {m.outcome for m in busy} | {o for o in self.opened if o in self.markets}
+        subs += [_sub("trades", self.markets[o].yes_coin) for o in self._flow]
         self.sock.set_subscriptions(subs)
 
     # ── the live feed ──────────────────────────────────────────────────────
@@ -209,9 +233,15 @@ class OutcomeService:
                                                     parse_levels(lv[1])[:BOOK_DEPTH])
         elif ch == "trades" and isinstance(data, list):
             by: dict[int, list] = {}
+            now = int(time.time() * 1000)
             for raw in data:
                 oid = outcome_of(raw.get("coin")) if isinstance(raw, dict) else None
-                if oid is not None and oid in self.trades:
+                if oid is None or oid not in self.markets:
+                    continue
+                row = trade_row(raw)
+                if row:
+                    self.intel.sharp.on_trade(oid, row, now)
+                if oid in self.trades:
                     by.setdefault(oid, []).append(raw)
             for oid, rows in by.items():
                 self.add_trades(oid, rows)
@@ -227,12 +257,29 @@ class OutcomeService:
         del have[:-TRADES_KEPT]
         self.last_px[self.markets[oid].yes_coin if oid in self.markets else f"#{10 * oid}"] = have[-1]["px"]
 
+    def mid_of(self, oid: int) -> float | None:
+        """The mid when the book is tight enough to mean something (for scoring markouts)."""
+        m = self.markets.get(oid)
+        b = self.books.get(m.yes_coin) if m else None
+        if not b or b.bid is None or b.ask is None or b.ask - b.bid > 0.10:
+            return None
+        return (b.bid + b.ask) / 2
+
     def sample(self, now: int) -> None:
+        cal, store = self.intel.calib, self.intel.store
         for m in self.markets.values():
             if m.outcome in self._followed:
                 p = self.quote(m)[4]
                 if p is not None:
                     self.samples.setdefault(m.outcome, deque(maxlen=SAMPLES_KEPT)).append((now, p))
+                    self.last_odds[m.outcome] = p
+                    if cal.note(m.outcome, m.expiry_ms, p, now) and store:
+                        store.save_snaps(m.outcome, cal.snaps[m.outcome])
+        self.intel.sharp.settle(now, self.mid_of)
+        self._samples_taken += 1
+        if self._samples_taken % 2 == 0:
+            self.intel.save()
+        self._edge_alerts(now)
         for perp in self.underlyings():
             px = self.spot(perp)
             if px:
@@ -306,7 +353,14 @@ class OutcomeService:
         c = self.ctx.get(m.yes_coin) or {}
         prev = c.get("prev_day")
         then = self._odds_then(m, now - 3_600_000, candles)
-        fair = self.fair(m, now) if m.kind in ("price", "touch") else None
+        model = self.fair(m, now) if m.kind in ("price", "touch") else None
+        ref = self.intel.reference(m, now)
+        if ref is None and model is not None:
+            ref = {"p": model, "source": "moves", "label": "Recent moves of the perp (no options market for it)"}
+        fair = ref["p"] if ref else None
+        days = (m.expiry_ms - now) / 86_400_000 if m.expiry_ms and m.expiry_ms > now else None
+        flow = self.intel.sharp.flow(m.outcome, now - 6 * 3_600_000)
+        news = self.intel.news_for(self.intel.news_key(m))
         return {
             "id": m.outcome, "title": m.title, "label": m.label, "sub": m.sub, "question": m.question, "venue": m.venue,
             "venue_name": m.venue_name, "kind": m.kind, "sides": list(m.sides), "template": m.template,
@@ -316,10 +370,51 @@ class OutcomeService:
             "chg_1h": (od - then) * 100 if od is not None and then is not None else None,
             "volume_24h": c.get("volume"), "open": c.get("open"), "expiry_ms": m.expiry_ms,
             "underlying": m.underlying, "spot": self.spot(m.underlying) if m.underlying else None,
-            "threshold": m.threshold, "fair": fair,
+            "threshold": m.threshold, "fair": fair, "fair_model": model,
             "edge": trade_edge(fair, bid, ask),
+            "ref": ref, "trade": best_trade(fair, bid, bsz, ask, asz, days) if fair is not None else None,
+            "yes_returns": returns(ask, days), "no_returns": returns(1 - bid if bid is not None else None, days),
+            "game": self.intel.chip(m),
+            "news": news if news and news["spike"] else None,
+            "sharp": {"net": flow["sharp_net"], "wallets": len(flow["sharp_wallets"])} if flow["sharp_wallets"] else None,
             "followed": m.outcome in self._followed, "settled": m.settled,
         }
+
+    def edges(self, rows: list[dict], now: int) -> list[dict]:
+        """The best trades right now: an independent chance against a price you can get, with real size behind it."""
+        out = []
+        for r in rows:
+            t = r.get("trade")
+            if not t or r["settled"] or not r["expiry_ms"] or r["expiry_ms"] <= now:
+                continue
+            if t["ev"] >= EDGE_MIN_EV and t["usd"] >= EDGE_MIN_USD:
+                out.append({"id": r["id"], "title": r["title"], "venue_name": r["venue_name"], "kind": r["kind"],
+                            "expiry_ms": r["expiry_ms"], "source": r["ref"]["source"], "label": r["ref"]["label"],
+                            "question": r["question"], **t})
+        return sorted(out, key=lambda e: -e["ev"])[:EDGE_BOARD]
+
+    def _edge_alerts(self, now: int) -> None:
+        svc = getattr(self.rt, "alerts", None)
+        rule = (svc.cfg["rules"].get("pm_edge") or {}) if svc is not None else {}
+        if svc is None or not rule.get("on") or self._samples_taken < EDGE_WARMUP_SAMPLES:
+            return
+        line = float(rule.get("min_ev_pct", 8.0)) / 100
+        sent = 0
+        for m in self.markets.values():
+            r = self.row(m, now)
+            t = r.get("trade")
+            if r["settled"] or not r["expiry_ms"] or r["expiry_ms"] <= now:
+                continue
+            for side in ("Yes", "No"):
+                key = (m.outcome, side)
+                hit = t is not None and t["side"] == side and t["ev"] >= line and t["usd"] >= EDGE_ALERT_USD
+                if hit and self._edge_armed.get(key, True):
+                    self._edge_armed[key] = False
+                    if sent < 3:
+                        svc.push(edge_alert(r, now))
+                        sent += 1
+                elif not hit and (t is None or t["side"] != side or t["ev"] < line / 2):
+                    self._edge_armed[key] = True
 
     def feed_status(self) -> dict:
         st = self.status
@@ -356,6 +451,9 @@ class OutcomeService:
             "markets": rows,
             "questions": questions,
             "ladders": ladders,
+            "edges": self.edges(rows, now),
+            "intel": self.intel.public_status(),
+            "calibration": self.intel.calib.table("6h"),
         }
 
     # ── one market's page ──────────────────────────────────────────────────
@@ -455,6 +553,21 @@ class OutcomeService:
             "question": None if q is None else {
                 "id": q.question, "title": q.title, "sub": q.sub, "sum": asdict(self.sum_for(q)),
                 "outcomes": [self.row(self.markets[o], now) for o in q.outcomes if o in self.markets]},
+            "intel": self.intel_block(m, q, oid, now),
+        }
+
+    def intel_block(self, m: Market, q: Question | None, oid: int, now: int) -> dict:
+        """Everything independent about one market, for its page."""
+        found = self.intel.game_of(m)
+        flow = self.intel.sharp.flow(oid, now - 6 * 3_600_000)
+        traded = {t.get("buyer") for t in self.trades.get(oid, [])} | {t.get("seller") for t in self.trades.get(oid, [])}
+        known = [self.intel.sharp.wallet_row(w) for w in traded if w]
+        known = sorted((w for w in known if w["label"]), key=lambda w: -abs(w["avg_2h"] or 0))[:6]
+        return {
+            "game": found[0] if found else None, "game_chip": self.intel.chip(m),
+            "news": self.intel.headlines_for(self.intel.news_key(m)),
+            "sharp": {**flow, "known_wallets": known, "summary": self.intel.sharp.summary()},
+            "rules": rules_line({**(q.fields if q else {}), **m.fields}, m.kind),
         }
 
     # ── one event's page (a question: several outcomes, one ends Yes) ───────
@@ -479,5 +592,25 @@ class OutcomeService:
             "question": {"id": q.question, "title": q.title, "sub": q.sub, "venue_name": VENUES.get(venue, venue or "Hyperliquid"),
                          "expiry_ms": q.expiry_ms, "starts_ms": q.starts_ms, "sum": asdict(self.sum_for(q))},
             "rows": rows, "series": series,
+            "game": (self.intel.matches.get(f"q{qid}") or (None,))[0],
+            "game_chip": self.intel.chip(self.markets[q.outcomes[0]]) if q.outcomes else None,
+            "news": self.intel.headlines_for(f"q{qid}"),
+            "rules": rules_line(q.fields, "sports"),
             "volume_24h": sum(r["volume_24h"] or 0 for r in rows), "open": sum(r["open"] or 0 for r in rows),
         }
+
+
+def edge_alert(r: dict, now: int):
+    from engine.alerts import Alert
+    t, ref = r["trade"], r["ref"]
+    closes = ""
+    if r.get("expiry_ms"):
+        mins = (r["expiry_ms"] - now) / 60_000
+        closes = f" Closes in {mins:.0f} minutes." if mins < 120 else f" Closes in {mins / 60:.0f} hours." if mins < 2880 \
+            else f" Closes in {mins / 1440:.0f} days."
+    title = f"{r['title']}: buy {t['side']} at {t['price'] * 100:.1f}¢"
+    lines = (f"Independent estimate {t['p'] * 100:.0f}% for {t['side']} ({ref['label']}).",
+             f"Expected value {t['ev'] * 100:+.0f}% per $1. A quarter-Kelly stake is {t['quarter_kelly'] * 100:.1f}% of a bankroll.",
+             f"{t['contracts']:,.0f} contracts (${t['usd']:,.0f}) available at that price.{closes}",
+             "Open it from Outcomes on the dashboard.")
+    return Alert(f"pm-{r['id']}-{t['side']}-{now}", "PM", "pm_edge", now, "neutral", title, lines)

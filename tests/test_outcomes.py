@@ -291,3 +291,65 @@ def test_fair_odds_use_volatility_that_suits_the_market_length():
     assert svc.sigma("BTC", 3600) is None
     del svc.vol[("ETH", "short")]
     assert svc.sigma("ETH", 3600) == 0.0002                            # falls back to what it has
+
+
+# ── independent reads wired into the list ─────────────────────────────────
+def _book(svc, oid, bid, ask, size="50"):
+    svc.on_message({"channel": "l2Book", "data": {"coin": f"#{oid * 10}", "time": 5, "levels": [
+        [{"px": bid, "sz": size, "n": 1}] if bid else [], [{"px": ask, "sz": size, "n": 1}] if ask else []]}})
+
+
+def test_price_markets_use_the_options_market_when_there_is_one():
+    from engine.options import build_surface
+    from tests.test_intel import _rows
+    svc = _svc()
+    asyncio.run(svc.refresh_meta())
+    m = svc.markets[11214]
+    now = int(time.time() * 1000)
+    m.expiry_ms = now + 3 * 86_400_000
+    svc.intel.surfaces["ETH"] = build_surface("ETH", _rows("ETH", fwd=2540.0, iv=lambda k: 60.0, days=(2, 9)), now)
+    _book(svc, 11214, "0.20", "0.25", "200")
+    r = svc.row(m, now)
+    assert r["ref"]["source"] == "options" and 0.4 < r["fair"] < 0.6
+    assert r["trade"]["side"] == "Yes" and r["trade"]["ev"] > 0.5        # Yes at 25¢ against roughly even odds
+    board = svc.edges([r], now)
+    assert board and board[0]["id"] == 11214 and board[0]["source"] == "options"
+
+
+def test_a_finished_game_prices_its_market_and_alerts_once():
+    svc = _svc()
+    asyncio.run(svc.refresh_meta())
+    now = int(time.time() * 1000)
+    for o in (10824, 10825, 10826, 10823):
+        svc.markets[o].expiry_ms = now + 86_400_000
+    game = {"state": "post", "completed": True, "home_score": 2, "away_score": 0, "sport": "soccer",
+            "home": {"team": {"displayName": "RB Leipzig"}}, "away": {"team": {"displayName": "PSV Eindhoven"}}}
+    svc.intel.matches["q411"] = (game, True)
+    _book(svc, 10824, "0.80", "0.84", "100")                            # Leipzig won, Yes still at 84¢
+    r = svc.row(svc.markets[10824], now)
+    assert r["ref"]["source"] == "final" and r["trade"]["side"] == "Yes" and r["game"]["score_a"] == 2
+    assert svc.row(svc.markets[10823], now)["ref"]["p"] == 0.0          # "none of these" can't happen now
+    pushed = []
+    svc.rt.alerts = SimpleNamespace(cfg={"rules": {"pm_edge": {"on": True, "min_ev_pct": 8.0}}}, push=pushed.append)
+    svc._samples_taken = 10
+    svc._edge_alerts(now)
+    svc._edge_alerts(now)
+    assert len(pushed) == 1 and "buy Yes at 84.0¢" in pushed[0].title and pushed[0].kind == "pm_edge"
+
+
+def test_trades_feed_the_sharp_book_and_settled_markets_feed_calibration():
+    svc = _svc()
+    asyncio.run(svc.refresh_meta())
+    now = int(time.time() * 1000)
+    svc.on_message({"channel": "trades", "data": [{"coin": "#108240", "side": "B", "px": "0.30", "sz": "10",
+                                                   "time": now, "tid": 1, "users": ["0xAA", "0xBB"]}]})
+    assert sum(len(q) for q in svc.intel.sharp.pending.values()) == 4     # two wallets, two horizons
+    svc.intel.calib.note(10824, now + 3_600_000, 0.95, now)
+    svc.last_odds[10824] = 0.99
+    meta = {"outcomes": [o for o in META["outcomes"] if o["outcome"] != 10824], "questions": []}
+
+    async def fewer():
+        return meta
+    svc.fetch_meta = fewer
+    asyncio.run(svc.refresh_meta())
+    assert svc.intel.calib.results[-1][0] == 10824 and svc.intel.calib.results[-1][2] == 1
