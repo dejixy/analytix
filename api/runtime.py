@@ -34,9 +34,11 @@ from config import (
     REPLAY_FILE,
     REPLAY_LOOP,
     REPLAY_SPEED,
+    WATCH_FILE,
 )
 from api.alerts import AlertService
 from api.planner import PlannerService
+from api.positions import PositionWatch
 from ingestion.backfill import backfill
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
@@ -58,7 +60,7 @@ class Runtime:
                  replay_file: Path = REPLAY_FILE, speed: float = REPLAY_SPEED, loop: bool = REPLAY_LOOP,
                  record_file: str | None = RECORD_FILE, record: bool = RECORD, broadcast_interval_s: float = BROADCAST_INTERVAL_S,
                  bars_db: Path | None = BARS_DB, backfill_enabled: bool = BACKFILL_ENABLED,
-                 alerts_file: Path = ALERTS_FILE):
+                 alerts_file: Path = ALERTS_FILE, watch_file: Path = WATCH_FILE):
         if mode not in ("live", "replay"):
             raise ValueError(f"ANALYTIX_MODE must be 'live' or 'replay', got {mode!r}")
         self.mode = mode
@@ -83,6 +85,7 @@ class Runtime:
         self._broadcasts = 0
         self.planner = PlannerService(self)
         self.alerts = AlertService(self, alerts_file)
+        self.positions = PositionWatch(self, watch_file)
 
     # ── pipelines ───────────────────────────────────────────────────────────
     def pipeline(self, coin: str | None = None) -> Pipeline:
@@ -122,9 +125,11 @@ class Runtime:
         if self.mode == "live":
             self._tasks.append(asyncio.create_task(self._heartbeat(), name="heartbeat"))
         await self.alerts.start()
+        await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
 
     async def stop(self) -> None:
+        await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
             t.cancel()

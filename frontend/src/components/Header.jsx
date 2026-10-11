@@ -60,7 +60,7 @@ function FeedBadge({ feed, conn }) {
   );
 }
 
-export default function Header({ snap, conn, onCoin, onPlan, onAlerts }) {
+export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions }) {
   const { price, context, coin, feed } = snap;
   const chg = context?.change_24h_pct;
   return (
@@ -94,6 +94,9 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts }) {
       </div>
 
       <div className="header-right">
+        <button className="alerts-open" onClick={onPositions} title="Paste a wallet to see its open positions with live liquidation odds">
+          Positions
+        </button>
         <button className="alerts-open" onClick={onAlerts} title="Telegram and browser alerts: big liquidations, steady sellers or buyers (TWAPs), broken price levels, your own price alerts">
           Alerts
         </button>

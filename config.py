@@ -111,3 +111,4 @@ RECORD_DIR = Path(os.getenv("ANALYTIX_RECORD_DIR", str(ROOT / "data" / "recordin
 RECORD_MIN_FREE_GB = float(os.getenv("ANALYTIX_RECORD_MIN_FREE_GB", "2"))   # pause recording below this much free disk
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 ALERTS_FILE = Path(os.getenv("ANALYTIX_ALERTS_FILE", str(ROOT / "data" / "alerts.json")))   # alert settings + Telegram
+WATCH_FILE = Path(os.getenv("ANALYTIX_WATCH_FILE", str(ROOT / "data" / "watch.json")))      # position watch wallets

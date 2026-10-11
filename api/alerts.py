@@ -32,7 +32,7 @@ TELEGRAM_API = "https://api.telegram.org"
 CHECK_EVERY_S = 1.0
 RECENT = 100
 SEND_GAP_S = 0.05                 # Telegram allows ~30 messages a second overall; stay far below
-NUMERIC_LIMITS = {"min_usd": (0, 1e10), "min_usd_per_hour": (0, 1e10), "min_ratio": (1.0, 20.0)}
+NUMERIC_LIMITS = {"min_usd": (0, 1e10), "min_usd_per_hour": (0, 1e10), "min_ratio": (1.0, 20.0), "min_pct": (0.5, 50.0)}
 
 
 class AlertError(ValueError):
@@ -75,16 +75,20 @@ class AlertService:
         for coin, pipe in self.rt.pipelines.items():
             fired += self.engine.check(coin, pipe)
         for a in fired:
-            self.recent.append(a)
-            log.info("alert: %s", a.title)
-            if a.kind == "price":
-                self._sync_levels()
-            if self.telegram_ready:
-                try:
-                    self._queue.put_nowait(a)
-                except asyncio.QueueFull:
-                    log.warning("telegram queue full; dropping %s", a.id)
+            self.push(a)
         return fired
+
+    def push(self, a: Alert) -> None:
+        """Deliver one alert: the dashboard feed, and Telegram when it's set up (live mode only)."""
+        self.recent.append(a)
+        log.info("alert: %s", a.title)
+        if a.kind == "price":
+            self._sync_levels()
+        if self.telegram_ready:
+            try:
+                self._queue.put_nowait(a)
+            except asyncio.QueueFull:
+                log.warning("telegram queue full; dropping %s", a.id)
 
     # ── settings ───────────────────────────────────────────────────────────
     def _load(self) -> dict:

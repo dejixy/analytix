@@ -11,6 +11,7 @@ import EventLog from "./components/EventLog.jsx";
 import Toasts from "./components/Toasts.jsx";
 import Planner from "./components/Planner.jsx";
 import AlertsPanel, { notifyEnabled } from "./components/AlertsPanel.jsx";
+import PositionWatch from "./components/PositionWatch.jsx";
 
 const FLOW_MIN_STRENGTH = 0.25;
 
@@ -47,6 +48,7 @@ export default function App() {
   const [notice, setNotice] = useState(null); // a short message under the chart, e.g. "that moment is outside the data"
   const [planning, setPlanning] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
+  const [watchOpen, setWatchOpen] = useState(false);
   const seenAlerts = useRef(null); // ids already shown, so only new alerts notify
 
   // Desktop notifications for new alerts while the dashboard sits in a background tab
@@ -146,6 +148,7 @@ export default function App() {
         }}
         onPlan={() => setPlanning(true)}
         onAlerts={() => setAlertsOpen(true)}
+        onPositions={() => setWatchOpen(true)}
       />
 
       <section className="rail-wrap" aria-label="Explanations by timeframe">
@@ -223,6 +226,7 @@ export default function App() {
       <EventLog events={snap.events} marketEvents={snap.market_events || []} pinned={pinned} onPick={pin} />
       <Toasts coin={snap.coin} nowMs={snap.now_ms} marketEvents={snap.market_events || []} />
       {alertsOpen && <AlertsPanel coin={snap.coin} onClose={() => setAlertsOpen(false)} />}
+      {watchOpen && <PositionWatch onClose={() => setWatchOpen(false)} />}
       {planning && <Planner coin={snap.coin} mid={snap.price?.mid} explanations={snap.explanations} onClose={() => setPlanning(false)} />}
     </div>
   );
