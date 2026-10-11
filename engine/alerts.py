@@ -9,6 +9,7 @@ Alerts: the moments worth a ping, checked once a second for every coin.
     volatility    the 10m range is ≥ N× its usual range
     price         price crosses a level you set (one-shot)
     position      a watched wallet's chance of liquidation rises past N% (raised by api/positions.py)
+    scanner       a coin outside the main tabs gets N× past "worth a look" in More coins (api/scanner.py)
 
 Every alert has a cooldown key (per coin and type, or per level / wallet where each one is
 its own story), so a messy hour can't send twenty pings. Nothing fires in the first five
@@ -26,7 +27,7 @@ from models.orderModel import AggressiveOrder
 from models.tradeModel import TradeSide
 from signals.base import fmt_px, fmt_usd
 
-KINDS = ("cascade", "liquidation", "twap", "level", "absorbed", "volatility", "price", "position")
+KINDS = ("cascade", "liquidation", "twap", "level", "absorbed", "volatility", "price", "position", "scanner")
 DEFAULT_RULES: dict[str, dict] = {
     "cascade": {"on": True, "min_usd": 1_000_000},
     "liquidation": {"on": True, "min_usd": 500_000},
@@ -36,6 +37,7 @@ DEFAULT_RULES: dict[str, dict] = {
     "volatility": {"on": True, "min_ratio": 2.5},
     "price": {"on": True},
     "position": {"on": True, "min_pct": 5.0},
+    "scanner": {"on": True, "min_score": 3.0},
 }
 DEFAULT_COOLDOWN_MIN = 15
 WARMUP_MS = 5 * 60_000
@@ -60,6 +62,8 @@ class Alert:
             icon = "🎯"
         elif self.kind == "position":
             icon = "⚠️"
+        elif self.kind == "scanner":
+            icon = "🔎"
         body = "\n".join(html.escape(x) for x in self.lines)
         return f"{icon} <b>{html.escape(self.title)}</b>" + (f"\n{body}" if body else "")
 

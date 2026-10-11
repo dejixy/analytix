@@ -32,7 +32,7 @@ TELEGRAM_API = "https://api.telegram.org"
 CHECK_EVERY_S = 1.0
 RECENT = 100
 SEND_GAP_S = 0.05                 # Telegram allows ~30 messages a second overall; stay far below
-NUMERIC_LIMITS = {"min_usd": (0, 1e10), "min_usd_per_hour": (0, 1e10), "min_ratio": (1.0, 20.0), "min_pct": (0.5, 50.0)}
+NUMERIC_LIMITS = {"min_usd": (0, 1e10), "min_usd_per_hour": (0, 1e10), "min_ratio": (1.0, 20.0), "min_pct": (0.5, 50.0), "min_score": (1.5, 20.0)}
 
 
 class AlertError(ValueError):

@@ -9,6 +9,7 @@ const RULES = [
   { kind: "absorbed", label: "Heavy trading, price held", help: "Lots of buying or selling that fails to move price, on the 10m or 60m card" },
   { kind: "volatility", label: "Volatility spike", help: "The last 10 minutes covered this many times the normal range", field: "min_ratio", unit: "×", hint: "times usual" },
   { kind: "price", label: "Price alerts", help: "Your levels below; each fires once when price crosses it" },
+  { kind: "scanner", label: "Unusual coin (More coins)", help: "A coin outside your four tabs gets this many times past its \"worth a look\" line: a big move, volume, open interest, funding or big orders", field: "min_score", unit: "×", hint: "times the line" },
   { kind: "position", label: "Position risk", help: "A watched wallet's chance of liquidation in the next 24h (or the next hour) goes above this", field: "min_pct", unit: "%", hint: "chance" },
 ];
 const NOTIFY_KEY = "analytix.notify";
