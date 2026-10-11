@@ -15,7 +15,8 @@ For the 30 most traded coins (and any coin with a dashboard open) the scanner al
 which side is pushing, big orders, runs of big orders (cascades), liquidations and TWAP bots.
 
 Each reading is scaled so that 1.0 means "worth a look"; a coin's score is its largest reading, and
-the readings over 1.0 become the plain-words reasons shown next to it.
+the readings over 1.0 become the plain-words reasons shown next to it. The trade readings also need real
+money behind them (MIN_*_USD), so a thin coin's small trades can't look like an event.
 """
 import math
 from collections import deque
@@ -49,6 +50,12 @@ CASCADE_SHARE = 0.05
 ONE_SIDED = 0.70                     # 70%+ of 15 minutes of market orders on one side...
 ONE_SIDED_VOLUME_X = 1.5             # ...while trading at least 1.5× normal
 THIN_VOLUME = 500_000                # USD a day: below this a coin can look unusual from noise alone
+# dollar minimums for the trade readings: on a small coin "5% of a normal hour" can be a few thousand dollars,
+# so each one needs the larger of its share of a normal hour and these amounts
+MIN_LIQ_USD = 100_000                # liquidated in 15 minutes
+MIN_CASCADE_USD = 250_000            # a run of big orders
+MIN_TWAP_USD = 250_000               # a TWAP bot, per hour
+MIN_FAST_USD = 250_000               # traded in 15 minutes, for "trading N× faster" and "70% one side"
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +189,8 @@ class Row:
     learning: bool = False            # no 7-day normal yet
     score: float = 0.0
     reasons: tuple[str, ...] = ()
+    notes: tuple[dict, ...] = ()      # every reading past its line: {"kind", "text", "score"}, strongest first
+    kind_scores: dict = field(default_factory=dict)   # the strongest reading of each kind, for ranking by one kind
     flags: tuple[str, ...] = ()       # which kinds of reading are unusual: move, volume, positions, funding, index, trades
     lean: str = "neutral"             # "up" | "down" | "neutral", for colouring
 
@@ -234,29 +243,34 @@ def score_coin(coin: str, ctx: dict, hist: CoinHistory | None, base: Baseline | 
         hour = base.vol_hour if base and base.vol_hour > 0 else None
         if hour:
             fast_x = total / (hour / 4)
-            parts.append((fast_x / FAST_VOLUME_X, f"trading {fast_x:.1f}× faster than usual (last 15m)", "volume"))
-            parts.append((liq / (LIQ_SHARE * hour), f"{fmt_usd(liq)} liquidated in 15m", "trades"))
+            if total >= MIN_FAST_USD:
+                parts.append((fast_x / FAST_VOLUME_X, f"trading {fast_x:.1f}× faster than usual (last 15m)", "volume"))
+            parts.append((liq / max(LIQ_SHARE * hour, MIN_LIQ_USD), f"{fmt_usd(liq)} liquidated in 15m", "trades"))
             for c in reads.cascades[-1:]:
-                parts.append((c["usd"] / (CASCADE_SHARE * hour),
+                parts.append((c["usd"] / max(CASCADE_SHARE * hour, MIN_CASCADE_USD),
                                f"run of {c['orders']} big {c['side']} orders: {fmt_usd(c['usd'])} in {c['seconds']:.0f}s",
                                "trades"))
             for t in reads.twaps[:1]:
-                parts.append((t["per_hour"] / (TWAP_SHARE * hour),
+                parts.append((t["per_hour"] / max(TWAP_SHARE * hour, MIN_TWAP_USD),
                                f"TWAP bot {'buying' if t['side'] == 'buy' else 'selling'} about "
                                f"{fmt_usd(t['per_hour'])} an hour", "trades"))
-            if buy_share is not None and fast_x >= ONE_SIDED_VOLUME_X and max(buy_share, 1 - buy_share) >= ONE_SIDED:
+            if (buy_share is not None and total >= MIN_FAST_USD and fast_x >= ONE_SIDED_VOLUME_X
+                    and max(buy_share, 1 - buy_share) >= ONE_SIDED):
                 side = buy_share >= 0.5
                 share = buy_share if side else 1 - buy_share
                 parts.append((1.0 + (share - ONE_SIDED) * 5, f"{share:.0%} {'buying' if side else 'selling'} in 15m",
                               "trades"))
 
     parts.sort(key=lambda p: -p[0])
-    score = parts[0][0] if parts else 0.0
-    reasons = [r for s, r, _ in parts if s >= 1.0][:3]
-    if vol24 < THIN_VOLUME:                    # listed, but never ranked above coins people actually trade
-        score = min(score, 0.99)
-        if reasons:
-            reasons.append(f"thin trading: {fmt_usd(vol24)} in 24h")
+    thin = vol24 < THIN_VOLUME                  # listed, but never ranked above coins people actually trade
+    cap = (lambda x: min(x, 0.99)) if thin else (lambda x: x)      # noqa: E731
+    score = cap(parts[0][0]) if parts else 0.0
+    kind_scores: dict[str, float] = {}
+    for s, _, k in parts:
+        kind_scores[k] = max(kind_scores.get(k, 0.0), round(cap(s), 3))
+    notes = [{"kind": k, "text": r, "score": round(s, 3)} for s, r, k in parts if s >= 1.0]
+    if thin and notes:
+        notes.append({"kind": "thin", "text": f"thin trading: {fmt_usd(vol24)} in 24h", "score": 0.0})
     move = chg_1h if chg_1h is not None else chg_24
     return Row(
         coin=coin, price=mark, chg_15m=chg_15, chg_1h=chg_1h, chg_24h=chg_24, volume_24h=vol24, volume_x=volume_x,
@@ -264,7 +278,9 @@ def score_coin(coin: str, ctx: dict, hist: CoinHistory | None, base: Baseline | 
         buy_share=buy_share, net_usd=net, liquidated_usd=liq, big_orders=big,
         cascades=reads.cascades if reads else (), twaps=reads.twaps[:3] if reads else (),
         traded=reads is not None, learning=base is None, score=round(score, 3),
-        reasons=tuple(reasons),
+        reasons=tuple(n["text"] for n in notes[:3]) + ((notes[-1]["text"],) if thin and len(notes) > 3 else ()),
+        notes=tuple(notes),
+        kind_scores=kind_scores,
         flags=tuple(dict.fromkeys(k for s, _, k in parts if s >= 1.0)),
         lean="neutral" if move is None or abs(move) < 0.05 else "up" if move > 0 else "down",
     )

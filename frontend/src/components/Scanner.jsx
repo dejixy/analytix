@@ -19,6 +19,15 @@ const SORTS = {
   funding: (r) => Math.abs(r.funding_apr),
 };
 
+/** Up to three reasons: the filtered kind first (strongest first), then the rest; "thin trading" always last. */
+function reasonsFor(r, filter) {
+  const notes = r.notes.filter((n) => n.kind !== "thin");
+  const first = filter === "all" ? [] : notes.filter((n) => n.kind === filter);
+  const picked = [...first, ...notes.filter((n) => !first.includes(n))].slice(0, 3).map((n) => n.text);
+  const thin = r.notes.find((n) => n.kind === "thin");
+  return thin ? [...picked, thin.text] : picked;
+}
+
 const ago = (ms) => {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   return s < 90 ? `${s}s ago` : `${Math.round(s / 60)}m ago`;
@@ -67,7 +76,9 @@ export default function Scanner({ onOpen }) {
     if (!data?.rows) return [];
     const term = q.trim().toUpperCase();
     const out = data.rows.filter((r) => (filter === "all" || r.flags.includes(filter)) && (!term || r.coin.includes(term)));
-    if (sort !== "score") out.sort((a, b) => SORTS[sort](b) - SORTS[sort](a));
+    // the default order: overall score, or with a filter on, the strongest reading of that kind
+    const key = sort !== "score" ? SORTS[sort] : filter === "all" ? SORTS.score : (r) => r.kind_scores?.[filter] ?? 0;
+    out.sort((a, b) => key(b) - key(a));
     return out;
   }, [data, filter, sort, q]);
 
@@ -126,7 +137,7 @@ export default function Scanner({ onOpen }) {
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={r.coin} onClick={() => onOpen(r.coin)} className={r.score >= 1 ? "hot" : ""}
+                  <tr key={r.coin} onClick={() => onOpen(r.coin)}
                     title={r.main ? `Open the ${r.coin} tab` : `Open ${r.coin}'s dashboard`}>
                     <td className="left">
                       <b>{r.coin}</b>
@@ -148,8 +159,8 @@ export default function Scanner({ onOpen }) {
                     <td className="num">{fmtPct(r.funding_apr, 1)}</td>
                     <td className="num">{r.premium_pct == null ? "-" : fmtPct(r.premium_pct, 2)}</td>
                     <td className="left scan-why">
-                      {r.reasons.length
-                        ? r.reasons.map((x) => <span key={x} className="scan-reason">{x}</span>)
+                      {r.notes?.length
+                        ? reasonsFor(r, filter).map((x) => <span key={x} className="scan-reason">{x}</span>)
                         : <span className="muted">{r.learning ? "learning its normal" : "nothing unusual"}</span>}
                     </td>
                   </tr>

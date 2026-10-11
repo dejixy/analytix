@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 166 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 168 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -205,9 +205,9 @@ ETH, BTC, SOL and HYPE have their own tabs. **More coins**, after them, ranks ev
 | Open interest change, 1h | how much it usually moves in an hour (learned as the app runs) | 2.5× usual |
 | Funding | a yearly rate, either side | 40% a year |
 | Price vs index | the spot index | 0.15% |
-| Trades (the 30 most traded coins) | a normal hour's volume | 15m volume at 3× normal; liquidations, a run of big orders or a TWAP bot worth 5 to 10% of a normal hour; 70%+ of market orders on one side |
+| Trades (the 30 most traded coins) | a normal hour's volume, with a dollar minimum | 15m volume at 3× normal; liquidations, a run of big orders or a TWAP bot worth 5 to 10% of a normal hour (and at least $100K liquidated, a $250K run, or $250K an hour of TWAP); 70%+ of market orders on one side with $250K+ traded |
 
-A coin's score is its biggest reading, and every reading past "worth a look" becomes a plain reason next to it ("price +9.3% in 1h, 8.6× a normal hour", "open interest +23.4% in 1h", "TWAP bot selling about $800K an hour"). Coins trading under $500K a day are listed but never ranked above real activity. Filter by kind of reading, search, or sort by any column.
+A coin's score is its biggest reading, and every reading past "worth a look" becomes a plain reason next to it ("price +9.3% in 1h, 8.6× a normal hour", "open interest +23.4% in 1h", "TWAP bot selling about $800K an hour"). Coins trading under $500K a day are listed but never ranked above real activity. Filter by kind of reading (the list is then ranked by that kind, and its reasons come first), search, or sort by any column.
 
 Clicking ETH, BTC, SOL or HYPE switches to its tab. Clicking any other coin opens its full dashboard (cards, Why panel, chart, order book, event log) inside More coins: it subscribes to that coin's live feed, loads its price history for the long timeframes, and closes again after 10 minutes with nobody watching (3 at a time). Those coins don't send alerts or get recorded.
 
