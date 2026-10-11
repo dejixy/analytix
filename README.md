@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 169 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 171 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -161,7 +161,7 @@ sudo systemctl enable --now analytix
 journalctl -u analytix -f          # a status line every 5 minutes
 ```
 
-Every 5 minutes the log also prints a speed line: `screen delay` (how late a task that should run every quarter second actually ran; small means nothing is waiting), and how long the engine, the scanner and each round of browser updates take. `/api/health` shows the same numbers. Every 5 minutes the log also prints a speed line: `screen delay` (how late a task that should run every quarter second actually ran; small means nothing is waiting), and how long the engine, the scanner and each round of browser updates take. `/api/health` shows the same numbers. Every 5 minutes the log also prints a speed line: `screen delay` (how late a task that should run every quarter second actually ran; small means nothing is waiting), and how long the engine, the scanner and each round of browser updates take. `/api/health` shows the same numbers. The recordings carry on in the same folder (a switch inside one hour appends to that hour's file). View the dashboard from your laptop:
+Every 5 minutes the log also prints a speed line: `screen delay` (how late a task that should run every quarter second actually ran; small means nothing is waiting), and how long the engine, the scanner and each round of browser updates take. `/api/health` shows the same numbers. If the server ever stalls for more than a second, a `FREEZE` line in the log shows exactly which lines of code it was stuck on (and what other threads were doing), so a stall can be fixed at its source. The recordings carry on in the same folder (a switch inside one hour appends to that hour's file). View the dashboard from your laptop:
 
 ```bash
 ssh -N -L 8001:127.0.0.1:8000 you@SERVER_IP      # leave this running, then open http://localhost:8001
@@ -183,6 +183,7 @@ The **Alerts** button opens the alert settings. Alerts are checked every second 
 | Volatility spike | the last 10 minutes covered ≥ N× the normal range | 2.5× |
 | Price alerts | price crosses a level you set (once) | you add them |
 | Position risk | a watched wallet's chance of liquidation in the next 24h, or the next hour, goes above N% | 5% |
+| Unusual coin | a coin outside your four tabs (in More coins) gets N× past its "worth a look" line; once per episode, at most 3 at a time | 3× |
 
 Each alert type has a quiet time per coin (15 minutes by default), and nothing fires in the first five minutes after start-up, while the engine learns what's normal. A ping reads like:
 
