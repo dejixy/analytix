@@ -222,6 +222,19 @@ async def outcomes(request: Request):
     return _rt(request).outcomes.public()
 
 
+@router.get("/outcomes/questions/{question_id}")
+async def outcome_question(request: Request, question_id: int, range: str = "12h"):
+    """One event (a question: several outcomes, exactly one ends Yes): every outcome's odds, the add-up check,
+    and the five likeliest outcomes' odds over time on one chart."""
+    svc = _rt(request).outcomes
+    if not svc.enabled:
+        raise HTTPException(404, "Prediction markets are read live, so they only show in live mode.")
+    d = await svc.question_detail(question_id, range)
+    if d is None:
+        raise HTTPException(404, "That event isn't listed any more. It may have settled.")
+    return d
+
+
 @router.get("/outcomes/{outcome_id}")
 async def outcome(request: Request, outcome_id: int, range: str = "12h"):
     """One market's page: odds history, book, trades, who is trading, fair odds for price markets."""

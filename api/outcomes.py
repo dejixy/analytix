@@ -46,6 +46,8 @@ TRADES_KEPT = 500
 BOOK_DEPTH = 20
 CANDLES_TTL_S = 120
 RANGES = {"12h": ("1m", 720), "2w": ("1h", 336)}
+EVENT_RANGES = {"12h": ("5m", 144), "2w": ("1h", 336)}   # lighter candles for an event's several lines
+CHART_LINES = 5                      # an event's chart shows its five likeliest outcomes
 
 
 def outcome_of(coin: str | None) -> int | None:
@@ -358,13 +360,13 @@ class OutcomeService:
                 log.warning("book for %s unavailable: %s", m.yes_coin, exc)
         return True
 
-    async def candles(self, coin: str, rng: str) -> list[tuple[int, float]]:
+    async def candles(self, coin: str, rng: str, table: dict = RANGES) -> list[tuple[int, float]]:
         """[(ms, close)] for the chart, cached for two minutes."""
-        key = (coin, rng)
+        interval, n = table[rng]
+        key = (coin, interval, n)
         hit = self._candles.get(key)
         if hit and time.time() - hit[0] < CANDLES_TTL_S:
             return hit[1]
-        interval, n = RANGES[rng]
         try:
             rows = await self.fetch_candles(coin, interval, n=n)
             pts = sorted((int(r["t"]), float(r["c"])) for r in rows)
@@ -423,4 +425,29 @@ class OutcomeService:
             "question": None if q is None else {
                 "id": q.question, "title": q.title, "sub": q.sub, "sum": asdict(self.sum_for(q)),
                 "outcomes": [self.row(self.markets[o], now) for o in q.outcomes if o in self.markets]},
+        }
+
+    # ── one event's page (a question: several outcomes, one ends Yes) ───────
+    async def question_detail(self, qid: int, rng: str = "12h") -> dict | None:
+        q = self.questions.get(qid)
+        if q is None:
+            return None
+        if rng not in EVENT_RANGES:
+            rng = "12h"
+        now = int(time.time() * 1000)
+        rows = [self.row(self.markets[o], now) for o in q.outcomes if o in self.markets]
+        likeliest = sorted((r for r in rows if r["odds"] is not None), key=lambda r: -r["odds"])[:CHART_LINES]
+        order = {o: i for i, o in enumerate(q.outcomes)}                # the listing's order: colours stay put
+        series = []
+        for r in sorted(likeliest, key=lambda r: order.get(r["id"], 0)):
+            pts = [[t, p] for t, p in await self.candles(self.markets[r["id"]].yes_coin, rng, EVENT_RANGES)]
+            pts.append([now, r["odds"]])
+            series.append({"id": r["id"], "label": r["label"], "odds": r["odds"], "points": pts})
+        venue = self.markets[q.outcomes[0]].venue if q.outcomes else ""
+        return {
+            "now_ms": now, "range": rng,
+            "question": {"id": q.question, "title": q.title, "sub": q.sub, "venue_name": VENUES.get(venue, venue or "Hyperliquid"),
+                         "expiry_ms": q.expiry_ms, "starts_ms": q.starts_ms, "sum": asdict(self.sum_for(q))},
+            "rows": rows, "series": series,
+            "volume_24h": sum(r["volume_24h"] or 0 for r in rows), "open": sum(r["open"] or 0 for r in rows),
         }

@@ -20,6 +20,7 @@ What Analytix adds
   - a plain line on why the odds moved
 """
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -144,9 +145,21 @@ def fmt_when(ms: int | None) -> str:
     return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%-d %b %H:%M UTC")
 
 
-def _side_name(spec: dict, default: str) -> str:
+def fill(text: str, f: dict) -> str:
+    """Side names can be templates: "{shortNameA}" → "Pittsburgh Steelers" (the full name when the listing has it,
+    else the short one); any other "{key}" → that field."""
+    def sub(m):
+        key = m.group(1)
+        if key.startswith("shortName") and f.get("participant" + key[len("shortName"):]):
+            return f["participant" + key[len("shortName"):]]
+        return f.get(key) or key
+    return re.sub(r"\{(\w+)\}", sub, text)
+
+
+def _side_name(spec: dict, default: str, f: dict | None = None) -> str:
     n = str((spec or {}).get("name") or default)
-    return n[len("template:"):] if n.startswith("template:") else n
+    n = n[len("template:"):] if n.startswith("template:") else n
+    return fill(n, f or {})
 
 
 def _details(f: dict) -> list[str]:
@@ -183,7 +196,7 @@ def market_from(raw: dict) -> Market | None:
     f = parse_fields(raw.get("description"))
     template = template_of(raw.get("name"), f)
     specs = raw.get("sideSpecs") or [{}, {}]
-    sides = (_side_name(specs[0] if specs else {}, "Yes"), _side_name(specs[1] if len(specs) > 1 else {}, "No"))
+    sides = (_side_name(specs[0] if specs else {}, "Yes", f), _side_name(specs[1] if len(specs) > 1 else {}, "No", f))
     venue = str(raw.get("venue") or "")
     if template in PRICE_TEMPLATES | TOUCH_TEMPLATES:
         under = f.get("perp") or f.get("underlying") or f.get("spot")

@@ -87,10 +87,10 @@ function useJson(url, everyMs) {
 const VenueTag = ({ name }) => <span className="scan-tag">{name}</span>;
 
 /** One outcome as a line: name, odds bar, odds, 24h change. */
-function OddsRow({ r, label, odds = r.odds, chg = r.chg_24h, onOpen }) {
+function OddsRow({ r, label, odds = r.odds, chg = r.chg_24h, onOpen, wrap = false }) {
   const priced = odds != null;
   return (
-    <button className={`oc-row ${priced ? "" : "dim"}`} onClick={() => onOpen(r.id)}
+    <button className={`oc-row ${priced ? "" : "dim"} ${wrap ? "wrap" : ""}`} onClick={(e) => { e.stopPropagation(); onOpen(r.id); }}
       title={`${r.title}\nBid / ask for Yes: ${bidAsk(r.bid, r.ask)}${r.volume_24h ? `\nTraded today: ${fmtUsd(r.volume_24h)}` : ""}`}>
       <span className="oc-row-name">{label}</span>
       <span className="oc-bar" aria-hidden="true"><span style={{ width: `${priced ? Math.max(0.5, odds * 100) : 0}%` }} /></span>
@@ -103,7 +103,7 @@ function OddsRow({ r, label, odds = r.odds, chg = r.chg_24h, onOpen }) {
 const SHOWN = 5;
 
 /** A question (several outcomes, one ends Yes) or a single market with its two sides. */
-function EventCard({ ev, now, onOpen }) {
+function EventCard({ ev, now, onOpen, onEvent }) {
   const [all, setAll] = useState(false);
   const r0 = ev.rows[0];
   const vol = sumBy(ev.rows, (r) => r.volume_24h);
@@ -112,8 +112,11 @@ function EventCard({ ev, now, onOpen }) {
   const note = ev.q ? ev.q.sum.note : marketNote(r0);
   const edge = ev.q ? !!ev.q.sum.way : r0.edge != null && Math.abs(r0.edge) >= 5;
   const shown = all ? ev.rows : ev.rows.slice(0, SHOWN);
+  const openCard = () => (ev.q ? onEvent(ev.q.id) : onOpen(r0.id));
   return (
-    <article className="oc-card">
+    <article className="oc-card oc-click" onClick={openCard} role="button" tabIndex={0}
+      onKeyDown={(e) => e.key === "Enter" && openCard()}
+      title={ev.q ? "Open the event: every outcome, and their odds on one chart" : "Open this market"}>
       <header className="oc-card-head">
         <h3>{ev.title}</h3>
         <VenueTag name={ev.venue_name} />
@@ -124,16 +127,21 @@ function EventCard({ ev, now, onOpen }) {
           shown.map((r) => <OddsRow key={r.id} r={r} label={r.label} onOpen={onOpen} />)
         ) : (
           <>
-            <OddsRow r={r0} label={r0.sides[0]} onOpen={onOpen} />
+            <OddsRow r={r0} label={r0.sides[0]} onOpen={onOpen} wrap />
             <OddsRow r={r0} label={r0.sides[1]} odds={r0.odds == null ? null : 1 - r0.odds}
-              chg={r0.chg_24h == null ? null : -r0.chg_24h} onOpen={onOpen} />
+              chg={r0.chg_24h == null ? null : -r0.chg_24h} onOpen={onOpen} wrap />
           </>
         )}
       </div>
       {ev.q && ev.rows.length > SHOWN && (
-        <button className="oc-more" onClick={() => setAll(!all)}>{all ? "Show fewer" : `+${ev.rows.length - SHOWN} more`}</button>
+        <button className="oc-more" onClick={(e) => { e.stopPropagation(); setAll(!all); }}>
+          {all ? "Show fewer" : `+${ev.rows.length - SHOWN} more`}
+        </button>
       )}
-      {note && <div className={`oc-card-note ${edge ? "oc-edge" : ""}`}>{note}</div>}
+      <div className="oc-card-foot">
+        <span className={`oc-card-note ${edge ? "oc-edge" : ""}`}>{note}</span>
+        <span className="oc-open">{ev.q ? "chart ›" : "open ›"}</span>
+      </div>
     </article>
   );
 }
@@ -189,7 +197,7 @@ function PriceCard({ g, now, sort, onOpen }) {
 const PAGE = 48;
 
 /** Every market: price markets as a ladder per asset, everything else as one card per event. */
-function MarketList({ onOpen }) {
+function MarketList({ onOpen, onEvent }) {
   const { data, error } = useJson("/api/outcomes", 5000);
   const [venue, setVenue] = useState("all");
   const [kind, setKind] = useState("all");
@@ -314,7 +322,7 @@ function MarketList({ onOpen }) {
             <>
               <h3 className="oc-section">Events <span className="muted">{events.length}</span></h3>
               <div className="oc-grid">
-                {events.slice(0, limit).map((ev) => <EventCard key={ev.key} ev={ev} now={now} onOpen={onOpen} />)}
+                {events.slice(0, limit).map((ev) => <EventCard key={ev.key} ev={ev} now={now} onOpen={onOpen} onEvent={onEvent} />)}
               </div>
               {events.length > limit && (
                 <button className="oc-more oc-more-page" onClick={() => setLimit(limit + PAGE)}>
@@ -497,14 +505,228 @@ function settles(r) {
   return null;
 }
 
+/* One colour per charted outcome, in this order (checked for colour-blind separation on the dark surface).
+   Colour follows the outcome's place in the listing, not its rank, so lines keep their colour as odds move. */
+const SERIES = ["#3987e5", "#d95926", "#199e70", "#9085e9", "#d55181"];
+
+const valueAt = (pts, t) => {
+  let lo = 0, hi = pts.length - 1, ans = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid][0] <= t) { ans = pts[mid][1]; lo = mid + 1; } else hi = mid - 1;
+  }
+  return ans;
+};
+
+/** Several outcomes' odds over time on one chart, with a hover readout. */
+function MultiOddsChart({ series, colors }) {
+  const box = useRef(null);
+  const [W, setW] = useState(800);
+  const [hover, setHover] = useState(null);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(([e]) => setW(Math.max(280, Math.round(e.contentRect.width))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const drawn = series.filter((s) => s.points.length >= 2);
+  if (!drawn.length) return <div ref={box} className="empty">Not enough trading yet to draw the odds.</div>;
+  const wide = W >= 640;
+  const H = wide ? 260 : 200, L = 38, R = wide ? 150 : 12, T = 10, B = 22;
+  const all = drawn.flatMap((s) => s.points);
+  const t0 = Math.min(...all.map((p) => p[0]));
+  const t1 = Math.max(...all.map((p) => p[0]));
+  const top = Math.min(1, Math.max(0.1, Math.ceil((Math.max(...all.map((p) => p[1])) + 0.03) * 10) / 10));
+  const step = top <= 0.3 ? 0.05 : top <= 0.6 ? 0.1 : 0.25;
+  const grid = [];
+  for (let v = 0; v <= top + 1e-9; v += step) grid.push(+v.toFixed(2));
+  const x = (t) => L + ((t - t0) / Math.max(1, t1 - t0)) * (W - L - R);
+  const y = (p) => T + (1 - p / top) * (H - T - B);
+  const path = (s) => s.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
+  const long = t1 - t0 > 2 * 86_400_000;
+  const tick = (t) =>
+    long ? new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short" })
+      : new Date(t).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit" });
+
+  // labels at the right end of each line, nudged apart so they never overlap
+  const ends = drawn.map((s) => ({ s, v: s.points[s.points.length - 1][1] })).sort((a, b) => b.v - a.v);
+  let last = -Infinity;
+  for (const e of ends) {
+    e.ly = Math.max(y(e.v), last + 13);
+    last = e.ly;
+  }
+  const over = ends.length ? ends[ends.length - 1].ly - (H - B) : 0;
+  if (over > 0) ends.forEach((e) => { e.ly -= over; });
+
+  const onMove = (ev) => {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const px = ((ev.clientX - rect.left) / rect.width) * W;
+    if (px < L || px > W - R) return setHover(null);
+    setHover(t0 + ((px - L) / (W - L - R)) * (t1 - t0));
+  };
+  const readout = hover == null ? null
+    : drawn.map((s) => ({ s, v: valueAt(s.points, hover) })).filter((r) => r.v != null).sort((a, b) => b.v - a.v);
+
+  return (
+    <div ref={box} className="oc-multi">
+      <svg className="oc-chart" width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Odds over time"
+        onPointerMove={onMove} onPointerDown={onMove} onPointerLeave={() => setHover(null)} style={{ touchAction: "pan-y" }}>
+        {grid.map((p) => (
+          <g key={p}>
+            <line x1={L} x2={W - R} y1={y(p)} y2={y(p)} stroke="var(--grid)" />
+            <text x={L - 6} y={y(p) + 3} textAnchor="end" fontSize="10" fill="var(--muted)">{Math.round(p * 100)}%</text>
+          </g>
+        ))}
+        {[0, 1, 2, 3].map((i) => {
+          const t = t0 + ((t1 - t0) * i) / 3;
+          return (
+            <text key={i} x={x(t)} y={H - 6} textAnchor={i === 0 ? "start" : i === 3 ? "end" : "middle"} fontSize="10" fill="var(--muted)">
+              {tick(t)}
+            </text>
+          );
+        })}
+        {drawn.map((s) => (
+          <path key={s.id} d={path(s.points)} fill="none" stroke={colors[s.id]} strokeWidth="2" strokeLinejoin="round" />
+        ))}
+        {ends.map((e) => (
+          <g key={e.s.id}>
+            <circle cx={x(e.s.points[e.s.points.length - 1][0])} cy={y(e.v)} r="4" fill={colors[e.s.id]} stroke="var(--surface)" strokeWidth="2" />
+            {wide && (
+              <text x={W - R + 10} y={e.ly + 3.5} fontSize="10.5" fill="var(--ink-2)">
+                {e.s.label.length > 14 ? `${e.s.label.slice(0, 13)}…` : e.s.label} {pct(e.v)}
+              </text>
+            )}
+          </g>
+        ))}
+        {hover != null && (
+          <g>
+            <line x1={x(hover)} x2={x(hover)} y1={T} y2={H - B} stroke="var(--axis)" />
+            {readout.map((r) => (
+              <circle key={r.s.id} cx={x(hover)} cy={y(r.v)} r="4" fill={colors[r.s.id]} stroke="var(--surface)" strokeWidth="2" />
+            ))}
+          </g>
+        )}
+      </svg>
+      {hover != null && readout.length > 0 && (
+        <div className="oc-tip" style={{ left: Math.min(x(hover) + 12, W - 200), top: 8 }}>
+          <div className="muted">{new Date(hover).toLocaleString(undefined, { hour12: false, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
+          {readout.map((r) => (
+            <div key={r.s.id} className="oc-tip-row">
+              <span className="oc-swatch" style={{ background: colors[r.s.id] }} />
+              <span className="oc-tip-name">{r.s.label}</span>
+              <b className="num">{pct(r.v)}</b>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One event: every outcome, the likeliest five on one chart, and the add-up check. */
+function EventPage({ id, onBack, onOpen }) {
+  const [rng, setRng] = useState("12h");
+  const { data: d, error } = useJson(`/api/outcomes/questions/${id}?range=${rng}`, 4000);
+  if (!d) {
+    return (
+      <section className="panel">
+        <div className="extra-bar"><button className="plan-chip" onClick={onBack}>‹ Back</button></div>
+        <div className="empty">{error || "Loading…"}</div>
+      </section>
+    );
+  }
+  const q = d.question;
+  const colors = Object.fromEntries(d.series.map((s, i) => [s.id, SERIES[i % SERIES.length]]));
+  const rows = [...d.rows].sort((a, b) => (b.odds ?? -1) - (a.odds ?? -1));
+  const sub = [q.sub, q.expiry_ms ? `closes ${until(q.expiry_ms, d.now_ms)}` : null,
+    d.volume_24h ? `${fmtUsd(d.volume_24h)} traded today` : "no trades today"].filter(Boolean).join(" · ");
+  return (
+    <>
+      <div className="extra-bar">
+        <button className="plan-chip" onClick={onBack}>‹ Back</button>
+        <span><b>{q.title}</b></span>
+        <VenueTag name={q.venue_name} />
+        <span className="muted">{sub}</span>
+      </div>
+      {error && <div className="plan-error">{error}</div>}
+      <section className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Odds</h2>
+          <span className="panel-sub">
+            {d.series.length > 1 ? `the ${d.series.length} likeliest outcomes` : d.series.length ? "the only priced outcome" : "no prices yet"}
+            {" · point at the chart for the odds at any moment"}
+          </span>
+          <div className="plan-holds">
+            {[["12h", "12h"], ["2w", "2 weeks"]].map(([k, label]) => (
+              <button key={k} className={`plan-chip ${rng === k ? "on" : ""}`} onClick={() => setRng(k)}>{label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="panel-body">
+          {d.series.length > 1 && (
+            <div className="oc-legend">
+              {d.series.map((s) => (
+                <button key={s.id} className="oc-legend-item" onClick={() => onOpen(s.id)} title={`Open ${s.label}`}>
+                  <span className="oc-swatch" style={{ background: colors[s.id] }} />
+                  {s.label} <b className="num">{pct(s.odds)}</b>
+                </button>
+              ))}
+            </div>
+          )}
+          <MultiOddsChart series={d.series} colors={colors} />
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Outcomes</h2>
+          <span className="panel-sub">{rows.length} · click one for its book, trades and who is trading</span>
+        </div>
+        <div className="panel-body">
+          <p className={`oc-note ${q.sum.way ? "oc-edge" : ""}`}>{q.sum.note}</p>
+          <div className="scan-scroll">
+            <table className="scan-table">
+              <thead>
+                <tr>
+                  <th className="left">Outcome</th>
+                  <th>Yes</th>
+                  <th title="Best bid and ask for Yes">Bid / Ask</th>
+                  <th title="Change in the odds over 24 hours, in points">24h</th>
+                  <th>Volume 24h</th>
+                  <th title="Yes contracts people hold (each pays $1 if it happens)">Held</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} onClick={() => onOpen(r.id)} className={r.odds == null ? "oc-dim" : ""}>
+                    <td className="left">
+                      <span className="oc-swatch" style={{ background: colors[r.id] || "transparent" }} />
+                      {r.label}
+                    </td>
+                    <td className="num"><b>{pct(r.odds)}</b></td>
+                    <td className="num">{bidAsk(r.bid, r.ask)}</td>
+                    <td className={`num ${cls(r.chg_24h)}`}>{pts(r.chg_24h)}</td>
+                    <td className="num">{fmtUsd(r.volume_24h)}</td>
+                    <td className="num">{fmtUsd(r.open)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
 /** One market's page. */
-function MarketPage({ id, onBack, onOpen }) {
+function MarketPage({ id, onBack, onOpen, onEvent }) {
   const [rng, setRng] = useState("12h");
   const { data: d, error } = useJson(`/api/outcomes/${id}?range=${rng}`, 2000);
   if (!d) {
     return (
       <section className="panel">
-        <div className="extra-bar"><button className="plan-chip" onClick={onBack}>‹ All markets</button></div>
+        <div className="extra-bar"><button className="plan-chip" onClick={onBack}>‹ Back</button></div>
         <div className="empty">{error || "Loading…"}</div>
       </section>
     );
@@ -514,7 +736,7 @@ function MarketPage({ id, onBack, onOpen }) {
   return (
     <>
       <div className="extra-bar">
-        <button className="plan-chip" onClick={onBack}>‹ All markets</button>
+        <button className="plan-chip" onClick={onBack}>‹ Back</button>
         <span><b>{r.title}</b></span>
         <VenueTag name={r.venue_name} />
         <span className="muted">{[r.sub, r.settled ? "settled" : `closes ${until(r.expiry_ms, d.now_ms)}`].filter(Boolean).join(" · ")}</span>
@@ -572,6 +794,7 @@ function MarketPage({ id, onBack, onOpen }) {
           <div className="panel-head">
             <h2 className="panel-title">{d.question.title}</h2>
             <span className="panel-sub">{d.question.sub}</span>
+            <button className="plan-chip" onClick={() => onEvent(d.question.id)}>All outcomes on one chart ›</button>
           </div>
           <div className="panel-body">
             <p className={`oc-note ${d.question.sum.way ? "oc-edge" : ""}`}>{d.question.sum.note}</p>
@@ -596,7 +819,32 @@ function MarketPage({ id, onBack, onOpen }) {
   );
 }
 
+/** The list, plus whatever was opened from it (an event or a market), with Back returning step by step. The list
+    stays mounted underneath, so its filters, expanded cards and scroll position survive a visit. */
 export default function Outcomes() {
-  const [open, setOpen] = useState(null);
-  return open == null ? <MarketList onOpen={setOpen} /> : <MarketPage id={open} onBack={() => setOpen(null)} onOpen={setOpen} />;
+  const [stack, setStack] = useState([]);
+  const listY = useRef(0);
+  const top = stack[stack.length - 1];
+  const push = (view) => {
+    if (!stack.length) listY.current = window.scrollY;
+    setStack((s) => [...s, view]);
+    window.scrollTo(0, 0);
+  };
+  const back = () => {
+    const toList = stack.length === 1;
+    setStack((s) => s.slice(0, -1));
+    if (toList) requestAnimationFrame(() => window.scrollTo(0, listY.current));
+    else window.scrollTo(0, 0);
+  };
+  const openMarket = (id) => push({ type: "market", id });
+  const openEvent = (id) => push({ type: "event", id });
+  return (
+    <>
+      <div style={{ display: top ? "none" : "contents" }}>
+        <MarketList onOpen={openMarket} onEvent={openEvent} />
+      </div>
+      {top?.type === "event" && <EventPage key={`e${top.id}`} id={top.id} onBack={back} onOpen={openMarket} />}
+      {top?.type === "market" && <MarketPage key={`m${top.id}`} id={top.id} onBack={back} onOpen={openMarket} onEvent={openEvent} />}
+    </>
+  );
 }

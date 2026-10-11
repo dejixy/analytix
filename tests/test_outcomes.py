@@ -233,3 +233,28 @@ def test_a_market_with_no_orders_and_no_trades_has_no_odds():
     svc.on_message({"channel": "activeSpotAssetCtx", "data": {"coin": "#108230", "ctx": {
         "markPx": "0.03", "prevDayPx": "0.02", "dayBaseVlm": "120", "circulatingSupply": "45000"}}})
     assert svc.quote(svc.markets[10823])[4] == 0.03             # traded today: the mark counts
+
+
+def test_side_names_fill_in_their_templates():
+    from engine.outcomes import market_from
+    m = market_from({"outcome": 1, "name": "template:sportsContestWinner", "venue": "out",
+                     "sideSpecs": [{"name": "{shortNameA}"}, {"name": "{shortNameB}"}],
+                     "description": "competition:NFL|participantA:Atlanta Falcons|participantB:Baltimore Ravens|"
+                                    "shortNameA:ATL|shortNameB:BAL"})
+    assert m.sides == ("Atlanta Falcons", "Baltimore Ravens")
+    short = market_from({"outcome": 2, "name": "x", "sideSpecs": [{"name": "{shortNameA}"}, {"name": "{line} or less"}],
+                         "description": "shortNameA:ATL|line:2.5"})
+    assert short.sides == ("ATL", "2.5 or less")
+
+
+def test_an_event_page_charts_its_likeliest_outcomes():
+    svc = _svc()
+    asyncio.run(svc.refresh_meta())
+    for oid, (bid, ask) in {10824: ("0.30", "0.32"), 10825: ("0.29", "0.31"), 10826: ("0.33", "0.35")}.items():
+        svc.on_message({"channel": "l2Book", "data": {"coin": f"#{oid * 10}", "time": 5, "levels": [
+            [{"px": bid, "sz": "50", "n": 1}], [{"px": ask, "sz": "40", "n": 1}]]}})
+    d = asyncio.run(svc.question_detail(411))
+    assert d["question"]["title"] == "RB Leipzig vs PSV Eindhoven" and len(d["rows"]) == 4
+    assert [s["label"] for s in d["series"]] == ["RB Leipzig", "PSV Eindhoven", "Draw"]   # listing order, priced only
+    assert d["series"][0]["points"][-1][1] == pytest.approx(0.31)
+    assert asyncio.run(svc.question_detail(999)) is None
