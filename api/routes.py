@@ -201,3 +201,10 @@ def positions_remove(request: Request, address: str):
         return _watch(request).remove(address)
     except WatchError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+# ── scanner ─────────────────────────────────────────────────────────────────
+@router.get("/scanner")
+def scanner(request: Request):
+    """Every Hyperliquid perp, most unusual first, with the reasons (live mode)."""
+    return _rt(request).scanner.public()

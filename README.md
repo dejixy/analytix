@@ -37,7 +37,7 @@ On Windows PowerShell, set the variables first with `$env:ANALYTIX_MODE="replay"
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` and open http://localhost:5173. It proxies `/api` and `/ws` to :8000.
 
-Run the tests with `python -m pytest`. There are 148 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
+Run the tests with `python -m pytest`. There are 160 tests, including an end-to-end replay that checks the engine finds the planted liquidation cascade, short squeeze and absorption.
 
 ---
 
@@ -193,6 +193,25 @@ Every alert says exactly what happened and where: "ETH fell through 2,667.90" (b
 
 **Telegram setup:** message @BotFather, send `/newbot`, paste the token into the Alerts panel, press Start in your new bot, then **Find chats** and switch your chat on. Only chats you switch on get alerts; anyone else who finds the bot gets nothing. Add the bot to a group or a channel to share alerts. Settings and the token live in `data/alerts.json` on the machine running Analytix (never in git; the API never returns the token). Replays never send to Telegram.
 
+### More coins (the scanner)
+
+ETH, BTC, SOL and HYPE have their own tabs. **More coins**, after them, ranks every other Hyperliquid perp too (and those four) by what's unusual right now, each judged against its own normal:
+
+| Reading | Compared with | "Worth a look" at |
+|---|---|---|
+| Price move, 15m and 1h | a normal move for that coin (its last 7 days of hourly candles) | 2× normal |
+| Volume, last 24h | its average day | 2× |
+| Open interest change, 1h | how much it usually moves in an hour (learned as the app runs) | 2.5× usual |
+| Funding | a yearly rate, either side | 40% a year |
+| Price vs index | the spot index | 0.15% |
+| Trades (the 30 most traded coins) | a normal hour's volume | 15m volume at 3× normal; liquidations, a run of big orders or a TWAP bot worth 5 to 10% of a normal hour; 70%+ of market orders on one side |
+
+A coin's score is its biggest reading, and every reading past "worth a look" becomes a plain reason next to it ("price +9.3% in 1h, 8.6× a normal hour", "open interest +23.4% in 1h", "TWAP bot selling about $800K an hour"). Coins trading under $500K a day are listed but never ranked above real activity. Filter by kind of reading, search, or sort by any column.
+
+Clicking ETH, BTC, SOL or HYPE switches to its tab. Clicking any other coin opens its full dashboard (cards, Why panel, chart, order book, event log) inside More coins: it subscribes to that coin's live feed, loads its price history for the long timeframes, and closes again after 10 minutes with nobody watching (3 at a time). Those coins don't send alerts or get recorded.
+
+The data: one `metaAndAssetCtxs` call every 10 seconds covers every coin's price, index, funding, open interest and 24h volume; hourly candles load one coin every 5 seconds (busiest first) and refresh every 6 hours; a second, unrecorded WebSocket follows the trades of the 30 most traded coins and any opened coin. All well inside Hyperliquid's rate limits. Live mode only (`engine/scanner.py`, `api/scanner.py`).
+
 ### Position watch
 
 The **Positions** button opens position watch. Paste a wallet address (and a name if you like) and it shows that wallet's open Hyperliquid positions, refreshed every 20 seconds. It's read-only: Hyperliquid shows every wallet's positions publicly, so it needs no keys and can't trade. Up to 10 wallets; they're kept in `data/watch.json` on the machine running Analytix.
@@ -280,7 +299,7 @@ The recorder prints how many MB the current hour has taken, so you can see your 
 - **Liquidations are classified, not labelled.** Hyperliquid's public feed doesn't say "liquidation". Fills the engine executes itself (no transaction hash) are TWAP slices, liquidations or auto-deleveraging, and `engine/engineFlow.py` tells them apart by Hyperliquid's own rules: TWAPs slice at a fixed interval in similar sizes; liquidations hit many accounts at once, or come as a 20% chunk then the rest within 30 s. Anything that fits neither is left unclassified. Sweeps by ordinary traders are checked against open interest ("likely liquidations" when OI fell with them). If you know liquidator addresses, set `ANALYTIX_LIQUIDATORS=0xabc…,0xdef…` and matching trades are flagged as confirmed.
 - **None of the reads is a proven edge yet.** They are built on standard microstructure ideas (price impact, absorption, forced flow, spoofing), but whether each one predicts anything on Hyperliquid is an empirical question. `scripts/study.py` is how to answer it.
 - **Long windows are only as complete as the app's uptime.** Price is backfilled, but order flow, depth and OI for the 6h … 1w windows build up while the app runs (saved across restarts). Long windows refresh every 15 seconds.
-- **Older moves are kept in memory only.** They live on in the event log (the last 200 events). Persisting them is on the roadmap.
+- **The event log survives restarts in live mode** (the last week, saved to the same SQLite file as the minute bars), but explaining an arbitrary past moment still needs that moment's ticks in memory.
 - **The synthetic session is a toy market.** It is scripted so the tests have known answers. Record real sessions with `python -m scripts.record` and replay those.
 - **The live client was written against the documented message formats**, and the parsers are tested against those shapes. Watch the first live run for surprises (see the checklist below).
 
@@ -333,6 +352,6 @@ Thresholds live in `config.py`.
 ## Roadmap
 
 - Correlate spot moves with prediction-market odds (e.g. Polymarket ETH price markets)
-- Persist the event log (SQLite or Postgres) and add a "what happened at 14:32?" query over history
+- A "what happened at 14:32?" query over the saved history
 - More windows: add them to `WINDOWS` in `config.py`; anything over an hour automatically uses minute bars
 - Per-coin thresholds (a $50K sweep floor is large for SOL, small for BTC)
