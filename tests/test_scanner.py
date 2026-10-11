@@ -167,6 +167,45 @@ def test_scanner_trades_only_go_to_followed_coins():
     assert "NOPE" not in sc.states
 
 
+def test_unusual_coins_ping_once_per_episode_and_never_for_the_main_tabs():
+    sc = _scanner()
+    pushed = []
+    from engine.alerts import DEFAULT_RULES
+    sc.rt.alerts = SimpleNamespace(cfg={"rules": {k: dict(v) for k, v in DEFAULT_RULES.items()}}, push=pushed.append)
+    funding = {"ETH": 0.0002, "DOGE": 0.0000125, "ZZZ": 0.0000125}       # ETH: 175% a year from the start
+
+    async def contexts():
+        return {c: _ctx(vol=9e8 if c == "ETH" else 5e7, funding=funding[c]) for c in funding}
+    sc.fetch_contexts = contexts
+    asyncio.run(sc.poll())
+    assert pushed == []                                                   # nothing new yet; ETH has its own tab
+    funding["DOGE"] = 0.00016                                             # 140% a year: 3.5× the line
+    asyncio.run(sc.poll())
+    (a,) = pushed
+    assert a.kind == "scanner" and a.title == "DOGE: funding 140% a year, longs pay" and "More coins" in a.lines[-1]
+    asyncio.run(sc.poll())
+    assert len(pushed) == 1                                               # still unusual: no repeat
+    funding["DOGE"] = 0.0000125
+    asyncio.run(sc.poll())                                                # calms down: re-arms
+    funding["DOGE"] = 0.00016
+    asyncio.run(sc.poll())
+    assert len(pushed) == 2
+
+
+def test_already_unusual_coins_are_quiet_after_a_restart():
+    sc = _scanner()
+    pushed = []
+    from engine.alerts import DEFAULT_RULES
+    sc.rt.alerts = SimpleNamespace(cfg={"rules": {k: dict(v) for k, v in DEFAULT_RULES.items()}}, push=pushed.append)
+
+    async def contexts():
+        return {"DOGE": _ctx(vol=5e7, funding=0.00016)}
+    sc.fetch_contexts = contexts
+    asyncio.run(sc.poll())
+    asyncio.run(sc.poll())
+    assert pushed == []
+
+
 # ── coins opened from More coins ────────────────────────────────────────────
 def test_more_coins_open_on_demand_and_the_oldest_idle_one_makes_room(tmp_path):
     rt = Runtime("live", coins=["ETH"], bars_db=None, backfill_enabled=False, record=False, record_file=None,

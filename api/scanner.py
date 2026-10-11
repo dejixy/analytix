@@ -8,6 +8,12 @@ most traded coins, and ranks them all.
                      (coins that already have a dashboard are read from it instead)
 
 Live mode only. Rankings are rebuilt after every market poll and served by /api/scanner.
+
+Alerts (the "Unusual coin" rule, threshold N): a coin outside the main tabs (those have their own alerts)
+whose score passes N, i.e. a reading N times past its "worth a look" line. Once per episode: it re-arms when
+the score falls back below half of N, so a coin that stays unusual (funding high all day) pings once. Coins
+already past the line when the server starts are marked as seen without a ping, and at most
+MAX_ALERTS_PER_POLL go out at once (a market-wide move would otherwise ping for every coin).
 """
 import asyncio
 import logging
@@ -28,6 +34,7 @@ BASELINE_TTL_S = 6 * 3600
 TOP_N = 30
 TOP_EVERY_S = 1800
 CANDLES_7D = 7 * 24 + 2
+MAX_ALERTS_PER_POLL = 3
 
 
 class Scanner:
@@ -42,6 +49,8 @@ class Scanner:
         self.updated_ms: int | None = None
         self.error: str | None = None
         self._top_at = 0.0
+        self._armed: dict[str, bool] = {}                 # coin → may alert (False until it calms down again)
+        self._alerts_ready = False                        # the first full poll only marks what's already unusual
         self._skip: dict[str, float] = {}                 # coin → when its candles last failed or fell short
         self._tasks: list[asyncio.Task] = []
         self.on_top_change = None                         # set by the runtime: re-subscribe the trades feed
@@ -118,6 +127,30 @@ class Scanner:
         perf = getattr(self.rt, "perf", None)
         if perf is not None:
             perf.scanner.add((time.perf_counter() - t) * 1000)
+        self._alerts(now)
+
+    def _alerts(self, now: int) -> None:
+        svc = getattr(self.rt, "alerts", None)
+        rule = (svc.cfg["rules"].get("scanner") or {}) if svc is not None else {}
+        if svc is None or not rule.get("on"):
+            return
+        line = float(rule.get("min_score", 3.0))
+        main = set(self.rt.coins)
+        fired = []
+        for r in self.rows:
+            if r.coin in main:
+                continue
+            if r.score >= line:
+                if self._armed.get(r.coin, True):
+                    self._armed[r.coin] = False
+                    if self._alerts_ready:
+                        fired.append(r)
+            elif r.score < line / 2:
+                self._armed[r.coin] = True
+        self._alerts_ready = True
+        sent = fired[:MAX_ALERTS_PER_POLL]
+        for i, r in enumerate(sent):
+            svc.push(scanner_alert(r, now, len(fired) - len(sent) if i == len(sent) - 1 else 0))
 
     def _pick_top(self) -> None:
         self._top_at = time.time()
@@ -162,3 +195,18 @@ class Scanner:
             "coins": len(self.contexts), "learned": len(self.baselines), "followed": TOP_N,
             "rows": [{**asdict(r), "main": r.coin in main, "open": r.coin in self.rt.pipelines} for r in self.rows],
         }
+
+
+def scanner_alert(r: Row, now: int, more: int = 0):
+    from engine.alerts import Alert
+    from signals.base import fmt_px, fmt_usd
+    reasons = list(r.reasons)
+    title = f"{r.coin}: {reasons[0]}" if reasons else f"{r.coin} is unusual right now"
+    lines = []
+    if len(reasons) > 1:
+        lines.append("Also: " + "; ".join(reasons[1:]) + ".")
+    chg = f" ({'+' if r.chg_24h >= 0 else '−'}{abs(r.chg_24h):.2f}% in 24h)" if r.chg_24h is not None else ""
+    lines.append(f"Now {fmt_px(r.price) if r.price else '-'}{chg}. Traded {fmt_usd(r.volume_24h)} in the last 24h.")
+    lines.append("Open it from More coins on the dashboard." + (f" {more} more coins are unusual right now too."
+                                                                  if more > 0 else ""))
+    return Alert(f"scan-{r.coin}-{now}", r.coin, "scanner", now, r.lean, title, tuple(lines))
