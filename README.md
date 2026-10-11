@@ -228,7 +228,7 @@ What Analytix adds on top of the raw market:
 - **Why the odds moved:** one line over the last hour, e.g. "Odds rose 12 points (40% to 52%) over the last hour, on 280 contracts of net Yes buying, mostly from one wallet". For price markets it says whether the odds simply followed the perp, or moved on trading here while the fair odds barely changed.
 - **Book depth in dollars:** what it takes to push Yes 5 points either way.
 
-A market's page also has the odds chart (12 hours or 2 weeks, with the fair-odds line for price markets), the Yes book (No is its mirror: 100 minus these), and the trades with the wallet behind each one.
+Clicking an event card opens the **event page**: the five likeliest outcomes' odds on one chart (12 hours or 2 weeks; point at it for everyone's odds at that moment), every outcome with its odds, bid / ask, 24h change, volume and contracts held, and the add-up check. Clicking a line (on a card, the chart's legend or the table) opens that market. A market's page also has the odds chart (12 hours or 2 weeks, with the fair-odds line for price markets), the Yes book (No is its mirror: 100 minus these), and the trades with the wallet behind each one.
 
 These markets are small next to perps (often hundreds to a few thousand dollars a day), so Analytix doesn't look for perp-sized sweeps or cascades here; everything is scaled to the market. The fair odds are a simple estimate to compare against, not advice.
 
@@ -362,7 +362,7 @@ Thresholds live in `config.py`.
 | `GET /api/explain_at?t=<ms>&window=10m&coin=BTC` | "what happened at 14:32?": the explanation for the window ending at any moment still in memory (the last hour for 1m–60m, the last week for 6h+). Falls back to a shorter timeframe if the requested one reaches back past the data. This is what clicking the chart calls. |
 | `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&stop=2&target=4&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, the model behind them, and (with `stop`/`target`, % from entry) the bracket's odds. Add `account=3000` for cross margin. The first answer for a coin and hold starts the history check (`calibration_pending: true`); it's included a moment later. |
 | `GET /api/alerts` · `PUT /api/alerts` · `POST /api/alerts/levels` · `POST /api/alerts/telegram/{token,discover,test}` | alert settings (never the token), price alerts, Telegram connection and the latest alerts. |
-| `GET /api/outcomes` · `GET /api/outcomes/{id}?range=12h\|2w` | every prediction market with live odds, fair odds and the add-up check; one market's page (book, trades, who is trading, why the odds moved, odds history) |
+| `GET /api/outcomes` · `GET /api/outcomes/{id}?range=12h\|2w` · `GET /api/outcomes/questions/{id}?range=12h\|2w` | every prediction market with live odds, fair odds and the add-up check; one market's page (book, trades, who is trading, why the odds moved, odds history) |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.
