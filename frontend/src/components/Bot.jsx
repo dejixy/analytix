@@ -397,6 +397,8 @@ function Auto({ a, busy, onSave, onReset }) {
         </div>
       </section>
 
+      {a.markouts?.length > 0 && <FollowThrough a={a} />}
+
       <section className="plan-sec">
         <h3>Best so far</h3>
         {a.best.length === 0 ? (
@@ -493,5 +495,54 @@ function AutoEditor({ a, e, setE, busy, onSave }) {
         <span className="plan-note muted" style={{ margin: 0 }}>Leverage, margin or daily stop changes reset the record.</span>
       </div>
     </div>
+  );
+}
+
+
+const hLabel2 = (s) => (s < 60 ? `${s}s` : `${s / 60}m`);
+
+function FollowThrough({ a }) {
+  const [coin, setCoin] = useState("all");
+  const coins = Object.keys(a.markouts[0]?.coins || {});
+  return (
+    <section className="plan-sec">
+      <div className="bot-head">
+        <h3 style={{ margin: 0 }}>Follow-through</h3>
+        <span className="plan-holds">
+          {["all", ...coins].map((c) => (
+            <button key={c} type="button" className={`plan-chip ${coin === c ? "on" : ""}`} onClick={() => setCoin(c)}>{c === "all" ? "All" : c}</button>
+          ))}
+        </span>
+      </div>
+      <div className="bot-scroll">
+        <table className="plan-table">
+          <thead><tr><th className="left">Setup</th>{a.markout_s.map((h) => <th key={h}>{hLabel2(h)}</th>)}</tr></thead>
+          <tbody>
+            {a.markouts.map((r) => {
+              const cells = coin === "all" ? r.all : r.coins[coin] || [];
+              return (
+                <tr key={r.key}>
+                  <td className="left">{r.label}</td>
+                  {a.markout_s.map((h, i) => {
+                    const c = cells[i];
+                    return (
+                      <td key={h} className="num" title={c?.n ? `${c.n} signals · ${pct(c.won)} went its way${c.t != null ? ` · t ${c.t.toFixed(1)}` : ""}` : ""}>
+                        {!c?.n ? <span className="muted">-</span> : (
+                          <>
+                            <span className={c.t != null && Math.abs(c.t) >= 2 ? tone(c.avg_bps) : ""}>{c.avg_bps >= 0 ? "+" : "−"}{Math.abs(c.avg_bps).toFixed(1)}</span>
+                            <div className="bot-sub">{pct(c.won)} · {c.n}</div>
+                          </>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="plan-note muted">Bps moved the signal's way, before fees. A round trip costs ~9 bps (market), ~3 (limit).</p>
+    </section>
   );
 }

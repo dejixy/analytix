@@ -177,3 +177,28 @@ def test_an_older_saved_hunter_starts_a_fresh_record(tmp_path):
     (tmp_path / "bot.json").write_text('{"rules": [], "auto": {"on": true, "exits": ["quick"], "benched": ["x|market"]}}')
     svc = BotService(rt, tmp_path / "bot.json")
     assert svc._auto_fresh and svc.auto["exits"] == list(EXITS) and svc.auto["benched"] == [] and svc.auto["version"] == 2
+
+
+def test_signals_are_scored_by_where_price_went_after_them(tmp_path):
+    rt, st, an = runtime()
+    svc = BotService(rt, tmp_path / "bot.json")
+    st.now_ms = 1000
+    an.latest["1m"] = ex([m("flow", FLAT, 0.1), m("book", FLAT, 0.1)])
+    svc.tick()                                                   # primes
+    st.books.push(book(2000, 100.0))
+    st.now_ms = 2000
+    an.latest["1m"] = ex([m("flow", UP), m("book", UP)])
+    svc.tick()                                                   # Flow + Book fires long at 100.00
+    st.books.push(book(12_000, 100.05))
+    st.now_ms = 12_500
+    svc.tick()
+    st.books.push(book(32_000, 99.98))
+    st.now_ms = 32_500
+    svc.tick()
+    tab = {r["key"]: r for r in svc.public()["auto"]["markouts"]}
+    after10, after30 = tab["flow"]["all"][0], tab["flow"]["all"][1]
+    assert after10["n"] == 1 and after10["avg_bps"] == pytest.approx(5, abs=0.1) and after10["won"] == 1
+    assert after30["avg_bps"] == pytest.approx(-2, abs=0.1) and after30["won"] == 0
+    assert tab["flow"]["all"][2]["n"] == 0 and tab["flow"]["coins"]["BTC"][0]["n"] == 1
+    svc.reset_auto()
+    assert all(c["n"] == 0 for c in {r["key"]: r for r in svc.public()["auto"]["markouts"]}["flow"]["all"])
