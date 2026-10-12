@@ -22,7 +22,7 @@ from config import BOT_FILE, WINDOWS
 from engine.bot import (
     MAKER_FEE, STYLES, TAKER_FEE, Rule, Sim, break_even_win_rate, card_signal, liq_distance, stats,
 )
-from engine.hunter import EXIT_WORDS, EXITS, SETUPS, CoinMemory, detect
+from engine.hunter import BENCH_MIN_TRADES, BENCH_T, EXIT_WORDS, EXITS, MAX_BREAK_EVEN, SETUPS, CoinMemory, detect
 from engine.summary import layout_for
 
 log = logging.getLogger("analytix.bot")
@@ -38,8 +38,10 @@ LIMITS = {"min_strength": (0.05, 1.0), "leverage": (1, 200), "margin_usd": (1, 1
           "stop_loss_bps": (1, 2000), "max_hold_s": (5, 7 * 86400), "cooldown_s": (0, 86400),
           "max_trades_per_hour": (1, 120), "daily_loss_usd": (1, 1e7), "limit_wait_s": (1, 600)}
 META_EVERY_S = 3600
+AUTO_VERSION = 2                   # a saved record from an older version of the auto hunter is cleared on start
 AUTO_DEFAULT = {"on": True, "coins": [], "setups": list(SETUPS), "exits": list(EXITS), "leverage": 20.0,
-                "margin_usd": 100.0, "daily_loss_usd": 100.0, "telegram": "hourly"}
+                "margin_usd": 100.0, "daily_loss_usd": 100.0, "telegram": "hourly", "benched": [],
+                "version": AUTO_VERSION}
 AUTO_MONEY = ("leverage", "margin_usd", "daily_loss_usd")      # changing these starts a fresh auto record
 AUTO_COOLDOWN_S = 5
 AUTO_PER_HOUR = 120
@@ -69,6 +71,7 @@ class BotService:
         self._mem: dict[str, CoinMemory] = {}
         self.signals: list[tuple[int, str, str, int]] = []      # (ms, coin, setup, side), newest last
         self._auto_cache: tuple[float, dict] | None = None
+        self._auto_fresh = False
         self._load()
         self._build_auto()
 
@@ -81,6 +84,10 @@ class BotService:
                                  "exit_ms INTEGER NOT NULL, data TEXT NOT NULL)")
                 self._db.execute("CREATE INDEX IF NOT EXISTS bot_trades_rule ON bot_trades (rule_id, style, exit_ms)")
                 self._db.commit()
+                if self._auto_fresh:                        # the auto hunter changed: its old record would mislead
+                    self._db.execute("DELETE FROM bot_trades WHERE rule_id LIKE 'auto-%'")
+                    self._db.commit()
+                    log.info("auto hunter updated to version %d: starting a fresh record", AUTO_VERSION)
                 for rid, style, data in self._db.execute("SELECT rule_id, style, data FROM bot_trades ORDER BY exit_ms"):
                     if rid in self.rules or rid in self.auto_rules:
                         self.trades.setdefault((rid, style), []).append(json.loads(data))
@@ -197,6 +204,8 @@ class BotService:
             except sqlite3.Error:
                 log.exception("could not save a bot trade")
         self._auto_cache = None
+        if t["rule_id"] in self.auto_rules:
+            self._maybe_bench(key)
         rule = self.rules.get(t["rule_id"])
         sim = self.sims.get(key)
         if rule is None:                                  # the auto hunter reports hourly, not per trade
@@ -244,6 +253,9 @@ class BotService:
         auto = saved.get("auto")
         if isinstance(auto, dict):
             self.auto.update({k: v for k, v in auto.items() if k in AUTO_DEFAULT})
+            if auto.get("version") != AUTO_VERSION:
+                self._auto_fresh = True
+                self.auto.update(exits=list(EXITS), benched=[], version=AUTO_VERSION)
         for d in saved.get("rules") or []:
             try:
                 r = Rule.from_dict(d)
@@ -266,10 +278,16 @@ class BotService:
         want = self.auto.get("coins") or []
         return [c for c in self.rt.coins if not want or c in want]
 
+    @staticmethod
+    def _auto_styles(r: Rule) -> list[str]:
+        """The order types worth running for this exit: not ones whose target can't cover the fees."""
+        return [st for st in STYLES if (be := break_even_win_rate(r, st)) is not None and be <= MAX_BREAK_EVEN]
+
     def _build_auto(self) -> None:
-        """One strategy per setup × coin × exit profile, each run with market and limit orders. Strategies that
-        are switched off are dropped with their record; the rest keep theirs."""
+        """One strategy per setup × coin × exit profile × order type worth running. Benched and switched-off ones
+        don't trade; strategies dropped from the settings lose their record; the rest keep theirs."""
         a = self.auto
+        benched = set(a.get("benched") or [])
         rules = {}
         for coin in self._auto_coins():
             lev = min(float(a["leverage"]), self.max_lev.get(coin) or float(a["leverage"]))
@@ -285,17 +303,30 @@ class BotService:
                 self._forget(rid)
         for rid, r in rules.items():
             old = self.auto_rules.get(rid)
-            if old is None or old.to_dict() != r.to_dict() or (rid, STYLES[0]) not in self.sims:
-                for style in STYLES:
-                    self.sims.pop((rid, style), None)
-                if a["on"]:
-                    self._make_sims(r)
-        if not a["on"]:
-            for rid in rules:
-                for style in STYLES:
-                    self.sims.pop((rid, style), None)
+            changed = old is None or old.to_dict() != r.to_dict()
+            styles = self._auto_styles(r)
+            for st in STYLES:
+                if not a["on"] or st not in styles or f"{rid}|{st}" in benched:
+                    self.sims.pop((rid, st), None)
+                elif changed or (rid, st) not in self.sims:
+                    self.sims[(rid, st)] = Sim(r, st, self.max_lev.get(r.coin))
         self.auto_rules = rules
         self._auto_cache = None
+
+    def _maybe_bench(self, key: tuple[str, str]) -> None:
+        """Stop a strategy that is clearly losing, so the hunter keeps going with what works."""
+        lst = self.trades.get(key, [])
+        if len(lst) < BENCH_MIN_TRADES:
+            return
+        s = stats(lst)
+        tag = f"{key[0]}|{key[1]}"
+        if s["avg_net_pct"] < 0 and s["t_stat"] is not None and s["t_stat"] <= BENCH_T and tag not in self.auto["benched"]:
+            self.auto["benched"].append(tag)
+            self.sims.pop(key, None)
+            self._save()
+            r = self.auto_rules.get(key[0])
+            log.info("auto hunter benched %s (%s): %d trades, %+.1f%% a trade", r.name if r else key[0], key[1],
+                     s["trades"], s["avg_net_pct"])
 
     def save_auto(self, patch: dict) -> dict:
         if not isinstance(patch, dict):
@@ -318,6 +349,8 @@ class BotService:
                 raise BotError(f"{k} must be between {lo:g} and {hi:g}.")
         if new["telegram"] not in ("off", "hourly"):
             raise BotError("telegram must be off or hourly.")
+        new["benched"] = [str(x) for x in (new.get("benched") or []) if isinstance(x, str)]
+        new["version"] = AUTO_VERSION
         fresh = any(new[k] != self.auto[k] for k in AUTO_MONEY)
         self.auto = new
         if fresh:
@@ -330,6 +363,7 @@ class BotService:
         for rid in list(self.auto_rules):
             self._forget(rid)
         self.signals.clear()
+        self.auto["benched"] = []
         if rebuild:
             self._build_auto()
         self._auto_cache = None
@@ -353,10 +387,10 @@ class BotService:
             for st in STYLES:
                 trades = [t for rid, d in by_rule.items() if self.auto_rules[rid].signals[0] == key for t in d[st]]
                 s = stats(trades)
-                row[st] = {"trades": s["trades"], "net_usd": s["net_usd"], "win_rate": s["win_rate"],
-                           "avg_net_pct": s["avg_net_pct"]}
+                row[st] = {"trades": s["trades"], "net_usd": s["net_usd"], "gross_usd": s["gross_usd"],
+                           "win_rate": s["win_rate"], "avg_net_pct": s["avg_net_pct"]}
             per_setup[key] = row
-        board = []
+        board, benched = [], set(self.auto["benched"])
         for rid, d in by_rule.items():
             r = self.auto_rules[rid]
             for st in STYLES:
@@ -365,7 +399,7 @@ class BotService:
                     board.append({"id": rid, "name": r.name, "style": st, "coin": r.coin, "setup": r.signals[0],
                                   "trades": s["trades"], "win_rate": s["win_rate"], "net_usd": s["net_usd"],
                                   "fees_usd": s["fees_usd"], "avg_net_pct": s["avg_net_pct"], "t_stat": s["t_stat"],
-                                  "verdict": s["verdict"]})
+                                  "verdict": s["verdict"], "benched": f"{rid}|{st}" in benched})
         board.sort(key=lambda x: x["net_usd"], reverse=True)
         mids = {c: (p.state.books.newest.mid if p.state.books.newest else None) for c, p in self.rt.pipelines.items()}
         open_ = []
@@ -380,7 +414,9 @@ class BotService:
                "setups_all": [{"key": k, "label": v[0], "help": v[1]} for k, v in SETUPS.items()],
                "exits_all": [{"key": k, "label": EXIT_WORDS[k], "target_bps": v[0], "stop_bps": v[1], "hold_s": v[2]}
                              for k, v in EXITS.items()],
-               "strategies": len(self.auto_rules),
+               "strategies": sum(len(self._auto_styles(r)) for r in self.auto_rules.values()),
+               "running": sum(1 for (rid, _) in self.sims if rid in self.auto_rules),
+               "benched_n": len(benched), "bench_min_trades": BENCH_MIN_TRADES, "max_break_even": MAX_BREAK_EVEN,
                "last_hour": {"signals": sum(1 for x in self.signals if x[0] >= hour_ago), "trades": len(recent),
                              **{f"{st}_net_usd": sum(t["net_usd"] for t in recent if t["style"] == st) for st in STYLES}},
                "total": {st: stats([t for d in by_rule.values() for t in d[st]]) for st in STYLES},

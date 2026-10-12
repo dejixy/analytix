@@ -12,8 +12,9 @@ triggers. Each one fires once when a new opportunity appears (not every second i
     absorb     heavy one-way market orders that aren't moving price (1m or 10m): trade against them
     level      a defended price level gives way: follow the break
 
-The auto hunter runs every setup on every coin with three exit profiles (quick, standard, runner) and both order
-styles, so its leaderboard shows which combinations survive Hyperliquid's costs.
+The auto hunter runs every setup on every coin with four exit profiles (quick, standard, runner, swing) and both order
+styles, skipping combinations whose target can't cover the fees, and benches strategies that are clearly losing, so
+its leaderboard shows which combinations survive Hyperliquid's costs.
 """
 import math
 from dataclasses import dataclass, field
@@ -37,8 +38,12 @@ EXITS = {   # name: (target bps, stop bps, max hold s, limit wait s)
     "quick": (12.0, 8.0, 90, 5),
     "standard": (25.0, 15.0, 300, 10),
     "runner": (60.0, 30.0, 1800, 20),
+    "swing": (120.0, 50.0, 7200, 30),
 }
-EXIT_WORDS = {"quick": "Quick", "standard": "Standard", "runner": "Runner"}
+EXIT_WORDS = {"quick": "Quick", "standard": "Standard", "runner": "Runner", "swing": "Swing"}
+MAX_BREAK_EVEN = 0.75        # an exit + order type that must win more often than this to cover its fees isn't run
+BENCH_MIN_TRADES = 20        # a strategy is benched once it has this many trades and is clearly losing:
+BENCH_T = -1.0               # average below zero and a t-stat at or below this
 
 LEAD_SPAN_S = 3              # Binance's move over the last few seconds
 LEAD_MIN_BPS = 2.0           # at least this, and at least LEAD_SIGMAS of a normal move over the span

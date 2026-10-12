@@ -113,7 +113,9 @@ def runtime():
 def test_auto_hunter_runs_every_setup_and_exit_and_trades_what_fires(tmp_path):
     rt, st, an = runtime()
     svc = BotService(rt, tmp_path / "bot.json")
-    assert len(svc.auto_rules) == len(SETUPS) * len(EXITS) and len(svc.sims) == 2 * len(svc.auto_rules)
+    assert len(svc.auto_rules) == len(SETUPS) * len(EXITS)
+    assert len(svc.sims) == 2 * len(svc.auto_rules) - len(SETUPS)            # no market orders on Quick: can't cover fees
+    assert ("auto-flow-BTC-quick", "market") not in svc.sims and ("auto-flow-BTC-quick", "limit") in svc.sims
     st.now_ms = 1000
     an.latest["1m"] = ex([m("flow", FLAT, 0.1), m("book", FLAT, 0.1)])
     svc.tick()                                                   # primes
@@ -122,22 +124,22 @@ def test_auto_hunter_runs_every_setup_and_exit_and_trades_what_fires(tmp_path):
     an.latest["1m"] = ex([m("flow", UP), m("book", UP)])
     svc.tick()
     flow_sims = [s for (rid, _), s in svc.sims.items() if svc.auto_rules[rid].signals[0] == "flow"]
-    assert len(flow_sims) == 2 * len(EXITS) and all(s.market_due or s.pending for s in flow_sims)
+    assert len(flow_sims) == 2 * len(EXITS) - 1 and all(s.market_due or s.pending for s in flow_sims)
     assert all(not (s.market_due or s.pending) for (rid, _), s in svc.sims.items() if svc.auto_rules[rid].signals[0] != "flow")
     st.books.push(book(2600, 100.0))
-    st.books.push(book(3000, 100.3))                             # +30 bps: market quick and standard targets
+    st.books.push(book(3000, 100.3))                             # +30 bps: the market Standard target
     st.now_ms = 3000
     closed = svc.tick()
-    assert {t["rule_id"] for t in closed} == {"auto-flow-BTC-quick", "auto-flow-BTC-standard"}
+    assert {(t["rule_id"], t["style"]) for t in closed} == {("auto-flow-BTC-standard", "market")}
     pub = svc.public()["auto"]
-    assert pub["strategies"] == len(SETUPS) * len(EXITS) and pub["last_hour"]["signals"] == 1
+    assert pub["strategies"] == pub["running"] == 2 * len(SETUPS) * len(EXITS) - len(SETUPS) and pub["last_hour"]["signals"] == 1
     flow_row = next(r for r in pub["setup_stats"] if r["key"] == "flow")
-    assert flow_row["market"]["trades"] == 2 and flow_row["signals_1h"] == 1
+    assert flow_row["market"]["trades"] == 1 and flow_row["signals_1h"] == 1 and flow_row["market"]["gross_usd"] > 0
     assert any(o["name"].startswith("Flow + Book · BTC · Runner") for o in pub["open"])
 
     # settings: fewer setups keeps the rest's record; new money settings start fresh; bad input is refused
     svc.save_auto({"setups": ["flow", "lead"], "exits": ["quick", "standard"]})
-    assert len(svc.auto_rules) == 4 and svc.public()["auto"]["total"]["market"]["trades"] == 2
+    assert len(svc.auto_rules) == 4 and svc.public()["auto"]["total"]["market"]["trades"] == 1
     svc.save_auto({"margin_usd": 50})
     assert svc.public()["auto"]["total"]["market"]["trades"] == 0
     with pytest.raises(BotError):
@@ -153,3 +155,25 @@ def test_auto_hourly_digest():
                                        {"auto-lead-BTC-quick": "Binance leads · BTC · Quick"}, 0, 100)
     assert "auto hunter" in title and "10 trades" in lines[0] and "Binance leads · BTC · Quick" in lines[2]
     assert auto_hourly_message({"x": {"market": [t]}}, {}, 100, 200) is None
+
+
+def test_clear_losers_are_benched_and_can_be_brought_back(tmp_path):
+    rt, st, an = runtime()
+    svc = BotService(rt, tmp_path / "bot.json")
+    key = ("auto-lead-BTC-standard", "market")
+    for i in range(20):
+        x = -2.0 + (0.5 if i % 2 else -0.5)
+        svc._record({"rule_id": key[0], "style": key[1], "net_usd": x, "gross_usd": x + 1.8, "fees_usd": 1.8,
+                     "net_pct": x, "entry_ms": i * 1000, "exit_ms": i * 1000 + 500, "reason": "stop"})
+        assert (key in svc.sims) == (i < 19)                     # benched on the 20th trade, not before
+    pub = svc.public()["auto"]
+    assert pub["benched_n"] == 1 and any(b["benched"] for b in pub["best"] + pub["worst"])
+    svc.save_auto({"benched": []})
+    assert key in svc.sims
+
+
+def test_an_older_saved_hunter_starts_a_fresh_record(tmp_path):
+    rt, st, an = runtime()
+    (tmp_path / "bot.json").write_text('{"rules": [], "auto": {"on": true, "exits": ["quick"], "benched": ["x|market"]}}')
+    svc = BotService(rt, tmp_path / "bot.json")
+    assert svc._auto_fresh and svc.auto["exits"] == list(EXITS) and svc.auto["benched"] == [] and svc.auto["version"] == 2

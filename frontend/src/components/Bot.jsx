@@ -173,13 +173,7 @@ export default function Bot({ onClose }) {
               </section>
             )}
 
-            <footer className="plan-foot muted">
-              How fills work: a market order lands half a second after the signal at the best ask (buying) or bid (selling),
-              walking the book for size. A limit order joins the best bid or ask and only counts as filled when a trade prints
-              through it, so it can miss. Take-profits rest as limits in limit mode; stops, time exits and flips are market
-              orders. Stops are checked on every book update, so a fast wick fills past the stop, as it would for real.
-              Funding is charged while a position is open. Positions open during a server restart are dropped.
-            </footer>
+            <footer className="plan-foot muted">Stops fill on wicks. Funding is charged. Open trades are dropped on restart.</footer>
           </div>
         )}
       </aside>
@@ -294,10 +288,8 @@ function Editor({ d, draft, setDraft, onSave, onCancel, busy }) {
         {num("take_profit_bps", "Target", "bps", "How far price must move your way, in basis points (100 bps = 1%)")}
         {num("stop_loss_bps", "Stop", "bps", "How far price may move against you before closing, in basis points")}
         <p className="plan-note" style={{ margin: 0 }}>
-          At {lev}× the target is +{marg(draft.take_profit_bps).toFixed(0)}% of margin and the stop −{marg(draft.stop_loss_bps).toFixed(0)}%.
-          Liquidation is about {liqBps.toFixed(0)} bps away{maxLev ? "" : " (assuming no maintenance margin)"}. To break even after fees,
-          market orders need to win {be.market == null ? "more than they can: the target doesn't cover the fees" : pct(be.market)} of trades,
-          limit orders {be.limit == null ? "more than they can" : pct(be.limit)}.
+          Target +{marg(draft.take_profit_bps).toFixed(0)}%, stop −{marg(draft.stop_loss_bps).toFixed(0)}% of margin · liquidation ~{liqBps.toFixed(0)} bps away ·
+          breaks even at {be.market == null ? "never" : pct(be.market)} wins (market), {be.limit == null ? "never" : pct(be.limit)} (limit)
         </p>
         <label className="plan-field" title="Close at the market after this long">
           Max hold
@@ -305,7 +297,7 @@ function Editor({ d, draft, setDraft, onSave, onCancel, busy }) {
         </label>
         <div className="plan-field">
           Flip
-          <span className="plan-holds"><button type="button" className={`plan-chip ${draft.exit_on_flip ? "on" : ""}`} onClick={() => set("exit_on_flip", !draft.exit_on_flip)}>Close if the rows lean the other way</button></span>
+          <span className="plan-holds"><button type="button" className={`plan-chip ${draft.exit_on_flip ? "on" : ""}`} onClick={() => set("exit_on_flip", !draft.exit_on_flip)}>Exit if the rows flip</button></span>
         </div>
         {num("cooldown_s", "Cooldown", "s", "Wait this long after a trade closes before the next")}
         {num("max_trades_per_hour", "Per hour", "max", "At most this many entries an hour")}
@@ -322,7 +314,7 @@ function Editor({ d, draft, setDraft, onSave, onCancel, busy }) {
         <div className="bot-actions">
           <button className="plan-chip on" disabled={busy || !draft.signals.length} onClick={onSave}>Save</button>
           <button className="plan-chip" disabled={busy} onClick={onCancel}>Cancel</button>
-          {draft.id && <span className="plan-note muted" style={{ margin: 0 }}>Changing trading settings starts a fresh track record.</span>}
+          {draft.id && <span className="plan-note muted" style={{ margin: 0 }}>Changes reset the record.</span>}
         </div>
       </div>
     </section>
@@ -335,7 +327,12 @@ const ago = (ms, now) => {
   const s = Math.max(0, ((now || Date.now()) - ms) / 1000);
   return s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${(s / 3600).toFixed(1)}h ago`;
 };
-const cell = (x) => (x.trades ? <><span className={tone(x.net_usd)}>{usd(x.net_usd)}</span> <span className="muted">· {x.trades}</span></> : <span className="muted">-</span>);
+const cell = (x) => (x.trades ? (
+  <>
+    <span className={tone(x.net_usd)}>{usd(x.net_usd)}</span> <span className="muted">· {x.trades}</span>
+    <div className="bot-sub">{usd(x.gross_usd)} before fees</div>
+  </>
+) : <span className="muted">-</span>);
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 function Auto({ a, busy, onSave, onReset }) {
@@ -358,7 +355,7 @@ function Auto({ a, busy, onSave, onReset }) {
         </div>
         <p className="plan-note" style={{ marginTop: 0 }}>
           {a.on
-            ? `Watching ${a.coins_on.join(", ")} every second for ${plural(a.setups.length, "setup")}, each tried with ${plural(a.exits.length, "exit")} and both order types: ${a.strategies * 2} strategies at ${a.leverage}× on $${a.margin_usd} each.`
+            ? `Watching ${a.coins_on.join(", ")} every second for ${plural(a.setups.length, "setup")}, each tried with ${plural(a.exits.length, "exit")}: ${a.running} strategies running at ${a.leverage}× on $${a.margin_usd} each${a.benched_n ? `, ${a.benched_n} benched for losing` : ""}. Market orders are skipped where the target can't cover the fees.`
             : "Paused. Nothing new is entered."}
         </p>
         <p className="plan-note">
@@ -374,6 +371,7 @@ function Auto({ a, busy, onSave, onReset }) {
         <div className="bot-actions">
           <button className="plan-chip" disabled={busy} onClick={() => onSave({ on: !a.on })}>{a.on ? "Pause" : "Resume"}</button>
           <button className="plan-chip" disabled={busy} onClick={openEdit}>{edit ? "Close settings" : "Settings"}</button>
+          {a.benched_n > 0 && <button className="plan-chip" disabled={busy} onClick={() => onSave({ benched: [] })}>Unbench {a.benched_n}</button>}
           <button className="plan-chip" disabled={busy} onClick={onReset}>Clear record</button>
         </div>
         {edit && <AutoEditor a={a} e={edit} setE={setEdit} busy={busy} onSave={saveEdit} />}
@@ -397,7 +395,6 @@ function Auto({ a, busy, onSave, onReset }) {
             </tbody>
           </table>
         </div>
-        <p className="plan-note muted">Net after costs · trades, across every coin and exit. Tap a setup's name for what it looks for.</p>
       </section>
 
       <section className="plan-sec">
@@ -413,8 +410,8 @@ function Auto({ a, busy, onSave, onReset }) {
                   <tr key="gap"><td className="left muted" colSpan={6}>Worst</td></tr>
                 ) : (
                   <tr key={`${b.id}-${b.style}-${i}`} title={b.verdict}>
-                    <td className="left">{b.name}</td>
-                    <td className="muted">{b.style}</td>
+                    <td className={`left ${b.benched ? "muted" : ""}`}>{b.name}</td>
+                    <td className="muted">{b.style}{b.benched ? " · benched" : ""}</td>
                     <td className="num">{b.trades}</td>
                     <td className="num">{pct(b.win_rate)}</td>
                     <td className={`num ${tone(b.net_usd)}`}>{usd(b.net_usd)}</td>
@@ -425,13 +422,13 @@ function Auto({ a, busy, onSave, onReset }) {
             </table>
           </div>
         )}
-        <p className="plan-note muted">Ranked by net after costs. Under 30 trades a strategy can just be lucky.</p>
+        <p className="plan-note muted">After fees. Under 30 trades can be luck.</p>
       </section>
 
       <section className="plan-sec">
         <h3>Live</h3>
         {a.signals.length === 0 ? (
-          <p className="plan-note muted" style={{ marginTop: 0 }}>{a.on ? "Watching. Signals show up here the moment they fire." : "Paused."}</p>
+          <p className="plan-note muted" style={{ marginTop: 0 }}>{a.on ? "Watching." : "Paused."}</p>
         ) : (
           <div className="bot-feed">
             {a.signals.map((x, i) => (
@@ -493,7 +490,7 @@ function AutoEditor({ a, e, setE, busy, onSave }) {
       </div>
       <div className="bot-actions" style={{ marginTop: 0 }}>
         <button className="plan-chip on" disabled={busy || !e.setups.length || !e.exits.length} onClick={onSave}>Save</button>
-        <span className="plan-note muted" style={{ margin: 0 }}>New leverage, margin or daily stop starts a fresh record. Leverage is capped at each coin's max.</span>
+        <span className="plan-note muted" style={{ margin: 0 }}>Leverage, margin or daily stop changes reset the record.</span>
       </div>
     </div>
   );
