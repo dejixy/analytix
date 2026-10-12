@@ -4,6 +4,8 @@ triggers. Each one fires once when a new opportunity appears (not every second i
 
     lead       Binance moved first and Hyperliquid hasn't caught up: trade toward Binance
     flow       market orders and the resting book lean the same way on the 1m card
+    winning    one side is doing most of the 1m market orders and price is moving their way (not being soaked up),
+               with the book not leaning against them: join the winning side
     breakout   a significant 1m move with market orders behind it: follow it
     cascade    a new chain of sweeps or liquidations is forcing one side out: follow it
     fade       a cascade has just ended: trade the snap back
@@ -24,6 +26,7 @@ from models.tradeModel import TradeSide
 SETUPS = {
     "lead": ("Binance leads", "Binance moved first and Hyperliquid hasn't caught up yet"),
     "flow": ("Flow + Book", "Market orders and the resting book lean the same way on the 1m card"),
+    "winning": ("Winning side", "Mostly buyers (or sellers) on 1m and price moving their way, with the book not against them"),
     "breakout": ("Breakout", "A significant 1m move with market orders behind it"),
     "cascade": ("Cascade", "A chain of sweeps or liquidations forcing one side out: follow it"),
     "fade": ("Cascade fade", "A cascade just ended: trade the snap back"),
@@ -109,6 +112,18 @@ def detect(pipe, mem: CoinMemory, now_ms: int) -> dict[str, int]:
     s = _edge(mem, "flow", card_signal(ex1.summary, ("flow", "book"), 0.3) if ex1 else 0)
     if s:
         out["flow"] = s
+
+    # winning: one side dominates 1m market orders and price is going their way (notable move, not absorbed)
+    w = 0
+    flow, bk = rows1.get("flow"), rows1.get("book")
+    if ex1 is not None and flow is not None and not flow.partial and ex1.coverage >= 0.95 \
+            and ex1.move.significance is not Significance.QUIET and flow.tag not in ABSORB_TAGS:
+        d = _dir(flow.lean)
+        if d and d == _dir(ex1.move.direction) and (bk is None or _dir(bk.lean) != -d):
+            w = d
+    s = _edge(mem, "winning", w)
+    if s:
+        out["winning"] = s
 
     # breakout: a significant 1m move with flow behind it
     b = 0

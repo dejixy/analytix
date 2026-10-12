@@ -70,9 +70,21 @@ def test_setups_fire_once_on_a_new_opportunity_with_the_right_direction():
     assert detect(p, mem, 3000) == {}                          # still lined up: no second trigger
     p.analyzer.latest["1m"] = ex([m("flow", DOWN, value="70% sell · net −$1M"), m("book", DOWN)],
                                  move(Significance.SIGNIFICANT, DOWN))
-    assert detect(p, mem, 4000) == {"flow": -1, "breakout": -1}
+    assert detect(p, mem, 4000) == {"flow": -1, "winning": -1, "breakout": -1}
     p.analyzer.latest["1m"] = ex([m("flow", DOWN, tag="price held", value="72% sell · net −$2M"), m("book", FLAT)])
     assert detect(p, mem, 5000)["absorb"] == 1                 # heavy selling that isn't moving price: long
+
+
+def test_winning_side_needs_price_going_the_flows_way_and_the_book_not_against_it():
+    mem = CoinMemory()
+    p = pipe_with({"1m": ex([m("flow", FLAT, 0.1), m("book", FLAT, 0.1)])})
+    detect(p, mem, 1000)
+    p.analyzer.latest["1m"] = ex([m("flow", UP, tag="steady"), m("book", DOWN)], move(Significance.NOTABLE, UP))
+    assert "winning" not in detect(p, mem, 2000)               # bids thin: the book leans against the buyers
+    p.analyzer.latest["1m"] = ex([m("flow", UP, tag="steady"), m("book", FLAT)], move(Significance.QUIET, UP))
+    assert "winning" not in detect(p, mem, 3000)               # buyers, but price isn't going anywhere yet
+    p.analyzer.latest["1m"] = ex([m("flow", UP, tag="steady"), m("book", FLAT)], move(Significance.NOTABLE, UP))
+    assert detect(p, mem, 4000).get("winning") == 1
 
 
 def test_cascades_fades_and_level_breaks():
