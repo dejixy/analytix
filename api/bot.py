@@ -24,7 +24,7 @@ from config import BOT_FILE, WINDOWS
 from engine.bot import (
     MAKER_FEE, STYLES, TAKER_FEE, Rule, Sim, break_even_win_rate, card_signal, liq_distance, stats,
 )
-from engine.hunter import BENCH_MIN_TRADES, BENCH_T, EXIT_WORDS, EXITS, MAX_BREAK_EVEN, SETUPS, CoinMemory, detect
+from engine.hunter import BENCH_MIN_TRADES, BENCH_T, EXIT_WORDS, EXITS, MAX_BREAK_EVEN, SETUPS, TIMED, CoinMemory, detect
 from engine.summary import layout_for
 
 log = logging.getLogger("analytix.bot")
@@ -40,11 +40,12 @@ LIMITS = {"min_strength": (0.05, 1.0), "leverage": (1, 200), "margin_usd": (1, 1
           "stop_loss_bps": (1, 2000), "max_hold_s": (5, 7 * 86400), "cooldown_s": (0, 86400),
           "max_trades_per_hour": (1, 120), "daily_loss_usd": (1, 1e7), "limit_wait_s": (1, 600)}
 META_EVERY_S = 3600
-AUTO_VERSION = 2                   # a saved record from an older version of the auto hunter is cleared on start
+AUTO_VERSION = 3                   # version 1's record is cleared on start; version 2 gains the timed exits
 AUTO_DEFAULT = {"on": True, "coins": [], "setups": list(SETUPS), "exits": list(EXITS), "leverage": 20.0,
                 "margin_usd": 100.0, "daily_loss_usd": 100.0, "telegram": "hourly", "benched": [],
-                "version": AUTO_VERSION}
-AUTO_MONEY = ("leverage", "margin_usd", "daily_loss_usd")      # changing these starts a fresh auto record
+                "taker_bps": 4.5, "maker_bps": 1.5, "lead_min_bps": 0.0, "version": AUTO_VERSION}
+AUTO_MONEY = ("leverage", "margin_usd", "daily_loss_usd", "taker_bps", "maker_bps")   # these start a fresh record
+LEAD_BUCKETS = ((2.0, 4.0, "2–4"), (4.0, 7.0, "4–7"), (7.0, 12.0, "7–12"), (12.0, 1e9, "12+"))
 AUTO_COOLDOWN_S = 5
 AUTO_PER_HOUR = 120
 AUTO_CACHE_S = 2.0
@@ -192,12 +193,14 @@ class BotService:
             funding = st.context.funding if st.context else 0.0
             fired: dict[str, int] = {}
             if coin in auto_coins:
-                fired = {k: v for k, v in detect(pipe, self._mem.setdefault(coin, CoinMemory()), now).items()
+                mem = self._mem.setdefault(coin, CoinMemory())
+                fired = {k: v for k, v in detect(pipe, mem, now, float(self.auto["lead_min_bps"])).items()
                          if k in self.auto["setups"]}
                 for setup, side in fired.items():
                     self.signals.append((now, coin, setup, side))
+                    size = mem.strength.get(setup) if setup == "lead" else None
                     for h in MARKOUT_S:
-                        self._pending[h].append((now + h * 1000, coin, setup, side, last.mid))
+                        self._pending[h].append((now + h * 1000, coin, setup, side, last.mid, size))
                 if len(self.signals) > SIGNALS_KEPT:
                     del self.signals[: len(self.signals) - SIGNALS_KEPT]
             for s in sims:
@@ -219,7 +222,7 @@ class BotService:
         """Signals old enough: how far the mid went their way, in bps, before any fees."""
         for h, dq in self._pending.items():
             while dq:
-                due, coin, setup, side, mid0 = dq[0]
+                due, coin, setup, side, mid0, size = dq[0]
                 pipe = self.rt.pipelines.get(coin)
                 if pipe is None:
                     dq.popleft()
@@ -236,6 +239,13 @@ class BotService:
                 acc[1] += move
                 acc[2] += move * move
                 acc[3] += 1 if move > 0 else 0
+                bucket = next((lab for lo, hi, lab in LEAD_BUCKETS if size is not None and lo <= size < hi), None)
+                if bucket:                                     # Binance leads, by how far Binance had moved
+                    b = self.markouts.setdefault((f"lead:{bucket}", "ALL", h), [0.0, 0.0, 0.0, 0.0])
+                    b[0] += 1
+                    b[1] += move
+                    b[2] += move * move
+                    b[3] += 1 if move > 0 else 0
                 self._markouts_dirty = True
                 self._auto_cache = None
 
@@ -313,9 +323,13 @@ class BotService:
         auto = saved.get("auto")
         if isinstance(auto, dict):
             self.auto.update({k: v for k, v in auto.items() if k in AUTO_DEFAULT})
-            if auto.get("version") != AUTO_VERSION:
+            v = auto.get("version") or 1
+            if v < 2:                                       # from before the clean-up: its record would mislead
                 self._auto_fresh = True
-                self.auto.update(exits=list(EXITS), benched=[], version=AUTO_VERSION)
+                self.auto.update(exits=list(EXITS), benched=[])
+            elif v < AUTO_VERSION:                          # keep the record, add what's new
+                self.auto["exits"] = [k for k in EXITS if k in set(self.auto.get("exits") or []) | TIMED]
+            self.auto["version"] = AUTO_VERSION
         for d in saved.get("rules") or []:
             try:
                 r = Rule.from_dict(d)
@@ -357,7 +371,8 @@ class BotService:
                     rid = f"auto-{setup}-{coin}-{ex}"
                     rules[rid] = Rule(rid, f"{SETUPS[setup][0]} · {coin} · {EXIT_WORDS[ex]}", coin, "auto", (setup,), 0.0,
                                       "both", lev, float(a["margin_usd"]), tp, sl, hold, False, AUTO_COOLDOWN_S,
-                                      AUTO_PER_HOUR, float(a["daily_loss_usd"]), wait, "off", True)
+                                      AUTO_PER_HOUR, float(a["daily_loss_usd"]), wait, "off", True,
+                                      float(a["taker_bps"]) / 1e4, float(a["maker_bps"]) / 1e4)
         for rid in list(self.auto_rules):
             if rid not in rules:
                 self._forget(rid)
@@ -400,7 +415,8 @@ class BotService:
             raise BotError("Pick at least one setup.")
         if not new["exits"]:
             raise BotError("Pick at least one exit profile.")
-        for k, (lo, hi) in (("leverage", (1, 200)), ("margin_usd", (1, 1e6)), ("daily_loss_usd", (1, 1e7))):
+        for k, (lo, hi) in (("leverage", (1, 200)), ("margin_usd", (1, 1e6)), ("daily_loss_usd", (1, 1e7)),
+                            ("taker_bps", (0, 10)), ("maker_bps", (-0.5, 5)), ("lead_min_bps", (0, 100))):
             try:
                 new[k] = float(new[k])
             except (TypeError, ValueError) as exc:
@@ -478,8 +494,8 @@ class BotService:
         recent = [t for d in by_rule.values() for lst in d.values() for t in lst if t["exit_ms"] >= hour_ago]
         out = {**self.auto, "now_ms": now_ms, "coins_on": self._auto_coins(), "all_coins": list(self.rt.coins),
                "setups_all": [{"key": k, "label": v[0], "help": v[1]} for k, v in SETUPS.items()],
-               "exits_all": [{"key": k, "label": EXIT_WORDS[k], "target_bps": v[0], "stop_bps": v[1], "hold_s": v[2]}
-                             for k, v in EXITS.items()],
+               "exits_all": [{"key": k, "label": EXIT_WORDS[k], "target_bps": v[0], "stop_bps": v[1], "hold_s": v[2],
+                              "timed": k in TIMED} for k, v in EXITS.items()],
                "strategies": sum(len(self._auto_styles(r)) for r in self.auto_rules.values()),
                "running": sum(1 for (rid, _) in self.sims if rid in self.auto_rules),
                "benched_n": len(benched), "bench_min_trades": BENCH_MIN_TRADES, "max_break_even": MAX_BREAK_EVEN,
@@ -489,7 +505,7 @@ class BotService:
                "setup_stats": list(per_setup.values()), "best": board[:12], "worst": board[-3:][::-1] if len(board) > 12 else [],
                "open": sorted(open_, key=lambda o: o["entry_ms"], reverse=True)[:20],
                "signals": [{"ms": ms, "coin": c, "setup": SETUPS[k][0], "side": sd} for ms, c, k, sd in self.signals[-12:][::-1]],
-               "markouts": self.markout_table(), "markout_s": list(MARKOUT_S)}
+               "markouts": self.markout_table(), "markout_s": list(MARKOUT_S), "lead_sizes": self.lead_size_table()}
         self._auto_cache = (time.time(), out)
         return out
 
@@ -506,7 +522,7 @@ class BotService:
             t = mean / math.sqrt(var / n) if n >= 10 and var > 0 else None
             return {"n": int(n), "avg_bps": mean, "won": w / n, "t": t}
         out = []
-        coins = sorted({c for _, c, _ in self.markouts})
+        coins = sorted({c for s, c, _ in self.markouts if ":" not in s})
         for key, (label, _) in SETUPS.items():
             if key not in self.auto["setups"]:
                 continue
@@ -516,6 +532,23 @@ class BotService:
                              for c in coins}}
             out.append(row)
         return out
+
+    def lead_size_table(self) -> list[dict]:
+        """Binance leads split by how far Binance had moved: does a bigger lead follow through by enough to pay?"""
+        rows = []
+        for lo, hi, lab in LEAD_BUCKETS:
+            cells = []
+            for h in MARKOUT_S:
+                a = self.markouts.get((f"lead:{lab}", "ALL", h))
+                if not a or not a[0]:
+                    cells.append({"n": 0, "avg_bps": None, "won": None, "t": None})
+                    continue
+                n, mean = a[0], a[1] / a[0]
+                var = (a[2] - n * mean * mean) / (n - 1) if n > 1 else 0.0
+                cells.append({"n": int(n), "avg_bps": mean, "won": a[3] / n,
+                              "t": mean / math.sqrt(var / n) if n >= 10 and var > 0 else None})
+            rows.append({"label": lab, "cells": cells})
+        return rows
 
     def _make_sims(self, r: Rule) -> None:
         for style in STYLES:
@@ -610,6 +643,7 @@ class BotService:
             raise BotError("telegram must be off, hourly or trades.")
         r.exit_on_flip, r.on = bool(r.exit_on_flip), bool(r.on)
         r.name = (str(r.name or "").strip() or default_name(r))[:60]
+        r.taker_fee, r.maker_fee = float(self.auto["taker_bps"]) / 1e4, float(self.auto["maker_bps"]) / 1e4
         return r
 
     # ── reads ──────────────────────────────────────────────────────────────
@@ -637,7 +671,8 @@ class BotService:
         recent = sorted((t for lst in self.trades.values() for t in lst[-60:]), key=lambda t: t["exit_ms"])[-60:][::-1]
         names = {**{k: r.name for k, r in self.auto_rules.items()}, **{r.id: r.name for r in self.rules.values()}}
         return {"mode": "shadow", "rules": out, "recent": [{**t, "rule": names.get(t["rule_id"], "")} for t in recent],
-                "fees": {"taker": TAKER_FEE, "maker": MAKER_FEE}, "coins": list(self.rt.coins),
+                "fees": {"taker": float(self.auto["taker_bps"]) / 1e4, "maker": float(self.auto["maker_bps"]) / 1e4},
+                "coins": list(self.rt.coins),
                 "timeframes": {k: [x for x in layout_for(v) if x not in NO_DIRECTION] for k, v in WINDOWS.items()},
                 "max_leverage": {c: self.max_lev.get(c) for c in self.rt.coins}, "max_rules": MAX_RULES,
                 "auto": self.auto_public()}
@@ -648,7 +683,7 @@ ROW_NAMES = {"flow": "Flow", "who": "Who", "forced": "Forced", "book": "Book", "
              "positioning": "Positions", "funding": "Funding"}
 REASONS = {"target": "hit the target", "stop": "hit the stop", "time": "ran out of time", "flip": "signal flipped",
            "liquidated": "was liquidated"}
-STYLE_WORDS = {"market": "market orders", "limit": "limit orders"}
+STYLE_WORDS = {"market": "market orders", "limit": "limit orders", "maker_exit": "market in, limit out"}
 
 
 def default_name(r: Rule) -> str:

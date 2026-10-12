@@ -114,7 +114,7 @@ def test_auto_hunter_runs_every_setup_and_exit_and_trades_what_fires(tmp_path):
     rt, st, an = runtime()
     svc = BotService(rt, tmp_path / "bot.json")
     assert len(svc.auto_rules) == len(SETUPS) * len(EXITS)
-    assert len(svc.sims) == 2 * len(svc.auto_rules) - len(SETUPS)            # no market orders on Quick: can't cover fees
+    assert len(svc.sims) == 3 * len(svc.auto_rules) - len(SETUPS)            # no market orders on Quick: can't cover fees
     assert ("auto-flow-BTC-quick", "market") not in svc.sims and ("auto-flow-BTC-quick", "limit") in svc.sims
     st.now_ms = 1000
     an.latest["1m"] = ex([m("flow", FLAT, 0.1), m("book", FLAT, 0.1)])
@@ -124,15 +124,17 @@ def test_auto_hunter_runs_every_setup_and_exit_and_trades_what_fires(tmp_path):
     an.latest["1m"] = ex([m("flow", UP), m("book", UP)])
     svc.tick()
     flow_sims = [s for (rid, _), s in svc.sims.items() if svc.auto_rules[rid].signals[0] == "flow"]
-    assert len(flow_sims) == 2 * len(EXITS) - 1 and all(s.market_due or s.pending for s in flow_sims)
+    assert len(flow_sims) == 3 * len(EXITS) - 1 and all(s.market_due or s.pending for s in flow_sims)
     assert all(not (s.market_due or s.pending) for (rid, _), s in svc.sims.items() if svc.auto_rules[rid].signals[0] != "flow")
     st.books.push(book(2600, 100.0))
     st.books.push(book(3000, 100.3))                             # +30 bps: the market Standard target
     st.now_ms = 3000
     closed = svc.tick()
-    assert {(t["rule_id"], t["style"]) for t in closed} == {("auto-flow-BTC-standard", "market")}
+    assert {(t["rule_id"], t["style"]) for t in closed} == {("auto-flow-BTC-standard", "market"),
+                                                         ("auto-flow-BTC-standard", "maker_exit"),
+                                                         ("auto-flow-BTC-quick", "maker_exit")}
     pub = svc.public()["auto"]
-    assert pub["strategies"] == pub["running"] == 2 * len(SETUPS) * len(EXITS) - len(SETUPS) and pub["last_hour"]["signals"] == 1
+    assert pub["strategies"] == pub["running"] == 3 * len(SETUPS) * len(EXITS) - len(SETUPS) and pub["last_hour"]["signals"] == 1
     flow_row = next(r for r in pub["setup_stats"] if r["key"] == "flow")
     assert flow_row["market"]["trades"] == 1 and flow_row["signals_1h"] == 1 and flow_row["market"]["gross_usd"] > 0
     assert any(o["name"].startswith("Flow + Book · BTC · Runner") for o in pub["open"])
@@ -153,7 +155,7 @@ def test_auto_hourly_digest():
          "reason": "target"}
     title, lines = auto_hourly_message({"auto-lead-BTC-quick": {"market": [t] * 10, "limit": []}},
                                        {"auto-lead-BTC-quick": "Binance leads · BTC · Quick"}, 0, 100)
-    assert "auto hunter" in title and "10 trades" in lines[0] and "Binance leads · BTC · Quick" in lines[2]
+    assert "auto hunter" in title and "10 trades" in lines[0] and "Binance leads · BTC · Quick" in lines[3]
     assert auto_hourly_message({"x": {"market": [t]}}, {}, 100, 200) is None
 
 
@@ -176,7 +178,7 @@ def test_an_older_saved_hunter_starts_a_fresh_record(tmp_path):
     rt, st, an = runtime()
     (tmp_path / "bot.json").write_text('{"rules": [], "auto": {"on": true, "exits": ["quick"], "benched": ["x|market"]}}')
     svc = BotService(rt, tmp_path / "bot.json")
-    assert svc._auto_fresh and svc.auto["exits"] == list(EXITS) and svc.auto["benched"] == [] and svc.auto["version"] == 2
+    assert svc._auto_fresh and svc.auto["exits"] == list(EXITS) and svc.auto["benched"] == [] and svc.auto["version"] == 3
 
 
 def test_signals_are_scored_by_where_price_went_after_them(tmp_path):
@@ -202,3 +204,34 @@ def test_signals_are_scored_by_where_price_went_after_them(tmp_path):
     assert tab["flow"]["all"][2]["n"] == 0 and tab["flow"]["coins"]["BTC"][0]["n"] == 1
     svc.reset_auto()
     assert all(c["n"] == 0 for c in {r["key"]: r for r in svc.public()["auto"]["markouts"]}["flow"]["all"])
+
+
+def test_binance_leads_are_scored_by_how_far_binance_moved(tmp_path):
+    rt, st, an = runtime()
+    st.external = {"binance": RingBuffer(max_seconds=3600)}
+    svc = BotService(rt, tmp_path / "bot.json")
+    st.now_ms = 1000
+    svc.tick()                                                   # primes
+    for ts, mid in ((1000, 100.0), (3900, 100.06)):
+        st.external["binance"].push(quote(ts, mid))
+    st.books.push(book(3900, 100.01))
+    st.now_ms = 3900
+    svc.tick()                                                   # Binance +6 bps, Hyperliquid +1: lead fires long
+    st.books.push(book(13_900, 100.1))
+    st.now_ms = 14_000
+    svc.tick()
+    sizes = {r["label"]: r["cells"][0] for r in svc.public()["auto"]["lead_sizes"]}
+    assert sizes["4–7"]["n"] == 1 and sizes["4–7"]["avg_bps"] == pytest.approx(9, abs=0.2) and sizes["2–4"]["n"] == 0
+    svc.save_auto({"lead_min_bps": 8})                         # only leads of 8 bps or more from now on
+    assert svc.auto["lead_min_bps"] == 8 and sizes["4–7"]["n"] == 1
+
+
+def test_a_version_2_hunter_keeps_its_record_and_gains_the_timed_exits(tmp_path):
+    rt, st, an = runtime()
+    (tmp_path / "bot.json").write_text('{"rules": [], "auto": {"on": true, "exits": ["standard"], "version": 2}}')
+    svc = BotService(rt, tmp_path / "bot.json")
+    assert not svc._auto_fresh and svc.auto["exits"] == ["t30", "t60", "standard"] and svc.auto["version"] == 3
+    svc.save_auto({"taker_bps": 3.0, "maker_bps": 0.0})
+    r = next(iter(svc.auto_rules.values()))
+    assert r.taker_fee == pytest.approx(0.0003) and r.maker_fee == 0.0
+    assert svc.public()["fees"] == {"taker": pytest.approx(0.0003), "maker": 0.0}

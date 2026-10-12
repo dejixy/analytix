@@ -12,8 +12,8 @@ triggers. Each one fires once when a new opportunity appears (not every second i
     absorb     heavy one-way market orders that aren't moving price (1m or 10m): trade against them
     level      a defended price level gives way: follow the break
 
-The auto hunter runs every setup on every coin with four exit profiles (quick, standard, runner, swing) and both order
-styles, skipping combinations whose target can't cover the fees, and benches strategies that are clearly losing, so
+The auto hunter runs every setup on every coin with six exit profiles (timed 30s and 1 min, quick, standard, runner,
+swing) and three order styles (market, limit, market in and limit out), skipping combinations whose target can't cover the fees, and benches strategies that are clearly losing, so
 its leaderboard shows which combinations survive Hyperliquid's costs.
 """
 import math
@@ -35,12 +35,15 @@ SETUPS = {
     "level": ("Level break", "A defended price level gave way: follow the break"),
 }
 EXITS = {   # name: (target bps, stop bps, max hold s, limit wait s)
+    "t30": (500.0, 30.0, 30, 3),     # timed: out after 30s whatever happened (no target, a wide stop)
+    "t60": (500.0, 30.0, 60, 3),
     "quick": (12.0, 8.0, 90, 5),
     "standard": (25.0, 15.0, 300, 10),
     "runner": (60.0, 30.0, 1800, 20),
     "swing": (120.0, 50.0, 7200, 30),
 }
-EXIT_WORDS = {"quick": "Quick", "standard": "Standard", "runner": "Runner", "swing": "Swing"}
+TIMED = {"t30", "t60"}
+EXIT_WORDS = {"t30": "30s", "t60": "1 min", "quick": "Quick", "standard": "Standard", "runner": "Runner", "swing": "Swing"}
 MAX_BREAK_EVEN = 0.75        # an exit + order type that must win more often than this to cover its fees isn't run
 BENCH_MIN_TRADES = 20        # a strategy is benched once it has this many trades and is clearly losing:
 BENCH_T = -1.0               # average below zero and a t-stat at or below this
@@ -61,6 +64,7 @@ class CoinMemory:
     state: dict = field(default_factory=dict)          # setup → last direction seen (for level-triggered ones)
     seen: set = field(default_factory=set)             # event ids already traded (cascades, levels)
     lead_until_ms: int = 0
+    strength: dict = field(default_factory=dict)       # setup → the size of what fired it (Binance leads: its bps)
     primed: bool = False                               # the first pass only records what's already going on
 
 
@@ -75,7 +79,7 @@ def _dir(d: Direction) -> int:
     return 1 if d is Direction.UP else -1 if d is Direction.DOWN else 0
 
 
-def lead_signal(st, sigma_1s_bps: float | None, now_ms: int) -> tuple[int, float, float]:
+def lead_signal(st, sigma_1s_bps: float | None, now_ms: int, min_bps: float = 0.0) -> tuple[int, float, float]:
     """(side, Binance's move, Hyperliquid's move) over the last few seconds; side is 0 unless Binance moved
     clearly and Hyperliquid has made at most half of it."""
     ext = (getattr(st, "external", None) or {}).get("binance")
@@ -90,7 +94,7 @@ def lead_signal(st, sigma_1s_bps: float | None, now_ms: int) -> tuple[int, float
     if h0 is None or h0.mid <= 0:
         return 0, b_bps, 0.0
     h_bps = (last.mid / h0.mid - 1) * 1e4
-    need = max(LEAD_MIN_BPS, LEAD_SIGMAS * (sigma_1s_bps or 1.0) * math.sqrt(LEAD_SPAN_S))
+    need = max(LEAD_MIN_BPS, min_bps, LEAD_SIGMAS * (sigma_1s_bps or 1.0) * math.sqrt(LEAD_SPAN_S))
     if abs(b_bps) < need:
         return 0, b_bps, h_bps
     side = 1 if b_bps > 0 else -1
@@ -99,7 +103,7 @@ def lead_signal(st, sigma_1s_bps: float | None, now_ms: int) -> tuple[int, float
     return side, b_bps, h_bps
 
 
-def detect(pipe, mem: CoinMemory, now_ms: int) -> dict[str, int]:
+def detect(pipe, mem: CoinMemory, now_ms: int, lead_min_bps: float = 0.0) -> dict[str, int]:
     """Every setup's trigger for this coin right now: {setup: +1 long, -1 short}, only the ones that fired."""
     st, an = pipe.state, pipe.analyzer
     out: dict[str, int] = {}
@@ -108,9 +112,10 @@ def detect(pipe, mem: CoinMemory, now_ms: int) -> dict[str, int]:
 
     # lead: Binance moved, Hyperliquid hasn't yet
     baseline = getattr(an, "baseline", None)
-    side, _, _ = lead_signal(st, getattr(baseline, "sigma_1s_bps", None), now_ms)
+    side, b_bps, _ = lead_signal(st, getattr(baseline, "sigma_1s_bps", None), now_ms, lead_min_bps)
     if side and now_ms >= mem.lead_until_ms:
         out["lead"] = side
+        mem.strength["lead"] = abs(b_bps)
         mem.lead_until_ms = now_ms + LEAD_LOCK_S * 1000
 
     # flow: Flow and Book agree on 1m

@@ -27,7 +27,8 @@ from models.signalModel import Direction
 TAKER_FEE = 0.00045          # Hyperliquid perps, base tier, per side
 MAKER_FEE = 0.00015
 LATENCY_MS = 500             # a market order lands this long after the signal (our view of the book + the round trip)
-STYLES = ("market", "limit")
+STYLES = ("market", "limit", "maker_exit")
+EXIT_WAIT_MS = 3000          # maker_exit: a closing limit order waits this long at the touch, then crosses
 MIN_TRADES_FOR_VERDICT = 30
 
 
@@ -52,6 +53,8 @@ class Rule:
     limit_wait_s: int = 10
     telegram: str = "hourly"         # "off" | "hourly" | "trades"
     on: bool = True
+    taker_fee: float = TAKER_FEE     # your own rates: volume tier and HYPE staking discount
+    maker_fee: float = MAKER_FEE
 
     @property
     def notional(self) -> float:
@@ -147,6 +150,7 @@ class Sim:
     day_net: float = 0.0
     stopped_for_day: bool = False
     missed: int = 0                          # limit entries that never filled
+    closing: tuple | None = None             # maker_exit: (price, placed ms, reason) of a resting closing order
 
     # ── entries ───────────────────────────────────────────────────────────
     def can_enter(self, now_ms: int, side: int) -> bool:
@@ -165,7 +169,7 @@ class Sim:
         if side == 0 or not self.can_enter(now_ms, side):
             return
         self.entries.append(now_ms)
-        if self.style == "market":
+        if self.style in ("market", "maker_exit"):
             self.market_due = (side, now_ms + LATENCY_MS)
         else:
             self.pending = Pending(side, best_bid if side > 0 else best_ask, now_ms)
@@ -188,7 +192,7 @@ class Sim:
             px = None
             if levels is not None:
                 px = walk(levels[0] if side > 0 else levels[1], self.rule.notional)
-            self._open(side, px or (best_ask if side > 0 else best_bid), ts, TAKER_FEE)
+            self._open(side, px or (best_ask if side > 0 else best_bid), ts, self.rule.taker_fee)
             return None
         if self.pending and side_crossed(self.pending, best_bid, best_ask):
             self._fill_pending(ts)
@@ -200,14 +204,22 @@ class Sim:
         mid = (best_bid + best_ask) / 2
         move = p.side * (mid / p.entry_px - 1) * 1e4
         p.best, p.worst = max(p.best, move), min(p.worst, move)
+        r = self.rule
         if p.side * (mid - p.liq_px) <= 0:
             return self._close(ts, p.liq_px, "liquidated", 0.0)
         if p.side * (exit_px - p.sl_px) <= 0:
-            return self._close(ts, exit_px, "stop", TAKER_FEE)
+            return self._close(ts, exit_px, "stop", r.taker_fee)
+        if self.closing:                                  # our closing limit: the other side reached it
+            px, placed, why = self.closing
+            if (p.side > 0 and best_bid >= px) or (p.side < 0 and best_ask <= px):
+                return self._close(ts, px, why, r.maker_fee)
+            if ts - placed >= EXIT_WAIT_MS:
+                return self._close(ts, exit_px, why, r.taker_fee)
+            return None
         if self.style == "market" and p.side * (exit_px - p.tp_px) >= 0:
-            return self._close(ts, exit_px, "target", TAKER_FEE)
-        if self.style == "limit" and p.side * (exit_px - p.tp_px) > 0:          # the book moved through our resting take-profit
-            return self._close(ts, p.tp_px, "target", MAKER_FEE)
+            return self._close(ts, exit_px, "target", r.taker_fee)
+        if self.style != "market" and p.side * (exit_px - p.tp_px) > 0:        # the book moved through our resting take-profit
+            return self._close(ts, p.tp_px, "target", r.maker_fee)
         return None
 
     def on_trade(self, ts: int, price: float) -> dict | None:
@@ -219,14 +231,19 @@ class Sim:
                 self._fill_pending(ts)
             return None
         p = self.pos
-        if p and self.style == "limit" and ((p.side > 0 and price > p.tp_px) or (p.side < 0 and price < p.tp_px)):
-            return self._close(ts, p.tp_px, "target", MAKER_FEE)
+        if p and self.closing:
+            px, _, why = self.closing
+            if (p.side > 0 and price > px) or (p.side < 0 and price < px):
+                return self._close(ts, px, why, self.rule.maker_fee)
+            return None
+        if p and self.style != "market" and ((p.side > 0 and price > p.tp_px) or (p.side < 0 and price < p.tp_px)):
+            return self._close(ts, p.tp_px, "target", self.rule.maker_fee)
         return None
 
     def _fill_pending(self, ts: int) -> None:
         pe = self.pending
         self.pending = None
-        self._open(pe.side, pe.price, ts, MAKER_FEE)
+        self._open(pe.side, pe.price, ts, self.rule.maker_fee)
 
     def on_tick(self, now_ms: int, side_now: int, best_bid: float, best_ask: float, funding_rate: float = 0.0) -> dict | None:
         """Once a second: funding, the limit entry timing out, the time limit and the flip exit."""
@@ -241,15 +258,23 @@ class Sim:
             p.funding += p.side * funding_rate * p.notional * hours        # positive rate: longs pay
             p.last_funding_ms = now_ms
         exit_px = best_bid if p.side > 0 else best_ask
-        if now_ms - p.entry_ms >= self.rule.max_hold_s * 1000:
-            return self._close(now_ms, exit_px, "time", TAKER_FEE)
-        if self.rule.exit_on_flip and side_now == -p.side:
-            return self._close(now_ms, exit_px, "flip", TAKER_FEE)
-        return None
+        if self.closing:
+            if now_ms - self.closing[1] >= EXIT_WAIT_MS:              # nobody took our closing limit: cross
+                return self._close(now_ms, exit_px, self.closing[2], self.rule.taker_fee)
+            return None
+        why = "time" if now_ms - p.entry_ms >= self.rule.max_hold_s * 1000 else \
+            "flip" if self.rule.exit_on_flip and side_now == -p.side else None
+        if why is None:
+            return None
+        if self.style == "maker_exit":                    # close with a limit at our side of the touch first
+            self.closing = (best_ask if p.side > 0 else best_bid, now_ms, why)
+            return None
+        return self._close(now_ms, exit_px, why, self.rule.taker_fee)
 
     def _close(self, ts: int, px: float, reason: str, fee_rate: float) -> dict:
         p = self.pos
         self.pos = None
+        self.closing = None
         self.last_exit_ms = ts
         r = self.rule
         gross = p.side * (px / p.entry_px - 1) * p.notional
@@ -273,7 +298,7 @@ class Sim:
 
     def drop(self) -> None:
         """Forget anything open (a replay jumped back in time, or the rule changed)."""
-        self.pos = self.pending = self.market_due = None
+        self.pos = self.pending = self.market_due = self.closing = None
 
     def open_view(self, mid: float | None) -> dict | None:
         p = self.pos
@@ -342,10 +367,11 @@ def verdict(s: dict) -> str:
 
 def break_even_win_rate(rule: Rule, style: str) -> float | None:
     """The share of trades that must hit the target (the rest hitting the stop) to break even after fees."""
-    fee_in = TAKER_FEE if style == "market" else MAKER_FEE
-    fee_tp = TAKER_FEE if style == "market" else MAKER_FEE
+    t, m = rule.taker_fee, rule.maker_fee
+    fee_in = m if style == "limit" else t
+    fee_tp = t if style == "market" else m
     win = rule.take_profit_bps / 1e4 - fee_in - fee_tp
-    loss = rule.stop_loss_bps / 1e4 + fee_in + TAKER_FEE
+    loss = rule.stop_loss_bps / 1e4 + fee_in + t
     if win <= 0:
         return None
     return loss / (win + loss)
