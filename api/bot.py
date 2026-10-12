@@ -13,9 +13,11 @@ rules live in engine/bot.py.
 import asyncio
 import json
 import logging
+import math
 import sqlite3
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 
 from config import BOT_FILE, WINDOWS
@@ -47,6 +49,8 @@ AUTO_COOLDOWN_S = 5
 AUTO_PER_HOUR = 120
 AUTO_CACHE_S = 2.0
 SIGNALS_KEPT = 5000
+MARKOUT_S = (10, 30, 60, 300, 900)   # how far price went the signal's way this long after it fired
+MARKOUT_SAVE_S = 60
 
 
 class BotError(ValueError):
@@ -72,6 +76,10 @@ class BotService:
         self.signals: list[tuple[int, str, str, int]] = []      # (ms, coin, setup, side), newest last
         self._auto_cache: tuple[float, dict] | None = None
         self._auto_fresh = False
+        self.markouts: dict[tuple[str, str, int], list[float]] = {}   # (setup, coin, s) → [n, sum, sum², wins], bps
+        self._pending: dict[int, deque] = {h: deque() for h in MARKOUT_S}   # s → (due ms, coin, setup, side, mid)
+        self._markouts_dirty = False
+        self._ticks = 0
         self._load()
         self._build_auto()
 
@@ -93,6 +101,12 @@ class BotService:
                         self.trades.setdefault((rid, style), []).append(json.loads(data))
                 for k, v in self.trades.items():
                     self.trades[k] = v[-KEEP_TRADES:]
+                self._db.execute("CREATE TABLE IF NOT EXISTS bot_markouts (setup TEXT NOT NULL, coin TEXT NOT NULL, "
+                                 "horizon INTEGER NOT NULL, n REAL, s REAL, s2 REAL, wins REAL, "
+                                 "PRIMARY KEY (setup, coin, horizon))")
+                self._db.commit()
+                for setup, coin, h, n, s1, s2, w in self._db.execute("SELECT * FROM bot_markouts"):
+                    self.markouts[(setup, coin, int(h))] = [n, s1, s2, w]
             except Exception:
                 log.exception("could not open the bot's trade history; it starts empty")
                 self._db = None
@@ -103,6 +117,7 @@ class BotService:
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._save_markouts()
         if self._db:
             self._db.close()
 
@@ -112,6 +127,9 @@ class BotService:
             try:
                 self.tick()
                 self._hourly()
+                self._ticks += 1
+                if self._ticks % MARKOUT_SAVE_S == 0:
+                    self._save_markouts()
             except Exception:
                 log.exception("bot tick failed")
 
@@ -135,7 +153,8 @@ class BotService:
     # ── the work ───────────────────────────────────────────────────────────
     def tick(self) -> list[dict]:
         closed: list[dict] = []
-        for coin in {s.rule.coin for s in self.sims.values()}:
+        auto_coins = set(self._auto_coins()) if self.auto["on"] else set()
+        for coin in {s.rule.coin for s in self.sims.values()} | auto_coins:
             pipe = self.rt.pipelines.get(coin)
             if pipe is None or not pipe.state.now_ms:
                 continue
@@ -146,6 +165,8 @@ class BotService:
             if cur and now < min(cur):                       # a replay started over: nothing open survives that
                 for s in sims:
                     s.drop()
+                for dq in self._pending.values():
+                    dq.clear()
                 cur = None
             if cur is None:
                 cur = (now, now)
@@ -170,10 +191,13 @@ class BotService:
                 continue
             funding = st.context.funding if st.context else 0.0
             fired: dict[str, int] = {}
-            if any(s.rule.timeframe == "auto" for s in sims):
-                fired = detect(pipe, self._mem.setdefault(coin, CoinMemory()), now)
+            if coin in auto_coins:
+                fired = {k: v for k, v in detect(pipe, self._mem.setdefault(coin, CoinMemory()), now).items()
+                         if k in self.auto["setups"]}
                 for setup, side in fired.items():
                     self.signals.append((now, coin, setup, side))
+                    for h in MARKOUT_S:
+                        self._pending[h].append((now + h * 1000, coin, setup, side, last.mid))
                 if len(self.signals) > SIGNALS_KEPT:
                     del self.signals[: len(self.signals) - SIGNALS_KEPT]
             for s in sims:
@@ -188,7 +212,43 @@ class BotService:
                 s.signal(now, side, last.best_bid, last.best_ask)
         for t in closed:
             self._record(t)
+        self._settle_markouts()
         return closed
+
+    def _settle_markouts(self) -> None:
+        """Signals old enough: how far the mid went their way, in bps, before any fees."""
+        for h, dq in self._pending.items():
+            while dq:
+                due, coin, setup, side, mid0 = dq[0]
+                pipe = self.rt.pipelines.get(coin)
+                if pipe is None:
+                    dq.popleft()
+                    continue
+                if pipe.state.now_ms < due:
+                    break
+                dq.popleft()
+                b = pipe.state.books.latest_at(due)
+                if b is None or not mid0 or b.mid <= 0:
+                    continue
+                move = side * (b.mid / mid0 - 1) * 1e4
+                acc = self.markouts.setdefault((setup, coin, h), [0.0, 0.0, 0.0, 0.0])
+                acc[0] += 1
+                acc[1] += move
+                acc[2] += move * move
+                acc[3] += 1 if move > 0 else 0
+                self._markouts_dirty = True
+                self._auto_cache = None
+
+    def _save_markouts(self) -> None:
+        if not self._db or not self._markouts_dirty:
+            return
+        try:
+            self._db.executemany("INSERT OR REPLACE INTO bot_markouts (setup, coin, horizon, n, s, s2, wins) "
+                                 "VALUES (?, ?, ?, ?, ?, ?, ?)", [(*k, *v) for k, v in self.markouts.items()])
+            self._db.commit()
+            self._markouts_dirty = False
+        except sqlite3.Error:
+            log.exception("could not save signal markouts")
 
     def _record(self, t: dict) -> None:
         key = (t["rule_id"], t["style"])
@@ -364,6 +424,12 @@ class BotService:
             self._forget(rid)
         self.signals.clear()
         self.auto["benched"] = []
+        self.markouts.clear()
+        for dq in self._pending.values():
+            dq.clear()
+        if self._db:
+            self._db.execute("DELETE FROM bot_markouts")
+            self._db.commit()
         if rebuild:
             self._build_auto()
         self._auto_cache = None
@@ -422,8 +488,33 @@ class BotService:
                "total": {st: stats([t for d in by_rule.values() for t in d[st]]) for st in STYLES},
                "setup_stats": list(per_setup.values()), "best": board[:12], "worst": board[-3:][::-1] if len(board) > 12 else [],
                "open": sorted(open_, key=lambda o: o["entry_ms"], reverse=True)[:20],
-               "signals": [{"ms": ms, "coin": c, "setup": SETUPS[k][0], "side": sd} for ms, c, k, sd in self.signals[-12:][::-1]]}
+               "signals": [{"ms": ms, "coin": c, "setup": SETUPS[k][0], "side": sd} for ms, c, k, sd in self.signals[-12:][::-1]],
+               "markouts": self.markout_table(), "markout_s": list(MARKOUT_S)}
         self._auto_cache = (time.time(), out)
+        return out
+
+    def markout_table(self) -> list[dict]:
+        """Per setup and horizon: signals scored, the average move their way (bps), how often it went their way,
+        and a t-stat; per coin too."""
+        def cell(accs):
+            n = sum(a[0] for a in accs)
+            if not n:
+                return {"n": 0, "avg_bps": None, "won": None, "t": None}
+            s1, s2, w = sum(a[1] for a in accs), sum(a[2] for a in accs), sum(a[3] for a in accs)
+            mean = s1 / n
+            var = (s2 - n * mean * mean) / (n - 1) if n > 1 else 0.0
+            t = mean / math.sqrt(var / n) if n >= 10 and var > 0 else None
+            return {"n": int(n), "avg_bps": mean, "won": w / n, "t": t}
+        out = []
+        coins = sorted({c for _, c, _ in self.markouts})
+        for key, (label, _) in SETUPS.items():
+            if key not in self.auto["setups"]:
+                continue
+            row = {"key": key, "label": label,
+                   "all": [cell([v for (s, _, h), v in self.markouts.items() if s == key and h == hh]) for hh in MARKOUT_S],
+                   "coins": {c: [cell([self.markouts[(key, c, hh)]] if (key, c, hh) in self.markouts else []) for hh in MARKOUT_S]
+                             for c in coins}}
+            out.append(row)
         return out
 
     def _make_sims(self, r: Rule) -> None:
