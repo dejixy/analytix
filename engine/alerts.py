@@ -67,6 +67,8 @@ class Alert:
             icon = "⚠️"
         elif self.kind == "scanner":
             icon = "🔎"
+        elif self.kind == "bot":
+            icon = "🤖"
         body = "\n".join(html.escape(x) for x in self.lines)
         return f"{icon} <b>{html.escape(self.title)}</b>" + (f"\n{body}" if body else "")
 

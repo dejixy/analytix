@@ -271,6 +271,15 @@ It keeps a one-second grid of each main coin's lowest best bid, highest best ask
 
 Measured, not modelled; live mode only (`engine/holdclock.py`, `api/holdclock.py`, `GET /api/hold`).
 
+The **Bot** button is a trading bot in **shadow mode**: it trades your rules on the live timeframe cards and fills every trade the way Hyperliquid itself would, but sends no orders. It answers "would this survive real costs?" before any money is involved.
+
+- **Rules**: pick a coin, a card (1m to 1w) and the rows that must agree (on 1m: Flow, Who, Forced, Book), how strong each must be, longs, shorts or both, leverage (up to Hyperliquid's max for the coin), margin, a target and stop in bps, a time limit, whether to close when the rows flip, a cooldown, a trades-per-hour cap and a daily loss stop. Up to 12 rules; changing a rule's trading settings starts a fresh track record.
+- **Two ways at once**: every rule runs with **market orders** (fills half a second after the signal at the best ask or bid, walking the book for size, 0.045% a side) and with **limit orders** (joins the best bid or ask, counts as filled only when a trade prints through it, so it can miss; 0.015%, take-profits rest as limits). Stops, time exits and flips are market orders. Stops are checked on every book update, so a wick fills past the stop as it would for real. Funding is charged while open, and isolated liquidation (maintenance at half the initial margin at max leverage) caps a loss at the margin.
+- **Track record** per rule and style: trades, wins, the win rate needed to break even after fees, before fees, fees, net, average per trade, worst dip, today, a plain verdict (too early before 30 trades; "the costs eat the edge" when it wins before fees and loses after; "steady enough that luck is an unlikely explanation" at t ≥ 2), what's open now, and the latest trades.
+- **Telegram** (live mode, using the Alerts bot): off, an hourly summary, or every trade; a message when a daily loss stop trips.
+
+Rules live in `data/bot.json`, closed trades in the bars SQLite file (`engine/bot.py`, `api/bot.py`, `GET /api/bot`, `POST /api/bot/rules`, `DELETE /api/bot/rules/{id}`, `POST /api/bot/rules/{id}/reset`). Live trading, through a Hyperliquid API wallet that can trade but not withdraw, comes next.
+
 ### Position watch
 
 The **Positions** button opens position watch. Paste a wallet address (and a name if you like) and it shows that wallet's open Hyperliquid positions, refreshed every 20 seconds. It's read-only: Hyperliquid shows every wallet's positions publicly, so it needs no keys and can't trade. Up to 10 wallets; they're kept in `data/watch.json` on the machine running Analytix.
