@@ -36,11 +36,13 @@ export default function HoldClock({ coins, defaultCoin, onClose }) {
 
   useEffect(() => {
     alive.current = true;
+    let current = true;                       // this effect's URL is still the one on screen
+    setD((old) => (old && old.leverage === (num(lev) || 800) && (old.entry ?? null) === num(entry) ? old : null));
     const load = async () => {
       try {
         const r = await fetch(url);
         const j = await r.json();
-        if (!alive.current) return;
+        if (!alive.current || !current) return;
         if (r.ok) {
           setD(j);
           setError(null);
@@ -49,15 +51,17 @@ export default function HoldClock({ coins, defaultCoin, onClose }) {
         if (alive.current) setError("Couldn't reach the backend.");
       }
     };
-    load();
+    const first = setTimeout(load, 250);      // wait for typing to pause
     const t = setInterval(load, 3000);
     return () => {
-      alive.current = false;
+      current = false;
+      clearTimeout(first);
       clearInterval(t);
     };
   }, [url]);
+  useEffect(() => () => { alive.current = false; }, []);
 
-  const L = num(lev) || 800;
+  const L = d?.leverage || num(lev) || 800;
   const now = d?.now || {};
   const live = d?.live || {};
   const curveNow = d?.survival_like_now || [];
@@ -118,7 +122,7 @@ export default function HoldClock({ coins, defaultCoin, onClose }) {
                 <span className={`plan-risk ${d.safe_90_s == null ? (enough ? "up" : "") : d.safe_90_s < 30 ? "down" : d.safe_90_s < 120 ? "mid" : "up"}`}>
                   {d.safe_90_s != null ? `~${fmtS(d.safe_90_s)}` : enough ? "15 min+" : "learning"}
                 </span>
-                <span className="plan-safe">held 9 times in 10</span>
+                <span className="plan-safe">held 9 times in 10{d.history_s < 6 * 3600 ? ` (from only ${fmtS(d.history_s)} of data so far)` : ""}</span>
               </div>
               <div className="plan-safe">
                 {d.half_gone_s != null ? `Half of these positions are gone by ~${fmtS(d.half_gone_s)}. ` : ""}
@@ -231,7 +235,7 @@ function position(d, side) {
             {p.dist_now_bps.toFixed(1)} bps to the bust ({side === "long" ? "best bid" : "best ask"} {fmtPrice(side === "long" ? d.live?.bid : d.live?.ask)}).
           </p>
           <table className="plan-table">
-            <thead><tr><th>From here</th>{p.survival.map((c) => <th key={c.horizon}>{hLabel(c.horizon)}</th>)}</tr></thead>
+            <thead><tr><th>{p.like_now ? "From here, like now" : "From here"}</th>{p.survival.map((c) => <th key={c.horizon}>{hLabel(c.horizon)}</th>)}</tr></thead>
             <tbody>
               <tr>
                 <td>Still in</td>

@@ -185,7 +185,7 @@ class HoldClock:
         out = {
             "history_s": int(len(g)), "dist_bps": dist * 1e4,
             "bust_price": (entry or mid) * (1 - side * dist) if (entry or mid) else None,
-            "survival": curve, "survival_like_now": now_curve,
+            "survival": curve, "survival_like_now": now_curve, "entry": entry, "bust": bust,
             "safe_90_s": time_at(now_curve if any(c["survive"] is not None for c in now_curve) else curve, 0.9),
             "half_gone_s": time_at(now_curve if any(c["survive"] is not None for c in now_curve) else curve, 0.5),
             "drift": {k: {**v, "margin_pct_p50": v["p50"] * leverage / 100, "margin_pct_p90": v["p90"] * leverage / 100,
@@ -204,9 +204,13 @@ class HoldClock:
         if entry and mid:
             now_dist = (mid - (entry * (1 - side * dist))) / mid * side if bust is None else \
                 (mid - bust) / mid * side
+            curve_here, like = [], True
+            if now_dist > 0:
+                curve_here = survival(g, side, now_dist, LIVE_HORIZONS, like_now=True)
+                if not any(c["survive"] is not None for c in curve_here):     # too little history like now
+                    curve_here, like = survival(g, side, now_dist, LIVE_HORIZONS), False
             out["position"] = {"pnl_pct": side * (mid - entry) / entry * leverage * 100, "dist_now_bps": now_dist * 1e4,
-                               "survival": survival(g, side, max(now_dist, 1e-6), LIVE_HORIZONS, like_now=True)
-                               if now_dist > 0 else [], "busted": now_dist <= 0}
+                               "survival": curve_here, "like_now": like, "busted": now_dist <= 0}
         return out
 
     def live(self, coin: str, side: int) -> dict:
