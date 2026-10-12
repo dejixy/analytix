@@ -179,3 +179,24 @@ def test_calibration_compares_odds_with_what_happened():
     top = [r for r in t["rows"] if r["band"] == "90–100%"][0]
     assert t["settled"] == 4 and top["n"] == 3 and top["happened"] == pytest.approx(2 / 3)
     assert resolved_value(0.99) == 1 and resolved_value(0.01) == 0 and resolved_value(0.5) is None
+
+
+def test_club_tags_still_match_but_real_words_do_not():
+    assert name_score("LOSC Lille", "Lille") == 1.0 and name_score("AS Roma", "Roma") == 1.0
+    assert name_score("Paris Saint Germain", "Paris") < 0.75
+    assert name_score("Paris Saint Germain", "Paris Saint-Germain") == 1.0
+
+
+def test_matches_without_a_named_competition_search_their_sport():
+    from engine.intel import leagues_for
+    one, exact = leagues_for({"competition": "NFL"})
+    assert one == [("football", "nfl")] and exact
+    soccer, exact = leagues_for({"sport": "Soccer"})
+    assert ("soccer", "eng.1") in soccer and not exact
+    anything, _ = leagues_for({})
+    assert ("basketball", "nba") in anything and ("soccer", "uefa.champions") in anything
+
+
+def test_catch_alls_are_not_news_names():
+    assert news_query(["Harry Kane", "Award other", "Lamine Yamal"]) == '("Harry Kane" OR "Lamine Yamal") sourcelang:english'
+    assert news_query(["None of these", "Draw"]) is None

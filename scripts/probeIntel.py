@@ -51,14 +51,15 @@ async def main() -> None:
         except Exception as exc:
             print(f"{league}: failed: {type(exc).__name__}: {exc}")
 
-    show("GDELT news")
+    show("GDELT news (shares a 1-call-per-5s limit with the running service, so a 429 here can be normal)")
+    await asyncio.sleep(20)
     q = '"Real Madrid" sourcelang:english'
     try:
         pts = await fetch_news_volume(q)
         print(f"volume: {len(pts)} points, last 2h {sum(v for t, v in pts if t > now - 7_200_000):.0f} articles")
     except Exception as exc:
         print(f"volume failed: {type(exc).__name__}: {exc}")
-    await asyncio.sleep(6)
+    await asyncio.sleep(20)
     try:
         arts = await fetch_headlines(q, 3)
         for a in arts:
@@ -80,6 +81,8 @@ async def main() -> None:
         comps[c] = comps.get(c, 0) + 1
     print(f"{len(targets)} matches; competitions: {comps}")
     print("competitions with no ESPN league yet:", [c for c in comps if not league_for(c)])
+    for t in [t for t in targets if not league_for(t["f"].get("competition"))][:3]:
+        print("  e.g. no competition:", {k: v for k, v in t["f"].items() if k not in ("resolutionDeadline",)})
     live = await intel.refresh_games()
     print(f"matched to ESPN games: {len(intel.matches)} of {len(targets)} (a game on now: {live})")
     unmatched = [t for t in targets if t["key"] not in intel.matches and league_for(t["f"].get("competition"))][:5]

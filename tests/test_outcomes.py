@@ -353,3 +353,42 @@ def test_trades_feed_the_sharp_book_and_settled_markets_feed_calibration():
     svc.fetch_meta = fewer
     asyncio.run(svc.refresh_meta())
     assert svc.intel.calib.results[-1][0] == 10824 and svc.intel.calib.results[-1][2] == 1
+
+
+def test_news_backs_off_when_gdelt_says_too_many_requests():
+    import api.intel as ai
+    svc = _svc()
+    ai_gap, ai.NEWS_GAP_S = ai.NEWS_GAP_S, 0.0
+    try:
+        async def busy(q):
+            raise RuntimeError("Client error '429 Too Many Requests'")
+        with pytest.raises(RuntimeError):
+            asyncio.run(svc.intel._gdelt(busy, "x"))
+        assert svc.intel._gdelt_blocked_until - time.time() > 50 and svc.intel._gdelt_strikes == 1
+    finally:
+        ai.NEWS_GAP_S = ai_gap
+
+
+def test_a_match_with_no_named_competition_is_found_on_its_sports_boards():
+    svc = _svc()
+    start = int(time.time() * 1000) + 3_600_000
+    meta = {"outcomes": [{"outcome": 1, "name": "template:sportsContestWinner", "venue": "out",
+                          "description": f"sport:Soccer|participantA:LOSC Lille|participantB:Arsenal|"
+                                         f"scheduledStart:{time.strftime('%Y%m%d-%H%M', time.gmtime(start / 1000))}"}],
+            "questions": []}
+
+    async def m():
+        return meta
+    asked = []
+
+    async def board(sport, league, day):
+        asked.append(league)
+        if league != "uefa.champions":
+            return []
+        return [{"start_ms": start, "state": "pre", "home": {"team": {"displayName": "Arsenal"}},
+                 "away": {"team": {"displayName": "Lille"}}, "odds": {}}]
+    svc.fetch_meta, svc.intel.fetch_scoreboard = m, board
+    asyncio.run(svc.refresh_meta())
+    asyncio.run(svc.intel.refresh_games())
+    assert "eng.1" in asked and "uefa.champions" in asked
+    assert svc.intel.matches["m1"][1] is False                         # Lille (side A) are the away team

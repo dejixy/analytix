@@ -85,37 +85,62 @@ def _ml(side: dict | None) -> float | None:
     return None
 
 
+def _d(x) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _first(x) -> dict:
+    return _d(x[0]) if isinstance(x, list) and x else {}
+
+
+def _score(c: dict) -> int | None:
+    v = c.get("score")
+    if isinstance(v, dict):                       # some feeds nest it: {"value": 2.0, "displayValue": "2"}
+        v = v.get("value", v.get("displayValue"))
+    f = _f(v)
+    return int(f) if f is not None else None
+
+
+def parse_event(ev: dict, sport: str, league: str) -> dict | None:
+    comp = _first(ev.get("competitions"))
+    teams = {_d(c).get("homeAway"): _d(c) for c in comp.get("competitors") or []}
+    if "home" not in teams or "away" not in teams:
+        return None
+    status = _d(comp.get("status")) or _d(ev.get("status"))
+    st = _d(status.get("type"))
+    odds_raw = _first(comp.get("odds"))
+    ml = _d(odds_raw.get("moneyline"))
+    odds = {"home_ml": _ml(odds_raw.get("homeTeamOdds")) or _ml(ml.get("home")),
+            "away_ml": _ml(odds_raw.get("awayTeamOdds")) or _ml(ml.get("away")),
+            "draw_ml": _ml(odds_raw.get("drawOdds")) or _ml(ml.get("draw")),
+            "provider": _d(odds_raw.get("provider")).get("name"), "details": odds_raw.get("details")}
+    prob = _d(_d(_d(comp.get("situation")).get("lastPlay")).get("probability"))
+    win_prob = None
+    if prob.get("homeWinPercentage") is not None:
+        win_prob = {"home": _f(prob.get("homeWinPercentage")), "away": _f(prob.get("awayWinPercentage")),
+                    "tie": _f(prob.get("tiePercentage"))}
+    link = next((_d(l).get("href") for l in ev.get("links") or [] if "summary" in (_d(l).get("rel") or [])), None)
+    return {
+        "id": str(ev.get("id")), "name": ev.get("name"), "sport": sport, "league": league,
+        "start_ms": _ms(ev.get("date")), "state": st.get("state"), "completed": bool(st.get("completed")),
+        "detail": st.get("shortDetail") or st.get("detail"), "clock": status.get("displayClock"),
+        "period": status.get("period"),
+        "home": {"team": _d(teams["home"].get("team"))}, "away": {"team": _d(teams["away"].get("team"))},
+        "home_score": _score(teams["home"]), "away_score": _score(teams["away"]),
+        "odds": odds, "win_prob": win_prob, "link": link,
+    }
+
+
 def parse_scoreboard(js: dict, sport: str, league: str) -> list[dict]:
+    """One league's scoreboard → games. An event in an unexpected shape is skipped, not fatal."""
     games = []
-    for ev in (js or {}).get("events") or []:
-        comp = (ev.get("competitions") or [{}])[0]
-        teams = {c.get("homeAway"): c for c in comp.get("competitors") or [] if isinstance(c, dict)}
-        if "home" not in teams or "away" not in teams:
-            continue
-        status = comp.get("status") or ev.get("status") or {}
-        st = status.get("type") or {}
-        odds_raw = (comp.get("odds") or [{}])[0] if comp.get("odds") else {}
-        ml = odds_raw.get("moneyline") or {}
-        odds = {"home_ml": _ml(odds_raw.get("homeTeamOdds")) or _ml(ml.get("home")),
-                "away_ml": _ml(odds_raw.get("awayTeamOdds")) or _ml(ml.get("away")),
-                "draw_ml": _ml(odds_raw.get("drawOdds")) or _ml(ml.get("draw")),
-                "provider": (odds_raw.get("provider") or {}).get("name"), "details": odds_raw.get("details")}
-        prob = ((comp.get("situation") or {}).get("lastPlay") or {}).get("probability") or {}
-        win_prob = None
-        if prob.get("homeWinPercentage") is not None:
-            win_prob = {"home": _f(prob.get("homeWinPercentage")), "away": _f(prob.get("awayWinPercentage")),
-                        "tie": _f(prob.get("tiePercentage"))}
-        games.append({
-            "id": str(ev.get("id")), "name": ev.get("name"), "sport": sport, "league": league,
-            "start_ms": _ms(ev.get("date")), "state": st.get("state"), "completed": bool(st.get("completed")),
-            "detail": st.get("shortDetail") or st.get("detail"), "clock": status.get("displayClock"),
-            "period": status.get("period"),
-            "home": {"team": teams["home"].get("team") or {}}, "away": {"team": teams["away"].get("team") or {}},
-            "home_score": int(_f(teams["home"].get("score")) or 0) if teams["home"].get("score") not in (None, "") else None,
-            "away_score": int(_f(teams["away"].get("score")) or 0) if teams["away"].get("score") not in (None, "") else None,
-            "odds": odds, "win_prob": win_prob,
-            "link": next((l.get("href") for l in ev.get("links") or [] if "summary" in (l.get("rel") or [])), None),
-        })
+    for ev in _d(js).get("events") or []:
+        try:
+            g = parse_event(_d(ev), sport, league)
+        except Exception:                               # one odd event must not lose the whole board
+            g = None
+        if g:
+            games.append(g)
     return games
 
 
