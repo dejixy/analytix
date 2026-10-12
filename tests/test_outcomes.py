@@ -301,13 +301,15 @@ def _book(svc, oid, bid, ask, size="50"):
 
 def test_price_markets_use_the_options_market_when_there_is_one():
     from engine.options import build_surface
-    from tests.test_intel import _rows
+    from tests.test_intel import DAY, NOW, _rows
     svc = _svc()
     asyncio.run(svc.refresh_meta())
     m = svc.markets[11214]
     now = int(time.time() * 1000)
     m.expiry_ms = now + 3 * 86_400_000
-    svc.intel.surfaces["ETH"] = build_surface("ETH", _rows("ETH", fwd=2540.0, iv=lambda k: 60.0, days=(2, 9)), now)
+    shift = (now - NOW) / DAY                     # the test options expire 2 and 9 days from today, not a fixed date
+    svc.intel.surfaces["ETH"] = build_surface("ETH", _rows("ETH", fwd=2540.0, iv=lambda k: 60.0,
+                                                           days=(2 + shift, 9 + shift)), now)
     _book(svc, 11214, "0.20", "0.25", "200")
     r = svc.row(m, now)
     assert r["ref"]["source"] == "options" and 0.4 < r["fair"] < 0.6
@@ -335,6 +337,42 @@ def test_a_finished_game_prices_its_market_and_alerts_once():
     svc._edge_alerts(now)
     svc._edge_alerts(now)
     assert len(pushed) == 1 and "buy Yes at 84.0¢" in pushed[0].title and pushed[0].kind == "pm_edge"
+    assert pushed[0].title.startswith("Final score edge:") and not any("((" in x for x in pushed[0].lines)
+
+
+def test_the_moves_estimate_expects_the_session_ahead_and_follows_implied_vol():
+    from engine.outcomes import vol_profile
+    from tests.test_scorecard import MONDAY, _index_rows
+    svc = _svc()
+    asyncio.run(svc.refresh_meta())
+    m = svc.markets[11214]
+    perp = "xyz:SP500"
+    svc.profiles[perp] = (time.time(), vol_profile(_index_rows()))
+    now = MONDAY + 8 * 3_600_000                                        # Monday 08:00 UTC, the session still ahead
+    s_prof, how, _ = svc.vol_model(perp, 12 * 3600, now)
+    assert how == "profile" and s_prof * math.sqrt(12 * 3600) == pytest.approx(math.sqrt(7) * 0.004, rel=0.2)
+    svc.implied[perp] = (time.time(), 40.0)                            # a jumpy options market: scaled up (capped at 3×)
+    s_iv, how, index = svc.vol_model(perp, 12 * 3600, now)
+    assert how == "implied" and index == "VIX" and s_iv == pytest.approx(s_prof * math.sqrt(3), rel=1e-6)
+    m.underlying, m.expiry_ms = perp, int(time.time() * 1000) + 12 * 3_600_000
+    svc.dex_marks[perp] = 6700.0
+    ref, _ = svc.estimate(m, int(time.time() * 1000))
+    assert ref["source"] == "moves" and "scaled to the VIX" in ref["label"]
+
+
+def test_sources_worse_than_the_market_are_hidden_from_the_edge_board():
+    svc = _svc()
+    asyncio.run(svc.refresh_meta())
+    m = svc.markets[11214]
+    now = int(time.time() * 1000)
+    m.expiry_ms = now + 3 * 86_400_000
+    svc.vol[("ETH", "long")] = (time.time(), 0.0001)
+    _book(svc, 11214, "0.02", "0.05", "2000")
+    r = svc.row(m, now)
+    assert r["ref"]["source"] == "moves"
+    assert svc.edges([r], now) and svc.edges([r], now)[0]["trust"] == "quiet"     # unproven: shown, no alerts
+    svc._score = (time.time(), {"moves": {"verdict": "worse", "markets": 30, "skill": -0.2, "edge_return": -0.3, "edges": 12}})
+    assert svc.edges([r], now) == [] and svc.edges_hidden == 1
 
 
 def test_trades_feed_the_sharp_book_and_settled_markets_feed_calibration():

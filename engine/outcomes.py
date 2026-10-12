@@ -21,6 +21,7 @@ What Analytix adds
 """
 import math
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -342,6 +343,69 @@ def sigma_per_sqrt_s(closes: list[float], step_s: float) -> float | None:
     m = sum(r) / len(r)
     var = sum((x - m) ** 2 for x in r) / (len(r) - 1)
     return math.sqrt(var / step_s) if var > 0 else None
+
+
+HOUR_MS = 3_600_000
+EPOCH_HOUR_OF_WEEK = 72                 # 1 Jan 1970 00:00 UTC was a Thursday: hour 72 of a Monday-based week
+MIN_BUCKET_SAMPLES = 3
+
+
+@dataclass
+class VolProfile:
+    """How much a perp moves in each hour of the week, from its hourly candles: one figure per hour of the day,
+    weekdays and weekends apart. An index perp barely moves while its stock market is shut and moves most in the
+    first session hour; averaging over the whole clock, as a single volatility does, understates the moves that
+    are coming whenever a session lies ahead. Crypto comes out nearly flat, as it should."""
+    var: list[float]                     # 168 hours, Monday 00:00 UTC first: mean squared hourly log return
+    prefix: list[float]                  # running total of var, 169 entries
+    samples: int
+
+    @property
+    def week(self) -> float:
+        return self.prefix[-1]
+
+
+def vol_profile(rows: list[dict]) -> VolProfile | None:
+    """Hourly candles ({"t": open ms, "c": close}) → a VolProfile, or None with too little history."""
+    pts = sorted((int(r["t"]), float(r["c"])) for r in rows if r.get("c") and float(r["c"]) > 0)
+    sums: dict[tuple[int, int], list[float]] = {}
+    n = 0
+    for (t0, c0), (t1, c1) in zip(pts, pts[1:]):
+        if t1 - t0 != HOUR_MS:
+            continue                                 # a gap in the candles: no return for that hour
+        g = time.gmtime(t1 / 1000)
+        key = (1 if g.tm_wday >= 5 else 0, g.tm_hour)
+        sums.setdefault(key, []).append(math.log(c1 / c0) ** 2)
+        n += 1
+    if n < 48:
+        return None
+    by_class = {w: [x for (cw, _), xs in sums.items() if cw == w for x in xs] for w in (0, 1)}
+    overall = sum(x for xs in sums.values() for x in xs) / n
+    cls_mean = {w: (sum(xs) / len(xs) if xs else overall) for w, xs in by_class.items()}
+    floor = 0.02 * overall
+    var = []
+    for how in range(168):
+        day, hour = divmod(how, 24)
+        w = 1 if day >= 5 else 0
+        xs = sums.get((w, hour), [])
+        v = sum(xs) / len(xs) if len(xs) >= MIN_BUCKET_SAMPLES else cls_mean[w]
+        var.append(max(v, floor))
+    prefix = [0.0]
+    for v in var:
+        prefix.append(prefix[-1] + v)
+    return VolProfile(var, prefix, n)
+
+
+def _cum_var(p: VolProfile, t_ms: float) -> float:
+    a = t_ms / HOUR_MS + EPOCH_HOUR_OF_WEEK
+    k = math.floor(a)
+    weeks, i = divmod(k, 168)
+    return weeks * p.week + p.prefix[i] + (a - k) * p.var[i]
+
+
+def profile_var(p: VolProfile, start_ms: float, end_ms: float) -> float:
+    """Expected variance of the log price between two moments, hour by hour of the week."""
+    return max(0.0, _cum_var(p, end_ms) - _cum_var(p, start_ms)) if end_ms > start_ms else 0.0
 
 
 def fair_above(spot: float | None, line: float | None, sigma_s: float | None, tau_s: float) -> float | None:

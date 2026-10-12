@@ -13,8 +13,9 @@ from types import SimpleNamespace
 from api.intel import IntelService
 from engine.intel import league_for
 from engine.options import build_surface, digital_above
-from engine.outcomes import build_markets
-from ingestion.intel import fetch_headlines, fetch_news_volume, fetch_options, fetch_scoreboard
+from engine.outcomes import build_markets, profile_var, vol_profile
+from ingestion.backfill import fetch_candles
+from ingestion.intel import VOL_INDEX, fetch_headlines, fetch_news_volume, fetch_options, fetch_scoreboard, fetch_vol_index
 from ingestion.outcomes import fetch_outcome_meta
 
 
@@ -50,6 +51,22 @@ async def main() -> None:
                                                                "odds", "win_prob")}, default=str)[:400])
         except Exception as exc:
             print(f"{league}: failed: {type(exc).__name__}: {exc}")
+
+    show("Cboe volatility indices and the hour-of-week profiles")
+    for asset, index in VOL_INDEX.items():
+        try:
+            print(f"{index} ({asset}): {await fetch_vol_index(index)}")
+        except Exception as exc:
+            print(f"{index} ({asset}): failed: {type(exc).__name__}: {exc}")
+        try:
+            prof = vol_profile(await fetch_candles(f"xyz:{asset}", "1h", n=24 * 28))
+            if prof:
+                day = (profile_var(prof, now, now + 86_400_000)) ** 0.5 * 100
+                print(f"  xyz:{asset}: {prof.samples} hourly returns, next 24h about {day:.2f}%, a week {prof.week ** 0.5 * 100:.2f}%")
+            else:
+                print(f"  xyz:{asset}: too little hourly history")
+        except Exception as exc:
+            print(f"  xyz:{asset}: candles failed: {type(exc).__name__}: {exc}")
 
     show("GDELT news (shares a 1-call-per-5s limit with the running service, so a 429 here can be normal)")
     await asyncio.sleep(20)

@@ -364,4 +364,4 @@ class IntelService:
     def public_status(self) -> dict:
         return {**self.status, "surfaces": {a: len(s.smiles) for a, s in self.surfaces.items()},
                 "matched_games": len(self.matches), "news_tracked": len(self.news), "sharp": self.sharp.summary(),
-                "calibration_settled": len(self.calib.results)}
+                "calibration_settled": len(self.calib.results), "implied": getattr(self.svc, "implied_status", None)}
