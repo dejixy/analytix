@@ -92,6 +92,14 @@ class AlertService:
             except asyncio.QueueFull:
                 log.warning("telegram queue full; dropping %s", a.id)
 
+    def notify(self, a: Alert) -> None:
+        """Telegram only, not the dashboard's alert feed: the trading bot's own reports."""
+        if self.telegram_ready:
+            try:
+                self._queue.put_nowait(a)
+            except asyncio.QueueFull:
+                log.warning("telegram queue full; dropping %s", a.id)
+
     # ── settings ───────────────────────────────────────────────────────────
     def _load(self) -> dict:
         cfg = {"rules": {k: dict(v) for k, v in DEFAULT_RULES.items()}, "cooldown_min": DEFAULT_COOLDOWN_MIN,

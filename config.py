@@ -116,3 +116,4 @@ RECORD_MIN_FREE_GB = float(os.getenv("ANALYTIX_RECORD_MIN_FREE_GB", "2"))   # pa
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 ALERTS_FILE = Path(os.getenv("ANALYTIX_ALERTS_FILE", str(ROOT / "data" / "alerts.json")))   # alert settings + Telegram
 WATCH_FILE = Path(os.getenv("ANALYTIX_WATCH_FILE", str(ROOT / "data" / "watch.json")))      # position watch wallets
+BOT_FILE = Path(os.getenv("ANALYTIX_BOT_FILE", str(ROOT / "data" / "bot.json")))            # the trading bot's rules

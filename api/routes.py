@@ -267,3 +267,35 @@ async def hold(request: Request, coin: str | None = None, side: str = "long",
     if entry and bust and (bust >= entry) == (side == "long"):
         raise HTTPException(400, "For a long the bust price is below the entry; for a short, above it.")
     return await rt.hold.read(coin, 1 if side == "long" else -1, leverage, target_pct, entry, bust, buffer_bps)
+
+
+# ── trading bot (shadow mode) ───────────────────────────────────────────────
+def _bot_call(fn, *args):
+    from api.bot import BotError
+    try:
+        return fn(*args)
+    except BotError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/bot")
+def bot(request: Request):
+    """The bot's rules, each one's track record with market and limit orders, what's open and the latest trades.
+    Shadow mode: real Hyperliquid prices and costs, no orders sent."""
+    return _rt(request).bot.public()
+
+
+@router.post("/bot/rules")
+def bot_save_rule(request: Request, rule: dict):
+    """Add a rule, or change one (include its id). New trading settings start a fresh track record."""
+    return _bot_call(_rt(request).bot.save_rule, rule)
+
+
+@router.delete("/bot/rules/{rule_id}")
+def bot_delete_rule(request: Request, rule_id: str):
+    return _bot_call(_rt(request).bot.delete_rule, rule_id)
+
+
+@router.post("/bot/rules/{rule_id}/reset")
+def bot_reset_rule(request: Request, rule_id: str):
+    return _bot_call(_rt(request).bot.reset_rule, rule_id)

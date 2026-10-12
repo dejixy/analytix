@@ -71,7 +71,7 @@ function FeedBadge({ feed, conn }) {
   );
 }
 
-export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions, onHold, more, onMore, outcomes, onOutcomes }) {
+export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions, onHold, onBot, more, onMore, outcomes, onOutcomes }) {
   const { price, context, coin, feed } = snap;
   const chg = context?.change_24h_pct;
   return (
@@ -108,6 +108,9 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
       </>}
 
       <div className="header-right">
+        <button className="alerts-open" onClick={onBot} title="Trading bot (shadow mode): rules built from the timeframe cards, filled with Hyperliquid's real costs, no orders sent">
+          Bot
+        </button>
         <button className="alerts-open" onClick={onHold} title="Very high leverage: how long a position like yours survives, measured on the real best bid and ask">
           Hold clock
         </button>
