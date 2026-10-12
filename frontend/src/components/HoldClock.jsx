@@ -187,10 +187,31 @@ export default function HoldClock({ coins, defaultCoin, onClose }) {
                   {r.median_s_to_target != null && ` When the target came first it took ~${fmtS(r.median_s_to_target)} (median).`}
                 </p>
                 <p className="plan-note">
-                  A win nets about +{r.net_win_pct.toFixed(0)}% after Papertrade's 0.2 bp deadband and 2% win fee (their impact haircut
-                  isn't in this yet, so real wins are a bit smaller). Per trade, that averages{" "}
+                  A win pays <b className="up">+{r.net_win_pct.toFixed(1)}%</b> after Papertrade's cut (you keep {(r.keep_share * 100).toFixed(0)}% of it),
+                  while a bust loses the full 100%. Per trade, that averages{" "}
                   <b className={r.ev_pct >= 0 ? "up" : ""}>{r.ev_pct >= 0 ? "+" : "−"}{Math.abs(r.ev_pct).toFixed(1)}%</b> of margin with no edge on direction.
                   {r.ev_pct > 0 && " A positive number here usually means the past day drifted your way, not a lasting edge."}
+                </p>
+              </section>
+            )}
+
+            {d.keep?.length > 0 && (
+              <section className="plan-sec">
+                <h3>What a win pays at {L}×</h3>
+                <table className="plan-table">
+                  <thead><tr><th>Target</th>{d.keep.map((k) => <th key={k.target_pct}>+{k.target_pct}%</th>)}</tr></thead>
+                  <tbody>
+                    <tr>
+                      <td>You get</td>
+                      {d.keep.map((k) => <td key={k.target_pct}>{k.net_pct > 0 ? `+${k.net_pct.toFixed(k.net_pct < 10 ? 1 : 0)}%` : "0"}</td>)}
+                    </tr>
+                  </tbody>
+                </table>
+                <p className="plan-note">
+                  Papertrade only cuts winning closes: the exit counts 0.2 bps worse, an impact haircut takes the most from small
+                  moves (never less than 10%), then 2% of what's left. At high leverage a small target is a tiny move, so quick
+                  scalps lose a big share of the win. Losses pay nothing extra.
+                  {!d.papertrade && ` Papertrade lists BTC and ETH only; ${d.coin} uses BTC's settings as a guide.`}
                 </p>
               </section>
             )}
@@ -233,6 +254,7 @@ function position(d, side) {
           <p className="plan-note">
             <b className={p.pnl_pct >= 0 ? "up" : "down"}>{p.pnl_pct >= 0 ? "+" : "−"}{Math.abs(p.pnl_pct).toFixed(1)}%</b> on margin ·{" "}
             {p.dist_now_bps.toFixed(1)} bps to the bust ({side === "long" ? "best bid" : "best ask"} {fmtPrice(side === "long" ? d.live?.bid : d.live?.ask)}).
+            {p.pnl_pct > 0 && p.net_pct != null && <> Closing now pays <b className="up">+{p.net_pct.toFixed(1)}%</b> after Papertrade's cut.</>}
           </p>
           <table className="plan-table">
             <thead><tr><th>{p.like_now ? "From here, like now" : "From here"}</th>{p.survival.map((c) => <th key={c.horizon}>{hLabel(c.horizon)}</th>)}</tr></thead>

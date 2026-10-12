@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from engine.holdclock import (
-    fill_drift, make_grid, now_read, papertrade_net, race, survival, time_at,
+    PAPERTRADE, fill_drift, make_grid, now_read, papertrade_net, race, survival, time_at,
 )
 
 log = logging.getLogger("analytix.holdclock")
@@ -29,6 +29,7 @@ STALE_S = 5                       # no book update for this long and the grid ma
 CACHE_S = 3.0
 GRID_CACHE_S = 10.0
 LIVE_HORIZONS = (10, 30, 60, 120, 300)
+KEEP_TARGETS = (10, 25, 50, 100, 200, 500)    # % of margin, for the "what a win pays" row
 
 
 class HoldClock:
@@ -167,7 +168,7 @@ class HoldClock:
             return hit[1]
         live = self.live(coin, side)
         g = self.grid(coin)
-        out = await asyncio.to_thread(self._compute, g, side, leverage, target_pct, entry, bust, buffer_bps, live)
+        out = await asyncio.to_thread(self._compute, g, side, leverage, target_pct, entry, bust, buffer_bps, live, coin)
         out["live"] = live
         out["coin"], out["side"], out["leverage"] = coin, side, leverage
         self._cache[key] = (time.time(), out)
@@ -176,7 +177,7 @@ class HoldClock:
         return out
 
     @staticmethod
-    def _compute(g, side, leverage, target_pct, entry, bust, buffer_bps, live) -> dict:
+    def _compute(g, side, leverage, target_pct, entry, bust, buffer_bps, live, coin="BTC") -> dict:
         dist = abs(entry - bust) / entry if entry and bust else max(1e-6, 1 / leverage - buffer_bps / 1e4)
         mid = live.get("mid")
         curve = survival(g, side, dist)
@@ -191,14 +192,17 @@ class HoldClock:
             "drift": {k: {**v, "margin_pct_p50": v["p50"] * leverage / 100, "margin_pct_p90": v["p90"] * leverage / 100,
                           "margin_pct_p99": v["p99"] * leverage / 100} for k, v in drift.items()},
             "now": now_read(g),
+            "papertrade": coin in PAPERTRADE,
+            "keep": [{"target_pct": t, "net_pct": papertrade_net(t / 100, leverage, coin) * 100} for t in KEEP_TARGETS],
         }
         if target_pct:
             tgt = target_pct / 100 / leverage
             r = race(g, side, dist, tgt)
             if r:
-                net = papertrade_net(target_pct / 100, 0.2, leverage)
+                net = papertrade_net(target_pct / 100, leverage, coin)
                 r["target_bps"] = tgt * 1e4
                 r["net_win_pct"] = net * 100
+                r["keep_share"] = net / (target_pct / 100)
                 r["ev_pct"] = (r["target_first"] * net - r["bust_first"]) * 100     # "neither" counted as flat
             out["race"] = r
         if entry and mid:
@@ -209,7 +213,9 @@ class HoldClock:
                 curve_here = survival(g, side, now_dist, LIVE_HORIZONS, like_now=True)
                 if not any(c["survive"] is not None for c in curve_here):     # too little history like now
                     curve_here, like = survival(g, side, now_dist, LIVE_HORIZONS), False
-            out["position"] = {"pnl_pct": side * (mid - entry) / entry * leverage * 100, "dist_now_bps": now_dist * 1e4,
+            raw = side * (mid - entry) / entry * leverage
+            out["position"] = {"pnl_pct": raw * 100, "dist_now_bps": now_dist * 1e4,
+                               "net_pct": (papertrade_net(raw, leverage, coin) if raw > 0 else raw) * 100,
                                "survival": curve_here, "like_now": like, "busted": now_dist <= 0}
         return out
 
