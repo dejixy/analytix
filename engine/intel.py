@@ -63,10 +63,15 @@ def tokens(s: str | None) -> set[str]:
 
 def name_score(a: str | None, b: str | None) -> float:
     """How surely two team names mean the same team, 0..1: shared words over the longer name, so "Manchester City"
-    and "Manchester United" only score 0.5."""
+    and "Manchester United" only score 0.5. One name inside the other counts as a match when the extra words are
+    short club tags ("LOSC Lille" = "Lille", "AS Roma" = "Roma"), not when they're real words ("Paris Saint
+    Germain" ≠ "Paris")."""
     ta, tb = tokens(a), tokens(b)
     if not ta or not tb:
         return 0.0
+    small, big = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if small <= big and all(len(w) <= 4 for w in big - small):
+        return 1.0
     return len(ta & tb) / max(len(ta), len(tb))
 
 
@@ -76,6 +81,32 @@ def team_match(name: str | None, short: str | None, team: dict) -> float:
     if short and team.get("abbreviation") and norm(short) == norm(team["abbreviation"]):
         return 1.0
     return max(name_score(name, team.get(k)) for k in ("displayName", "shortDisplayName", "name", "location"))
+
+
+SPORT_LEAGUES = {
+    "soccer": [("soccer", x) for x in ("uefa.champions", "uefa.europa", "eng.1", "esp.1", "ita.1", "ger.1", "fra.1", "usa.1")],
+    "football": [("football", "nfl"), ("football", "college-football")],
+    "basketball": [("basketball", "nba"), ("basketball", "wnba")],
+    "baseball": [("baseball", "mlb")],
+    "hockey": [("hockey", "nhl")],
+}
+
+
+def leagues_for(f: dict) -> tuple[list[tuple[str, str]], bool]:
+    """The ESPN scoreboards a match could be on: ([(sport, league)], exact). Exact when the listing names a known
+    competition; otherwise every main league of its sport (or of all sports), checked less often."""
+    one = league_for(f.get("competition") or f.get("league") or f.get("tournament"))
+    if one:
+        return [one], True
+    sport = norm(f.get("sport"))
+    if "soccer" in sport or sport == "football/soccer" or "association" in sport:
+        return SPORT_LEAGUES["soccer"], False
+    for key in ("basketball", "baseball", "hockey"):
+        if key in sport:
+            return SPORT_LEAGUES[key], False
+    if "football" in sport:
+        return SPORT_LEAGUES["football"], False
+    return [lg for v in SPORT_LEAGUES.values() for lg in v], False
 
 
 def league_for(competition: str | None) -> tuple[str, str] | None:
@@ -214,9 +245,14 @@ def headline_flags(titles: list[str]) -> list[str]:
     return found
 
 
+NOT_NAMES = {"other", "others", "none", "draw", "field", "tie", "any", "no"}
+
+
 def news_query(names: list[str]) -> str | None:
-    """GDELT search for a market's names: quoted, OR-ed, English sources."""
-    names = [n for n in dict.fromkeys(n.strip() for n in names if n and len(n.strip()) > 2)][:4]
+    """GDELT search for a market's names: quoted, OR-ed, English sources. Catch-alls ("Award other", "None of
+    these", "Draw") aren't names."""
+    names = [n for n in dict.fromkeys(n.strip() for n in names if n and len(n.strip()) > 2)
+             if not (set(norm(n).split()) & NOT_NAMES)][:4]
     if not names:
         return None
     q = " OR ".join(f'"{n}"' for n in names)

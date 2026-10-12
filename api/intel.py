@@ -14,7 +14,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from engine.intel import game_chip, game_probs, league_for, match_game, news_query, news_spike, norm, headline_flags
+from engine.intel import game_chip, game_probs, headline_flags, leagues_for, match_game, news_query, news_spike, norm
 from engine.options import build_surface, digital_above, implied_vol_at, touch_prob
 from engine.sharp import HORIZONS, Calibration, SharpBook, WalletStat
 from ingestion.intel import fetch_headlines, fetch_news_volume, fetch_options, fetch_scoreboard
@@ -26,8 +26,11 @@ OPTIONS_EVERY_S = 60
 OPTION_ASSETS = ("BTC", "ETH", "SOL")
 GAMES_LIVE_S = 20
 GAMES_IDLE_S = 300
-NEWS_GAP_S = 6.0                   # GDELT asks for one request every 5 seconds at most
-NEWS_TTL_S = 900
+NEWS_GAP_S = 15.0                  # GDELT asks for one request every 5 seconds at most; this shares the IP with
+#                                    anything else on the server, so it stays well under
+NEWS_TTL_S = 1800
+NEWS_BACKOFF_S = (60, 120, 300, 600, 900)   # after a 429 (too many requests): wait, longer each time
+WIDE_EVERY_S = 300                   # matches with no named competition: every league of the sport, every 5 minutes
 HEADLINES_TTL_S = 600
 NEWS_QUERIES = 80
 SPIKE_RATIO = 3.0
@@ -48,6 +51,9 @@ class IntelService:
         self.status = {k: {"ok": None, "last_ms": None, "error": None, "items": 0} for k in ("options", "games", "news")}
         self._gdelt_lock = asyncio.Lock()
         self._gdelt_last = 0.0
+        self._gdelt_blocked_until = 0.0
+        self._gdelt_strikes = 0
+        self._wide_at = 0.0
         self._pending_headlines: set[str] = set()
         self._tasks: list[asyncio.Task] = []
         self.fetch_options, self.fetch_scoreboard = fetch_options, fetch_scoreboard
@@ -142,17 +148,26 @@ class IntelService:
 
     async def refresh_games(self) -> bool:
         now = int(time.time() * 1000)
+        wide_due = time.time() - self._wide_at >= WIDE_EVERY_S
         targets = []
-        for t in self.sports_targets():
-            lg = league_for(t["f"].get("competition"))
-            if lg and (t["start_ms"] is None or now - 12 * 3_600_000 <= t["start_ms"] <= now + 48 * 3_600_000):
-                targets.append((t, lg))
         boards = set()
-        for t, lg in targets:
+        for t in self.sports_targets():
+            if t["start_ms"] is not None and not now - 36 * 3_600_000 <= t["start_ms"] <= now + 48 * 3_600_000:
+                continue                                      # long finished, or days away
+            leagues, exact = leagues_for(t["f"])
+            targets.append((t, leagues))
+            if not exact and not wide_due:
+                continue
             day = datetime.fromtimestamp(((t["start_ms"] or now) - 5 * 3_600_000) / 1000, timezone.utc)
-            boards.add((*lg, day.strftime("%Y%m%d")))
-        if not boards:
+            for lg in leagues:
+                boards.add((*lg, day.strftime("%Y%m%d")))
+        if wide_due:
+            self._wide_at = time.time()
+        if not targets:
             return False
+        oldest = (datetime.now(timezone.utc).timestamp() - 3 * 86_400)
+        for k in [k for k in self.games if datetime.strptime(k[2], "%Y%m%d").replace(tzinfo=timezone.utc).timestamp() < oldest]:
+            del self.games[k]
         fetched = 0
         for sport, league, day in sorted(boards):
             try:
@@ -161,8 +176,8 @@ class IntelService:
             except Exception as exc:
                 self._fail("games", exc)
         live = False
-        for t, lg in targets:
-            pool = [g for (s, l, _), gs in self.games.items() if (s, l) == lg for g in gs]
+        for t, leagues in targets:
+            pool = [g for (s, l, _), gs in self.games.items() if (s, l) in leagues for g in gs]
             f = t["f"]
             found = match_game(f["participantA"], f["participantB"], f.get("shortNameA"), f.get("shortNameB"),
                                t["start_ms"], pool)
@@ -269,11 +284,20 @@ class IntelService:
 
     async def _gdelt(self, fn, *args):
         async with self._gdelt_lock:
-            wait = NEWS_GAP_S - (time.time() - self._gdelt_last)
+            wait = max(NEWS_GAP_S - (time.time() - self._gdelt_last), self._gdelt_blocked_until - time.time())
             if wait > 0:
                 await asyncio.sleep(wait)
             try:
-                return await fn(*args)
+                out = await fn(*args)
+                self._gdelt_strikes = 0
+                return out
+            except Exception as exc:
+                if "429" in str(exc):                       # too many requests: back off, longer each time
+                    pause = NEWS_BACKOFF_S[min(self._gdelt_strikes, len(NEWS_BACKOFF_S) - 1)]
+                    self._gdelt_strikes += 1
+                    self._gdelt_blocked_until = time.time() + pause
+                    log.info("GDELT asked us to slow down; pausing news for %ds", pause)
+                raise
             finally:
                 self._gdelt_last = time.time()
 
