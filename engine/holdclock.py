@@ -176,9 +176,34 @@ def now_read(g: Grid, window: int = REGIME_S) -> dict:
             "sigma_1s_bps": float(vol[-1] * 1e4) if np.isfinite(vol[-1]) else None}
 
 
-def papertrade_net(gain_frac_of_margin: float, deadband_bps: float, leverage: float, win_fee: float = 0.02) -> float:
-    """What a winning close nets on Papertrade, as a fraction of margin: the gain is measured as if the exit were
-    `deadband_bps` worse, then the 2% win fee. (Their asymmetric impact haircut isn't public in a formula here yet,
-    so it isn't included: real wins are a little smaller, small ones most.)"""
-    g = gain_frac_of_margin - deadband_bps / 1e4 * leverage
-    return max(0.0, g) * (1 - win_fee)
+# Papertrade's cut on winning closes (docs: "Asymmetric impact PnL"), with the launch settings for each market.
+# Losing closes pay nothing extra.
+PAPERTRADE = {
+    "BTC": {"base_rate": 0.10, "rate_mult": 15_000, "ref_notional": 100_000, "pos_mult": 814.598},
+    "ETH": {"base_rate": 0.10, "rate_mult": 15_000, "ref_notional": 100_000, "pos_mult": 483.979},
+}
+PT_DEADBAND = 1 / 50_000          # the exit is measured 0.2 bps worse (entryPrice / 50000)
+PT_WIN_FEE = 0.02
+
+
+def papertrade_kept(move: float, coin: str = "BTC") -> float:
+    """A winning close's price move (a fraction of entry) → what it pays, as a fraction of notional:
+         1. deadband   the move counts 0.2 bps smaller; a win smaller than that pays nothing
+         2. impact     × (1 − baseRate) / (1 + 1/(move·rateMultiplier) + referenceNotional/(10⁶·move·positionMultiplier))
+         3. win fee    × 0.98
+    so small moves lose most of their gain and big ones keep up to 90% × 98%. Coins Papertrade doesn't list use
+    BTC's settings as a guide."""
+    p = PAPERTRADE.get(coin, PAPERTRADE["BTC"])
+    m = move - PT_DEADBAND
+    if m <= 0:
+        return 0.0
+    term1 = 1 / (m * p["rate_mult"])
+    term2 = p["ref_notional"] / (1e6 * m * p["pos_mult"])
+    return m * (1 - p["base_rate"]) / (1 + term1 + term2) * (1 - PT_WIN_FEE)
+
+
+def papertrade_net(gain_frac_of_margin: float, leverage: float, coin: str = "BTC") -> float:
+    """What a winning close nets on Papertrade, as a fraction of margin, from its raw gain on margin."""
+    if gain_frac_of_margin <= 0 or leverage <= 0:
+        return 0.0
+    return papertrade_kept(gain_frac_of_margin / leverage, coin) * leverage

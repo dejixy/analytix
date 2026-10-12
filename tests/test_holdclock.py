@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from api.holdclock import HoldClock
-from engine.holdclock import fill_drift, make_grid, papertrade_net, race, survival, time_at
+from engine.holdclock import fill_drift, make_grid, papertrade_kept, papertrade_net, race, survival, time_at
 from models.bookModel import BookSummary
 from state import MarketState
 
@@ -61,8 +61,16 @@ def test_a_target_as_far_as_the_bust_is_about_a_coin_flip():
 def test_fill_drift_and_papertrade_net():
     d = fill_drift(make_grid(_walk()))
     assert 0.5 < d["1s"]["p50"] < 1.0 and d["2s"]["p90"] > d["1s"]["p90"]
-    assert papertrade_net(0.50, 0.2, 800) == pytest.approx((0.50 - 0.016) * 0.98)
-    assert papertrade_net(0.01, 0.2, 800) == 0.0                         # inside the deadband: nothing
+    # Papertrade's own worked examples (BTC, deadband counted, before the win fee): a 1% move keeps ~88% of the
+    # raw gain, a 0.1% move ~74%
+    assert papertrade_kept(0.01, "BTC") / 0.98 / 0.01 == pytest.approx(0.88, abs=0.005)
+    assert papertrade_kept(0.001, "BTC") / 0.98 / 0.001 == pytest.approx(0.74, abs=0.005)
+    assert papertrade_kept(0.001, "ETH") < papertrade_kept(0.001, "BTC")      # ETH's curve is steeper
+    assert papertrade_kept(1.0, "BTC") < 0.9 * 0.98                           # never more than 90% × 98%
+    assert papertrade_net(0.01, 800) == 0.0                                   # 0.125 bp: inside the deadband
+    assert papertrade_net(-0.5, 800) == 0.0
+    net = papertrade_net(0.50, 800, "BTC")                                    # +50% at 800× is a 6.25 bp move
+    assert net == pytest.approx(papertrade_kept(0.5 / 800, "BTC") * 800) and 0.30 < net < 0.36
 
 
 def _rt(coin="BTC"):

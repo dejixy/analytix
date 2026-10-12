@@ -264,9 +264,10 @@ It keeps a one-second grid of each main coin's lowest best bid, highest best ask
 
 - **Survival by hold time** (10s, 30s, 1, 2, 5 and 15 minutes): the share of real starts over the last day where the bust wasn't reached in that time, overall and for **conditions like now** (starts whose last 5 minutes moved about as much as the last 5 minutes have). Headline: the hold time that survives 9 times in 10, and when half are gone. Feed gaps are left out, never filled in.
 - **Fill drift**: how far the mid moves in the 1 to 2 seconds between clicking and the fill landing on-chain, as bps and as a share of margin at your leverage (typical, 1 in 10, worst 1%).
-- **The race**: the chance the mid reaches your target (a % of margin) before the best bid/ask reaches your bust, how long the wins took, and what a win nets after Papertrade's 0.2 bp deadband and 2% win fee (their impact haircut isn't in yet), with the average result per trade.
+- **The race**: the chance the mid reaches your target (a % of margin) before the best bid/ask reaches your bust, how long the wins took, and what a win pays after Papertrade's cut, with the average result per trade.
+- **What a win pays**: +10% to +500% targets at your leverage after Papertrade's cut on winning closes, exactly as their docs give it: the exit counts 0.2 bps worse, the asymmetric impact haircut (1 − baseRate) / (1 + 1/(move·rateMultiplier) + referenceNotional/(10⁶·move·positionMultiplier)) with the BTC and ETH launch settings, then a 2% win fee. Small moves lose the most, so quick scalps at high leverage keep a smaller share. Losses pay nothing extra.
 - **The tape right now**: volatility against usual, the spread against usual, which way the book leans, and Binance's last few seconds against Hyperliquid's, with plain warnings when the spread is blown out, the book leans against you or Binance has moved your bust's way and Hyperliquid hasn't yet.
-- **Your position**: enter your fill (and the bust price your venue shows) for P&L on margin, the distance to bust and survival odds from here.
+- **Your position**: enter your fill (and the bust price your venue shows) for P&L on margin, what closing now pays after Papertrade's cut, the distance to bust and survival odds from here.
 
 Measured, not modelled; live mode only (`engine/holdclock.py`, `api/holdclock.py`, `GET /api/hold`).
 
