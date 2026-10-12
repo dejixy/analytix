@@ -16,6 +16,7 @@ Live mode only. /api/outcomes lists every market; /api/outcomes/{id} is one mark
 import asyncio
 import bisect
 import logging
+import math
 import os
 import time
 from collections import Counter, deque
@@ -23,7 +24,7 @@ from dataclasses import asdict
 
 from engine.outcomes import (
     VENUES, Book, Market, Question, build_markets, fair_above, fair_odds, fair_series, flow_of, ladder_check, odds,
-    parse_levels, push_cost, sigma_per_sqrt_s, sum_check, trade_edge, who, why_line,
+    asset_name, parse_levels, profile_var, push_cost, sigma_per_sqrt_s, sum_check, trade_edge, vol_profile, who, why_line,
 )
 from api.intel import IntelService
 from engine.intel import best_trade, returns, rules_line
@@ -32,7 +33,9 @@ from ingestion.account import _num
 from ingestion.backfill import fetch_candles
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
+from ingestion.intel import VOL_INDEX, fetch_vol_index
 from ingestion.outcomes import fetch_book, fetch_dex_marks, fetch_outcome_meta, fetch_trades, trade_row
+from engine.scorecard import gate, score
 
 log = logging.getLogger("analytix.outcomes")
 
@@ -44,6 +47,11 @@ VOL_WINDOWS = {                      # how much a perp moves, measured over a sp
     "long": ("1h", 336, 3600, 1800), # longer: hourly candles, the last 2 weeks (weekdays and weekends), every 30 min
 }
 SHORT_S = 6 * 3600
+PROFILE_CANDLES = 24 * 28            # four weeks of hourly candles for the hour-of-week volatility profile
+PROFILE_EVERY_S = 1800
+IMPLIED_EVERY_S = 900                # Cboe's delayed volatility indices
+IMPLIED_SCALE = (0.33, 3.0)          # how far an implied vol may rescale the measured profile
+SCORE_EVERY_S = 60
 DEX_EVERY_S = 15
 MAX_MARKETS = int(os.getenv("ANALYTIX_OUTCOME_MARKETS", "300"))   # two feeds each; Hyperliquid allows 1000 an IP
 MAX_OPEN = 4                         # market pages whose trades are followed live at once
@@ -57,6 +65,9 @@ EDGE_MIN_EV = 0.03                   # the edge board: at least +3% expected val
 EDGE_MIN_USD = 20                    # …and this many dollars available at that price
 EDGE_BOARD = 12
 EDGE_ALERT_USD = 50
+EDGE_ALERT_EXTRA = {"book": 0.04}    # a sportsbook line is a looser guide (their margin, old lines): it needs a bigger gap
+SOURCE_NAMES = {"options": "Options", "book": "Sportsbook", "espn": "ESPN live model", "goals": "Goals model",
+                "moves": "Perp moves", "final": "Final score"}
 EDGE_WARMUP_SAMPLES = 4              # no edge alerts for the first two minutes: books and sources are still arriving
 EVENT_RANGES = {"12h": ("5m", 144), "2w": ("1h", 336)}   # lighter candles for an event's several lines
 CHART_LINES = 5                      # an event's chart shows its five likeliest outcomes
@@ -97,6 +108,11 @@ class OutcomeService:
         self.opened: dict[int, float] = {}               # outcome → when its page was last viewed
         self.vol: dict[tuple, tuple[float, float | None]] = {}   # (perp, "short"|"long") → (fetched at, sigma/sqrt s)
         self.dex_marks: dict[str, float] = {}            # "xyz:SILVER" → mark
+        self.profiles: dict[str, tuple[float, object]] = {}   # perp → (fetched at, VolProfile or None)
+        self.implied: dict[str, tuple[float, float | None]] = {}   # perp → (fetched at, implied vol % a year)
+        self.implied_status: dict = {"ok": None, "error": None, "indices": {}}
+        self._score: tuple[float, dict] | None = None
+        self.edges_hidden = 0
         self._candles: dict[tuple, tuple[float, list]] = {}
         self._rest_books: dict[str, float] = {}
         self._followed: set[int] = set()
@@ -113,6 +129,7 @@ class OutcomeService:
         # swappable for tests
         self.fetch_meta, self.fetch_book, self.fetch_trades = fetch_outcome_meta, fetch_book, fetch_trades
         self.fetch_candles, self.fetch_dex_marks = fetch_candles, fetch_dex_marks
+        self.fetch_vol_index = fetch_vol_index
 
     @property
     def enabled(self) -> bool:
@@ -156,7 +173,36 @@ class OutcomeService:
                     if time.time() - self.vol.get((perp, window), (0.0, None))[0] > every_s:
                         await self.refresh_vol(perp, window)
                         await asyncio.sleep(2)
+                if time.time() - self.profiles.get(perp, (0.0, None))[0] > PROFILE_EVERY_S:
+                    await self.refresh_profile(perp)
+                    await asyncio.sleep(2)
+                if VOL_INDEX.get(asset_name(perp).upper()) and \
+                        time.time() - self.implied.get(perp, (0.0, None))[0] > IMPLIED_EVERY_S:
+                    await self.refresh_implied(perp)
             await asyncio.sleep(30)
+
+    async def refresh_profile(self, perp: str):
+        try:
+            prof = vol_profile(await self.fetch_candles(perp, "1h", n=PROFILE_CANDLES))
+        except Exception as exc:
+            log.warning("hourly candles for %s unavailable: %s", perp, exc)
+            prof = self.profiles.get(perp, (0.0, None))[1]
+        self.profiles[perp] = (time.time(), prof)
+        return prof
+
+    async def refresh_implied(self, perp: str) -> float | None:
+        index = VOL_INDEX.get(asset_name(perp).upper())
+        iv = None
+        if index:
+            try:
+                iv = await self.fetch_vol_index(index)
+                self.implied_status.update(ok=True, error=None)
+                self.implied_status["indices"][index] = iv
+            except Exception as exc:
+                self.implied_status.update(ok=False, error=str(exc)[:160])
+                iv = self.implied.get(perp, (0.0, None))[1]
+        self.implied[perp] = (time.time(), iv)
+        return iv
 
     async def _dex_loop(self) -> None:
         while True:
@@ -269,11 +315,18 @@ class OutcomeService:
         cal, store = self.intel.calib, self.intel.store
         for m in self.markets.values():
             if m.outcome in self._followed:
-                p = self.quote(m)[4]
+                bid, _, ask, _, p = self.quote(m)
                 if p is not None:
                     self.samples.setdefault(m.outcome, deque(maxlen=SAMPLES_KEPT)).append((now, p))
                     self.last_odds[m.outcome] = p
-                    if cal.note(m.outcome, m.expiry_ms, p, now) and store:
+                    new = cal.note(m.outcome, m.expiry_ms, p, now)
+                    h = cal.ref_due(m.outcome, m.expiry_ms, now)
+                    if h:                                 # the estimate too, for the scorecard
+                        ref, _ = self.estimate(m, now)
+                        if ref is not None:
+                            cal.note_ref(m.outcome, h, {"p": ref["p"], "src": ref["source"], "m": p, "bid": bid, "ask": ask})
+                            new = True
+                    if new and store:
                         store.save_snaps(m.outcome, cal.snaps[m.outcome])
         self.intel.sharp.settle(now, self.mid_of)
         self._samples_taken += 1
@@ -327,7 +380,38 @@ class OutcomeService:
     def window_for(tau_s: float) -> str:
         return "short" if tau_s <= SHORT_S else "long"
 
+    def vol_model(self, perp: str | None, tau_s: float, now_ms: float | None = None) -> tuple[float | None, str, str | None]:
+        """(sigma per square-root second over the next tau_s seconds, how it was measured, the implied-vol index
+        used). Best first:
+            hour-of-week profile   the perp's own moves hour by hour of the week over four weeks, so a market
+                                   that spans a stock-market session expects that session's moves; scaled to the
+                                   Cboe volatility index when the asset has one (the options market's forecast)
+            recent                 the last 12 hours of 1-minute candles, when they move more than the profile
+                                   expects and the market closes within 6 hours (a busy day)
+            flat                   one volatility over the whole clock, if nothing else is in yet"""
+        if not perp or tau_s <= 0:
+            return self.sigma_flat(perp, tau_s), "flat", None
+        now_ms = now_ms if now_ms is not None else time.time() * 1000
+        var, how, index = None, "flat", None
+        prof = self.profiles.get(perp, (0.0, None))[1]
+        if prof is not None:
+            var, how = profile_var(prof, now_ms, now_ms + tau_s * 1000), "profile"
+            iv = self.implied.get(perp, (0.0, None))[1]
+            if iv:
+                lo, hi = IMPLIED_SCALE
+                scale = min(hi, max(lo, (iv / 100) ** 2 * 30 / 365 / (prof.week * 30 / 7)))
+                var, how, index = var * scale, "implied", VOL_INDEX.get(asset_name(perp).upper())
+        short = self.vol.get((perp, "short"), (0.0, None))[1]
+        if short and tau_s <= SHORT_S and (var is None or short * short * tau_s > var):
+            var, how, index = short * short * tau_s, "recent", None
+        if var is None or var <= 0:
+            return self.sigma_flat(perp, tau_s), "flat", None
+        return math.sqrt(var / tau_s), how, index
+
     def sigma(self, perp: str | None, tau_s: float = 0.0) -> float | None:
+        return self.vol_model(perp, tau_s)[0]
+
+    def sigma_flat(self, perp: str | None, tau_s: float = 0.0) -> float | None:
         """How much `perp` moves (per square-root second), measured over the window that suits a market closing in
         tau_s seconds; the other window if that one isn't in yet."""
         if not perp:
@@ -338,6 +422,21 @@ class OutcomeService:
             if s:
                 return s
         return None
+
+    def estimate(self, m: Market, now: int) -> tuple[dict | None, float | None]:
+        """(the independent reference for this market, the perp-moves model's odds): options, games or the final
+        score first; the perp's own moves when there's nothing else."""
+        model = self.fair(m, now) if m.kind in ("price", "touch") else None
+        ref = self.intel.reference(m, now)
+        if ref is None and model is not None:
+            tau = ((m.expiry_ms or now) - now) / 1000
+            _, how, index = self.vol_model(m.underlying, tau, now)
+            label = {"implied": f"The perp's moves hour by hour of the week, scaled to the {index}",
+                     "profile": "The perp's moves hour by hour of the week",
+                     "recent": "The perp's moves over the last 12 hours (busier than usual)",
+                     }.get(how, "The perp's recent moves") + " (no options market for it)"
+            ref = {"p": min(0.99, max(0.01, model)), "source": "moves", "label": label}
+        return ref, model
 
     def fair(self, m: Market, now: int) -> float | None:
         tau = ((m.expiry_ms or now) - now) / 1000
@@ -353,11 +452,7 @@ class OutcomeService:
         c = self.ctx.get(m.yes_coin) or {}
         prev = c.get("prev_day")
         then = self._odds_then(m, now - 3_600_000, candles)
-        model = self.fair(m, now) if m.kind in ("price", "touch") else None
-        ref = self.intel.reference(m, now)
-        if ref is None and model is not None:
-            ref = {"p": min(0.99, max(0.01, model)), "source": "moves",
-                   "label": "Recent moves of the perp (no options market for it)"}
+        ref, model = self.estimate(m, now)
         fair = ref["p"] if ref else None
         days = (m.expiry_ms - now) / 86_400_000 if m.expiry_ms and m.expiry_ms > now else None
         flow = self.intel.sharp.flow(m.outcome, now - 6 * 3_600_000)
@@ -381,17 +476,35 @@ class OutcomeService:
             "followed": m.outcome in self._followed, "settled": m.settled,
         }
 
+    def scorecard(self) -> dict[str, dict]:
+        """Each estimate's record on settled markets (engine/scorecard.py), recomputed once a minute."""
+        hit = self._score
+        if hit is None or time.time() - hit[0] > SCORE_EVERY_S:
+            hit = self._score = (time.time(), score(self.intel.calib.results))
+        return hit[1]
+
     def edges(self, rows: list[dict], now: int) -> list[dict]:
-        """The best trades right now: an independent chance against a price you can get, with real size behind it."""
-        out = []
+        """The best trades right now: an independent chance against a price you can get, with real size behind it.
+        Sources that have been less accurate than the market are left out (counted in edges_hidden)."""
+        out, card, self.edges_hidden = [], self.scorecard(), 0
         for r in rows:
             t = r.get("trade")
             if not t or r["settled"] or not r["expiry_ms"] or r["expiry_ms"] <= now:
                 continue
             if t["ev"] >= EDGE_MIN_EV and t["usd"] >= EDGE_MIN_USD:
+                src = r["ref"]["source"]
+                trust = gate(src, card)
+                if trust == "hide":
+                    self.edges_hidden += 1
+                    continue
+                rec = card.get(src)
                 out.append({"id": r["id"], "title": r["title"], "venue_name": r["venue_name"], "kind": r["kind"],
-                            "expiry_ms": r["expiry_ms"], "source": r["ref"]["source"], "label": r["ref"]["label"],
-                            "question": r["question"], **t})
+                            "expiry_ms": r["expiry_ms"], "source": src, "label": r["ref"]["label"],
+                            "question": r["question"], "trust": trust,
+                            "record": {"verdict": rec["verdict"], "markets": rec["markets"], "skill": rec["skill"],
+                                       "edge_return": rec["edge_return"], "edges": rec["edges"]} if rec else
+                            {"verdict": "unproven", "markets": 0, "skill": None, "edge_return": None, "edges": 0},
+                            **t})
         return sorted(out, key=lambda e: -e["ev"])[:EDGE_BOARD]
 
     def _edge_alerts(self, now: int) -> None:
@@ -399,6 +512,7 @@ class OutcomeService:
         rule = (svc.cfg["rules"].get("pm_edge") or {}) if svc is not None else {}
         if svc is None or not rule.get("on") or self._samples_taken < EDGE_WARMUP_SAMPLES:
             return
+        card = self.scorecard()
         line = float(rule.get("min_ev_pct", 8.0)) / 100
         sent = 0
         for m in self.markets.values():
@@ -408,11 +522,14 @@ class OutcomeService:
                 continue
             for side in ("Yes", "No"):
                 key = (m.outcome, side)
-                hit = t is not None and t["side"] == side and t["ev"] >= line and t["usd"] >= EDGE_ALERT_USD
+                src = (r.get("ref") or {}).get("source")
+                need = line + EDGE_ALERT_EXTRA.get(src, 0.0)
+                hit = t is not None and t["side"] == side and t["ev"] >= need and t["usd"] >= EDGE_ALERT_USD \
+                    and gate(src, card) == "show"
                 if hit and self._edge_armed.get(key, True):
                     self._edge_armed[key] = False
                     if sent < 3:
-                        svc.push(edge_alert(r, now))
+                        svc.push(edge_alert(r, now, card.get(src)))
                         sent += 1
                 elif not hit and (t is None or t["side"] != side or t["ev"] < line / 2):
                     self._edge_armed[key] = True
@@ -453,6 +570,8 @@ class OutcomeService:
             "questions": questions,
             "ladders": ladders,
             "edges": self.edges(rows, now),
+            "edges_hidden": self.edges_hidden,
+            "scorecard": sorted(self.scorecard().values(), key=lambda r: -r["markets"]),
             "intel": self.intel.public_status(),
             "calibration": self.intel.calib.table("6h"),
         }
@@ -517,7 +636,9 @@ class OutcomeService:
             if (m.underlying, window) not in self.vol:
                 await self.refresh_vol(m.underlying, window)
             under_hist = await self.candles(m.underlying, rng)
-        sigma = self.sigma(m.underlying, tau)
+        if m.underlying and m.underlying not in self.profiles:
+            await self.refresh_profile(m.underlying)
+        sigma, vol_how, vol_index = self.vol_model(m.underlying, tau, now)
         bid, bsz, ask, asz, od = self.quote(m)
         spot = self.spot(m.underlying)
         fair = self.fair(m, now) if m.kind in ("price", "touch") else None
@@ -549,7 +670,8 @@ class OutcomeService:
             "why": why_line(m, od, then, span, flow_of(trades, hour_ago), fair, fair_then, spot, spot_then),
             "fair": None if fair is None else {
                 "odds": fair, "spot": spot, "sigma_day_pct": sigma * (86_400 ** 0.5) * 100 if sigma else None,
-                "window": "the last 12 hours" if window == "short" else "the last 2 weeks"},
+                "window": {"implied": f"the last four weeks hour by hour, scaled to the {vol_index}",
+                           "profile": "the last four weeks hour by hour", "recent": "the last 12 hours"}.get(vol_how, "the last 2 weeks")},
             "chart": {"odds": odds_pts, "fair": fair_pts},
             "question": None if q is None else {
                 "id": q.question, "title": q.title, "sub": q.sub, "sum": asdict(self.sum_for(q)),
@@ -601,16 +723,23 @@ class OutcomeService:
         }
 
 
-def edge_alert(r: dict, now: int):
+def edge_alert(r: dict, now: int, record: dict | None = None):
     from engine.alerts import Alert
     t, ref = r["trade"], r["ref"]
+    source = SOURCE_NAMES.get(ref["source"], ref["source"])
+    if record and record.get("verdict") == "beats":
+        track = (f"{source} has beaten the market's own odds on {record['markets']} settled markets"
+                 + (f"; its edges returned {record['edge_return'] * 100:+.0f}% per $1." if record.get("edge_return") is not None else "."))
+    else:
+        track = f"{source} has no track record here yet ({record['markets'] if record else 0} settled markets)."
     closes = ""
     if r.get("expiry_ms"):
         mins = (r["expiry_ms"] - now) / 60_000
         closes = f" Closes in {mins:.0f} minutes." if mins < 120 else f" Closes in {mins / 60:.0f} hours." if mins < 2880 \
             else f" Closes in {mins / 1440:.0f} days."
-    title = f"{r['title']}: buy {t['side']} at {t['price'] * 100:.1f}¢"
-    lines = (f"Independent estimate {t['p'] * 100:.0f}% for {t['side']} ({ref['label']}).",
+    title = f"{source} edge: {r['title']}, buy {t['side']} at {t['price'] * 100:.1f}¢"
+    lines = (f"{source} puts {t['side']} at {t['p'] * 100:.0f}%: {ref['label']}.",
+             track,
              f"Expected value {t['ev'] * 100:+.0f}% per $1. A quarter-Kelly stake is {t['quarter_kelly'] * 100:.1f}% of a bankroll.",
              f"{t['contracts']:,.0f} contracts (${t['usd']:,.0f}) available at that price.{closes}",
              "Open it from Outcomes on the dashboard.")

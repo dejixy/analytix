@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fmtPrice, fmtTime, fmtUsd } from "../format.js";
 import {
-  CalibrationPanel, Distribution, EdgeBoard, EdgePanel, GameChip, GamePanel, NewsChip, NewsPanel, SharpChip, SharpPanel, SOURCES,
+  CalibrationPanel, ScorecardPanel, Distribution, EdgeBoard, EdgePanel, GameChip, GamePanel, NewsChip, NewsPanel, SharpChip, SharpPanel, SOURCES,
 } from "./OutcomeIntel.jsx";
 
 /* Prediction markets on Hyperliquid (HIP-4): every market from Outcome, trade.xyz and anyone else listing on
@@ -346,7 +346,7 @@ function MarketList({ onOpen, onEvent }) {
             <p className="plan-note" style={{ padding: "0 12px" }}>Live prices are reconnecting to Hyperliquid. Opening a market still reads its book.</p>
           )}
 
-          <EdgeBoard edges={data.edges} now={now} onOpen={onOpen} intel={data.intel} />
+          <EdgeBoard edges={data.edges} now={now} onOpen={onOpen} intel={data.intel} hidden={data.edges_hidden} />
           {prices.length > 0 && (
             <>
               <h3 className="oc-section">Price markets <span className="muted">{nPrice} on {prices.length} assets</span></h3>
@@ -369,6 +369,7 @@ function MarketList({ onOpen, onEvent }) {
             </>
           )}
           {!prices.length && !events.length && <div className="empty">No markets match.</div>}
+          <ScorecardPanel card={data.scorecard} />
           <CalibrationPanel cal={data.calibration} />
         </>
       )}

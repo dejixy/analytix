@@ -150,6 +150,24 @@ class Calibration:
                 new = True
         return new
 
+    def ref_due(self, oid: int, expiry_ms: int | None, now_ms: int) -> str | None:
+        """The tightest pre-close checkpoint that has no saved estimate yet, or None. Wider checkpoints first seen
+        at this same moment are marked done, so one moment is never scored twice."""
+        if expiry_ms is None or now_ms >= expiry_ms:
+            return None
+        have = self.snaps.get(oid) or {}
+        due = [h for h, before in SNAP_BEFORE.items() if expiry_ms - now_ms <= before and f"ref:{h}" not in have]
+        if not due:
+            return None
+        tight = min(due, key=lambda h: SNAP_BEFORE[h])
+        for h in due:
+            if h != tight:
+                self.snaps[oid][f"ref:{h}"] = None
+        return tight
+
+    def note_ref(self, oid: int, horizon: str, rec: dict) -> None:
+        self.snaps[oid][f"ref:{horizon}"] = rec
+
     def resolve(self, oid: int, outcome: int) -> tuple | None:
         snaps = self.snaps.pop(oid, None)
         if not snaps:
@@ -162,7 +180,8 @@ class Calibration:
         rows = []
         n = 0
         for lo, hi in BANDS:
-            got = [(s[horizon], y) for _, s, y in self.results if horizon in s and lo <= s[horizon] < hi + (hi == 1.0)]
+            got = [(s[horizon], y) for _, s, y in self.results
+                   if isinstance(s.get(horizon), (int, float)) and lo <= s[horizon] < hi + (hi == 1.0)]
             n += len(got)
             if got:
                 rows.append({"band": f"{int(lo * 100)}–{int(hi * 100)}%", "n": len(got),

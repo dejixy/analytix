@@ -6,6 +6,9 @@ Independent information for prediction markets, from public sources that need no
     ESPN      scoreboards: teams, score, clock, status, the pre-game sportsbook line, and for American football a
               live win probability
               GET site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard?dates=YYYYMMDD
+    Cboe      volatility indices (VIX, VXN, VXSLV, GVZ): the options market's 30-day forecast for the S&P 500,
+              Nasdaq-100, silver and gold, for markets on perps that have no crypto options
+              GET cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json
     GDELT     a global index of news articles: how many mention a name every 15 minutes, and the latest headlines
               GET api.gdeltproject.org/api/v2/doc/doc?query=…&mode=TimelineVolRaw|ArtList&format=json
               (GDELT asks for at most one request every 5 seconds; api/intel.py keeps to that)
@@ -56,6 +59,25 @@ async def fetch_options(asset: str) -> list[dict]:
     if DERIBIT_CURRENCY[asset] == "USDC":
         rows = [r for r in rows if str(r.get("instrument_name", "")).startswith(f"{asset}_USDC-")]
     return rows
+
+
+# ── Cboe volatility indices ─────────────────────────────────────────────────
+CBOE = "https://cdn.cboe.com/api/global/delayed_quotes/quotes"
+VOL_INDEX = {"SP500": "VIX", "XYZ100": "VXN", "SILVER": "VXSLV", "GOLD": "GVZ"}   # the option market's own forecast
+
+
+def parse_vol_index(js: dict) -> float | None:
+    """A Cboe delayed quote → the index level (annual implied vol in %), or None."""
+    d = _d(_d(js).get("data"))
+    for k in ("current_price", "last_trade_price", "close", "prev_day_close"):
+        v = _f(d.get(k))
+        if v and 3 < v < 300:
+            return v
+    return None
+
+
+async def fetch_vol_index(symbol: str) -> float | None:
+    return parse_vol_index(await _get(f"{CBOE}/_{symbol}.json"))
 
 
 # ── ESPN ────────────────────────────────────────────────────────────────────

@@ -10,8 +10,20 @@ export const SOURCES = {
   espn: "ESPN live model",
   goals: "Goals model",
   book: "Sportsbook",
-  moves: "Recent moves",
+  moves: "Perp moves",
 };
+const RECORD = { beats: "beats market", worse: "worse than market", unproven: "unproven" };
+
+function recordText(r) {
+  if (!r) return "unproven";
+  return `${RECORD[r.verdict] || r.verdict} · ${r.markets}`;
+}
+function recordTitle(r) {
+  if (!r || !r.markets) return "No settled markets scored yet for this source.";
+  const skill = r.skill == null ? "" : `Its chances have been ${Math.abs(r.skill * 100).toFixed(0)}% ${r.skill >= 0 ? "closer to" : "further from"} what happened than the market's own odds. `;
+  const ret = r.edge_return == null ? "" : `Its ${r.edges} edges returned ${r.edge_return >= 0 ? "+" : "−"}${Math.abs(r.edge_return * 100).toFixed(0)}% per $1.`;
+  return `${r.markets} settled markets. ${skill}${ret}`;
+}
 const pctOf = (x, d = 0) => (x == null ? "-" : `${(x * 100).toFixed(d)}%`);
 const signed = (x, d = 0) => (x == null ? "-" : `${x >= 0 ? "+" : "−"}${Math.abs(x * 100).toFixed(d)}%`);
 const centsOf = (x) => (x == null ? "-" : `${(x * 100).toFixed(1)}¢`);
@@ -61,7 +73,7 @@ export function SharpChip({ s }) {
 }
 
 /** The best trades right now: an independent chance against a price you can actually get. */
-export function EdgeBoard({ edges, now, onOpen, intel }) {
+export function EdgeBoard({ edges, now, onOpen, intel, hidden }) {
   return (
     <section className="oc-board">
       <h3 className="oc-section">
@@ -82,6 +94,7 @@ export function EdgeBoard({ edges, now, onOpen, intel }) {
                 <th title="The price you'd pay per contract (it pays $1 if right)">Price</th>
                 <th title="The independent chance this side is right">Estimate</th>
                 <th className="left">From</th>
+                <th className="left" title="How this source has done on settled markets, against the market's own odds">Record</th>
                 <th title="Expected profit per $1 staked, if the estimate is right">EV</th>
                 <th title="A quarter of the Kelly bet size, as a share of your bankroll. Full Kelly assumes the estimate is exact; a quarter allows for it not being">¼ Kelly</th>
                 <th title="What you can buy at that price right now">Available</th>
@@ -97,6 +110,7 @@ export function EdgeBoard({ edges, now, onOpen, intel }) {
                   <td className="num">{centsOf(e.price)}</td>
                   <td className="num"><b>{pctOf(e.p)}</b></td>
                   <td className="left muted">{SOURCES[e.source] || e.source}</td>
+                  <td className={`left ${e.record?.verdict === "beats" ? "" : "muted"}`} title={recordTitle(e.record)}>{recordText(e.record)}</td>
                   <td className="num up"><b>{signed(e.ev)}</b></td>
                   <td className="num">{pctOf(e.quarter_kelly, 1)}</td>
                   <td className="num">{fmtUsd(e.usd)}</td>
@@ -111,6 +125,7 @@ export function EdgeBoard({ edges, now, onOpen, intel }) {
           </table>
         </div>
       )}
+      {hidden > 0 && <p className="oc-explain muted">{hidden} more hidden: their source has been less accurate than the market.</p>}
       {intel && <SourcesLine intel={intel} />}
     </section>
   );
@@ -124,6 +139,8 @@ function SourcesLine({ intel }) {
       Sources: options {mark(intel.options)}
       {intel.surfaces && Object.keys(intel.surfaces).length ? ` (${Object.keys(intel.surfaces).join(", ")})` : ""} ·
       live games {mark(intel.games)} ({intel.matched_games} matched) · news {mark(intel.news)} ({intel.news_tracked} tracked) ·
+      {intel.implied?.ok != null && <> implied vol {mark(intel.implied)}{Object.keys(intel.implied.indices || {}).length
+        ? ` (${Object.entries(intel.implied.indices).filter(([, v]) => v != null).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(", ")})` : ""} ·</>}
       sharp wallets: {sh.sharp ?? 0} found from {(sh.scored_trades ?? 0).toLocaleString()} scored trades
     </p>
   );
@@ -297,6 +314,49 @@ export function NewsPanel({ news }) {
 }
 
 /** Does 90% mean 90%? Hyperliquid's odds 6 hours before the close, against how markets really ended. */
+export function ScorecardPanel({ card }) {
+  const [open, setOpen] = useState(false);
+  if (!card) return null;
+  const settled = card.reduce((n, r) => Math.max(n, r.markets), 0);
+  return (
+    <section className="oc-board">
+      <button className="oc-more oc-section-btn" onClick={() => setOpen(!open)}>
+        {open ? "▾" : "▸"} Scorecard: how each estimate has done ({settled} settled markets scored)
+      </button>
+      {open && (
+        !card.length ? (
+          <p className="oc-explain muted">Fills in as markets settle. Each source needs 15 settled markets for a verdict.</p>
+        ) : (
+          <div className="scan-scroll">
+            <table className="scan-table">
+              <thead>
+                <tr>
+                  <th className="left">Source</th><th>Markets</th>
+                  <th title="How much closer to what happened than the market's own odds (Brier score)">vs market</th>
+                  <th>Edges</th><th title="What buying its edges returned per $1">Return</th><th>Won</th><th className="left">Verdict</th>
+                </tr>
+              </thead>
+              <tbody>
+                {card.map((r) => (
+                  <tr key={r.source}>
+                    <td className="left">{SOURCES[r.source] || r.source}</td>
+                    <td className="num">{r.markets}</td>
+                    <td className={`num ${r.skill > 0 ? "up" : r.skill < 0 ? "down" : ""}`}>{signed(r.skill)}</td>
+                    <td className="num">{r.edges}</td>
+                    <td className={`num ${r.edge_return > 0 ? "up" : r.edge_return < 0 ? "down" : ""}`}>{signed(r.edge_return)}</td>
+                    <td className="num">{pctOf(r.edge_won)}</td>
+                    <td className="left">{RECORD[r.verdict] || r.verdict}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+    </section>
+  );
+}
+
 export function CalibrationPanel({ cal }) {
   const [open, setOpen] = useState(false);
   if (!cal) return null;
