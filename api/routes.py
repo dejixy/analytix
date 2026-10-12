@@ -246,3 +246,24 @@ async def outcome(request: Request, outcome_id: int, range: str = "12h"):
     if d is None:
         raise HTTPException(404, "That market isn't listed any more. It may have settled.")
     return d
+
+
+# ── hold clock (very high leverage) ─────────────────────────────────────────
+@router.get("/hold")
+async def hold(request: Request, coin: str | None = None, side: str = "long",
+               leverage: float = Query(800, ge=2, le=2000), target_pct: float | None = Query(None, gt=0, le=10_000),
+               entry: float | None = Query(None, gt=0), bust: float | None = Query(None, gt=0),
+               buffer_bps: float = Query(0.0, ge=0, le=100)):
+    """How long a very high-leverage position survives, from the last 24 hours of the real best bid and ask:
+    survival odds by hold time, fill drift, the target-vs-bust race and the tape right now."""
+    rt = _rt(request)
+    if side not in ("long", "short"):
+        raise HTTPException(400, "side must be 'long' or 'short'")
+    if not rt.hold.enabled:
+        raise HTTPException(404, "The hold clock reads the live book, so it only runs in live mode.")
+    coin = coin or rt.default_coin
+    if coin not in rt.coins:
+        raise HTTPException(404, f"The hold clock covers {rt.coins}.")
+    if entry and bust and (bust >= entry) == (side == "long"):
+        raise HTTPException(400, "For a long the bust price is below the entry; for a short, above it.")
+    return await rt.hold.read(coin, 1 if side == "long" else -1, leverage, target_pct, entry, bust, buffer_bps)

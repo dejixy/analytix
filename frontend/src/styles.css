@@ -616,3 +616,8 @@ tr.wall td { color: var(--ink); }
   .header-right { margin-left: 0; gap: 8px; }
   .oc-dist-row { grid-template-columns: 96px minmax(0, 1fr) 76px; }
 }
+.hc-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hc-warn { color: var(--ink); border-left: 2px solid var(--down); padding-left: 8px; }
+.plan-table td.up b, .plan-table td.up { color: var(--up-bright); }
+.plan-table td.mid { color: var(--ink-2); }
+.plan-table td.down { color: var(--down); }

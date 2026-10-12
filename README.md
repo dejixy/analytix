@@ -256,6 +256,20 @@ From that estimate and the prices you can actually trade (never a stale last tra
 
 Sources refresh on their own (options every minute; scoreboards every 20 seconds while a game is on; one news query every 6 seconds, rotating). `/api/health` → `prediction_markets.sources` shows each one's state; `python -m scripts.probeIntel` on the server checks them all. Not advice: every estimate has its own error.
 
+### Hold clock (very high leverage)
+
+The **Hold clock** button answers "how long can I hold this?" at 100× to 1000× (built with Papertrade's 800× in mind, where every fill is Hyperliquid's mid and the bust triggers on the best bid or ask). At 800× the bust is about 0.12% away, so what matters is how often the best bid (for a long) or ask (for a short) actually reaches that far within seconds and minutes, wicks and spread blowouts included.
+
+It keeps a one-second grid of each main coin's lowest best bid, highest best ask and last mid (24 hours, saved in the bars SQLite file), built from the books the dashboard already receives, and from it shows:
+
+- **Survival by hold time** (10s, 30s, 1, 2, 5 and 15 minutes): the share of real starts over the last day where the bust wasn't reached in that time, overall and for **conditions like now** (starts whose last 5 minutes moved about as much as the last 5 minutes have). Headline: the hold time that survives 9 times in 10, and when half are gone. Feed gaps are left out, never filled in.
+- **Fill drift**: how far the mid moves in the 1 to 2 seconds between clicking and the fill landing on-chain, as bps and as a share of margin at your leverage (typical, 1 in 10, worst 1%).
+- **The race**: the chance the mid reaches your target (a % of margin) before the best bid/ask reaches your bust, how long the wins took, and what a win nets after Papertrade's 0.2 bp deadband and 2% win fee (their impact haircut isn't in yet), with the average result per trade.
+- **The tape right now**: volatility against usual, the spread against usual, which way the book leans, and Binance's last few seconds against Hyperliquid's, with plain warnings when the spread is blown out, the book leans against you or Binance has moved your bust's way and Hyperliquid hasn't yet.
+- **Your position**: enter your fill (and the bust price your venue shows) for P&L on margin, the distance to bust and survival odds from here.
+
+Measured, not modelled; live mode only (`engine/holdclock.py`, `api/holdclock.py`, `GET /api/hold`).
+
 ### Position watch
 
 The **Positions** button opens position watch. Paste a wallet address (and a name if you like) and it shows that wallet's open Hyperliquid positions, refreshed every 20 seconds. It's read-only: Hyperliquid shows every wallet's positions publicly, so it needs no keys and can't trade. Up to 10 wallets; they're kept in `data/watch.json` on the machine running Analytix.
@@ -385,6 +399,7 @@ Thresholds live in `config.py`.
 | `GET /api/plan?side=long&margin=1000&leverage=5&hours=24&stop=2&target=4&coin=BTC` | the position planner: liquidation price and odds, safe leverage, touch odds, P&L percentiles at exit, costs, the model behind them, and (with `stop`/`target`, % from entry) the bracket's odds. Add `account=3000` for cross margin. The first answer for a coin and hold starts the history check (`calibration_pending: true`); it's included a moment later. |
 | `GET /api/alerts` · `PUT /api/alerts` · `POST /api/alerts/levels` · `POST /api/alerts/telegram/{token,discover,test}` | alert settings (never the token), price alerts, Telegram connection and the latest alerts. |
 | `GET /api/outcomes` · `GET /api/outcomes/{id}?range=12h\|2w` · `GET /api/outcomes/questions/{id}?range=12h\|2w` | every prediction market with live odds, fair odds and the add-up check; one market's page (book, trades, who is trading, why the odds moved, odds history) |
+| `GET /api/hold?coin=BTC&side=long&leverage=800&target_pct=50&entry=&bust=` | the hold clock: survival odds by hold time (overall and like now), fill drift, the target-vs-bust race, the tape right now, and a live position read |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.
