@@ -114,10 +114,11 @@ export default function Bot({ onClose }) {
         <div className="plan-verdict">
           <div className="plan-kicker">Shadow mode · no orders are sent</div>
           <div className="plan-safe">
-            Your rules run on the live timeframe cards, and every trade is filled the way Hyperliquid itself would fill it.
-            Market orders pay the spread and {d ? (d.fees.taker * 100).toFixed(3) : "0.045"}% a side. Limit orders pay{" "}
-            {d ? (d.fees.maker * 100).toFixed(3) : "0.015"}% but only fill when price trades through them. Each rule runs both
-            ways side by side, so you can see which one survives the costs. Live trading comes once a rule holds up here.
+            The auto hunter watches every coin around the clock and trades each setup the moment it appears. Your own rules
+            run on the timeframe cards. Every trade is filled the way Hyperliquid itself would fill it: market orders pay the
+            spread and {d ? (d.fees.taker * 100).toFixed(3) : "0.045"}% a side, limit orders pay{" "}
+            {d ? (d.fees.maker * 100).toFixed(3) : "0.015"}% but only fill when price trades through them. Everything runs both
+            ways side by side, so you can see what survives the costs. Live trading comes once something holds up here.
           </div>
         </div>
 
@@ -126,12 +127,16 @@ export default function Bot({ onClose }) {
           <p className="plan-note muted" style={{ padding: 12 }}>{error ? "" : "Loading…"}</p>
         ) : (
           <div className="plan-body bot-body">
+            {d.auto && <Auto a={d.auto} busy={busy}
+              onSave={(patch) => call("PUT", "/api/bot/auto", patch)}
+              onReset={() => window.confirm("Clear the auto hunter's whole track record?") && call("POST", "/api/bot/auto/reset")} />}
+
             {draft ? (
               <Editor d={d} draft={draft} setDraft={setDraft} onSave={save} onCancel={() => setDraft(null)} busy={busy} />
             ) : (
               <section className="plan-sec bot-bar">
                 <span className="plan-note muted" style={{ margin: 0 }}>
-                  {d.rules.length ? `${d.rules.length} rule${d.rules.length === 1 ? "" : "s"}` : "No rules yet."}
+                  Your rules: {d.rules.length ? d.rules.length : "none yet"}
                 </span>
                 {d.rules.length < d.max_rules && <button className="plan-chip on" onClick={fresh}>New rule</button>}
               </section>
@@ -321,5 +326,175 @@ function Editor({ d, draft, setDraft, onSave, onCancel, busy }) {
         </div>
       </div>
     </section>
+  );
+}
+
+
+const ago = (ms, now) => {
+  if (!ms) return "-";
+  const s = Math.max(0, ((now || Date.now()) - ms) / 1000);
+  return s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${(s / 3600).toFixed(1)}h ago`;
+};
+const cell = (x) => (x.trades ? <><span className={tone(x.net_usd)}>{usd(x.net_usd)}</span> <span className="muted">· {x.trades}</span></> : <span className="muted">-</span>);
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+function Auto({ a, busy, onSave, onReset }) {
+  const [edit, setEdit] = useState(null);
+  const lh = a.last_hour;
+  const openEdit = () => setEdit(edit ? null : {
+    coins: a.coins, setups: a.setups, exits: a.exits, leverage: String(a.leverage), margin_usd: String(a.margin_usd),
+    daily_loss_usd: String(a.daily_loss_usd), telegram: a.telegram,
+  });
+  const saveEdit = async () => {
+    await onSave({ ...edit, leverage: Number(edit.leverage), margin_usd: Number(edit.margin_usd), daily_loss_usd: Number(edit.daily_loss_usd) });
+    setEdit(null);
+  };
+  return (
+    <>
+      <section className="plan-sec">
+        <div className="bot-head">
+          <h3 style={{ margin: 0 }}>Auto hunter</h3>
+          <span className={`bot-state ${a.on ? "up" : "muted"}`}>{a.on ? "running 24/7" : "paused"}</span>
+        </div>
+        <p className="plan-note" style={{ marginTop: 0 }}>
+          {a.on
+            ? `Watching ${a.coins_on.join(", ")} every second for ${plural(a.setups.length, "setup")}, each tried with ${plural(a.exits.length, "exit")} and both order types: ${a.strategies * 2} strategies at ${a.leverage}× on $${a.margin_usd} each.`
+            : "Paused. Nothing new is entered."}
+        </p>
+        <p className="plan-note">
+          Last hour: <b>{lh.signals}</b> signals, <b>{lh.trades}</b> trades · market orders{" "}
+          <b className={tone(lh.market_net_usd)}>{usd(lh.market_net_usd)}</b> · limit orders{" "}
+          <b className={tone(lh.limit_net_usd)}>{usd(lh.limit_net_usd)}</b> · {a.open.length} open now
+        </p>
+        <p className="plan-note">
+          All time: market orders <b className={tone(a.total.market.net_usd)}>{usd(a.total.market.net_usd)}</b> over{" "}
+          {a.total.market.trades} trades ({usd(-a.total.market.fees_usd)} fees) · limit orders{" "}
+          <b className={tone(a.total.limit.net_usd)}>{usd(a.total.limit.net_usd)}</b> over {a.total.limit.trades} ({usd(-a.total.limit.fees_usd)} fees)
+        </p>
+        <div className="bot-actions">
+          <button className="plan-chip" disabled={busy} onClick={() => onSave({ on: !a.on })}>{a.on ? "Pause" : "Resume"}</button>
+          <button className="plan-chip" disabled={busy} onClick={openEdit}>{edit ? "Close settings" : "Settings"}</button>
+          <button className="plan-chip" disabled={busy} onClick={onReset}>Clear record</button>
+        </div>
+        {edit && <AutoEditor a={a} e={edit} setE={setEdit} busy={busy} onSave={saveEdit} />}
+      </section>
+
+      <section className="plan-sec">
+        <h3>Setups</h3>
+        <div className="bot-scroll">
+          <table className="plan-table">
+            <thead><tr><th className="left">Setup</th><th>Signals 1h</th><th>Last</th><th>Market orders</th><th>Limit orders</th></tr></thead>
+            <tbody>
+              {a.setup_stats.filter((r) => r.on).map((r) => (
+                <tr key={r.key} title={r.help}>
+                  <td className="left">{r.label}</td>
+                  <td className="num">{r.signals_1h}</td>
+                  <td className="num muted">{ago(r.last_ms, a.now_ms)}</td>
+                  <td className="num">{cell(r.market)}</td>
+                  <td className="num">{cell(r.limit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="plan-note muted">Net after costs · trades, across every coin and exit. Tap a setup's name for what it looks for.</p>
+      </section>
+
+      <section className="plan-sec">
+        <h3>Best so far</h3>
+        {a.best.length === 0 ? (
+          <p className="plan-note muted" style={{ marginTop: 0 }}>Ranked once strategies have a few trades each.</p>
+        ) : (
+          <div className="bot-scroll">
+            <table className="plan-table">
+              <thead><tr><th className="left">Strategy</th><th>How</th><th>Trades</th><th>Won</th><th>Net</th><th title="How steady the results are: 2 or more means luck is an unlikely explanation">t</th></tr></thead>
+              <tbody>
+                {[...a.best, ...(a.worst.length ? [null] : []), ...a.worst].map((b, i) => b == null ? (
+                  <tr key="gap"><td className="left muted" colSpan={6}>Worst</td></tr>
+                ) : (
+                  <tr key={`${b.id}-${b.style}-${i}`} title={b.verdict}>
+                    <td className="left">{b.name}</td>
+                    <td className="muted">{b.style}</td>
+                    <td className="num">{b.trades}</td>
+                    <td className="num">{pct(b.win_rate)}</td>
+                    <td className={`num ${tone(b.net_usd)}`}>{usd(b.net_usd)}</td>
+                    <td className="num muted">{b.t_stat == null ? "-" : b.t_stat.toFixed(1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="plan-note muted">Ranked by net after costs. Under 30 trades a strategy can just be lucky.</p>
+      </section>
+
+      <section className="plan-sec">
+        <h3>Live</h3>
+        {a.signals.length === 0 ? (
+          <p className="plan-note muted" style={{ marginTop: 0 }}>{a.on ? "Watching. Signals show up here the moment they fire." : "Paused."}</p>
+        ) : (
+          <div className="bot-feed">
+            {a.signals.map((x, i) => (
+              <div key={`${x.ms}-${x.coin}-${x.setup}-${i}`} className="bot-feed-row">
+                <span className="num muted">{time(x.ms)}</span> <b>{x.coin}</b> {x.setup}{" "}
+                <span className={x.side > 0 ? "up" : "down"}>{x.side > 0 ? "long" : "short"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {a.open.length > 0 && (
+          <>
+            <p className="plan-note" style={{ marginBottom: 4 }}>Open now</p>
+            {a.open.map((o, i) => (
+              <div key={`${o.name}-${o.style}-${i}`} className="bot-feed-row">
+                {o.name} <span className="muted">({o.style})</span>{" "}
+                <span className={o.side > 0 ? "up" : "down"}>{o.side > 0 ? "long" : "short"}</span> from {fmtPrice(o.entry_px)},{" "}
+                <b className={tone(o.pnl_usd)}>{usd(o.pnl_usd)}</b>
+              </div>
+            ))}
+          </>
+        )}
+      </section>
+    </>
+  );
+}
+
+function AutoEditor({ a, e, setE, busy, onSave }) {
+  const set = (k, v) => setE((x) => ({ ...x, [k]: v }));
+  const flip = (k, v) => set(k, e[k].includes(v) ? e[k].filter((x) => x !== v) : [...e[k], v]);
+  const allCoins = e.coins.length === 0;
+  return (
+    <div className="plan-form" style={{ padding: "12px 0 0", border: 0 }}>
+      <div className="plan-field">
+        Coins
+        <span className="plan-holds">
+          <button type="button" className={`plan-chip ${allCoins ? "on" : ""}`} onClick={() => set("coins", [])}>All</button>
+          {a.all_coins.map((c) => <button key={c} type="button" className={`plan-chip ${!allCoins && e.coins.includes(c) ? "on" : ""}`} onClick={() => flip("coins", c)}>{c}</button>)}
+        </span>
+      </div>
+      <div className="plan-field">
+        Setups
+        <span className="plan-holds">{a.setups_all.map((s) => <button key={s.key} type="button" title={s.help} className={`plan-chip ${e.setups.includes(s.key) ? "on" : ""}`} onClick={() => flip("setups", s.key)}>{s.label}</button>)}</span>
+      </div>
+      <div className="plan-field">
+        Exits
+        <span className="plan-holds">{a.exits_all.map((x) => <button key={x.key} type="button" className={`plan-chip ${e.exits.includes(x.key) ? "on" : ""}`} onClick={() => flip("exits", x.key)}
+          title={`Target +${x.target_bps} bps, stop −${x.stop_bps} bps, out after ${dur(x.hold_s)}`}>{x.label} +{x.target_bps}/−{x.stop_bps} · {dur(x.hold_s)}</button>)}</span>
+      </div>
+      {[["leverage", "Leverage", "×"], ["margin_usd", "Margin", "$"], ["daily_loss_usd", "Daily stop", "$"]].map(([k, label, unit]) => (
+        <label key={k} className="plan-field" title={k === "daily_loss_usd" ? "Each strategy stops for the rest of the UTC day after losing this much" : ""}>
+          {label}
+          <span className="plan-input small"><input value={e[k]} onChange={(ev) => set(k, ev.target.value)} inputMode="decimal" aria-label={label} />{unit}</span>
+        </label>
+      ))}
+      <div className="plan-field">
+        Telegram
+        <span className="plan-holds">{[["off", "Off"], ["hourly", "Hourly summary"]].map(([k, l]) => <button key={k} type="button" className={`plan-chip ${e.telegram === k ? "on" : ""}`} onClick={() => set("telegram", k)}>{l}</button>)}</span>
+      </div>
+      <div className="bot-actions" style={{ marginTop: 0 }}>
+        <button className="plan-chip on" disabled={busy || !e.setups.length || !e.exits.length} onClick={onSave}>Save</button>
+        <span className="plan-note muted" style={{ margin: 0 }}>New leverage, margin or daily stop starts a fresh record. Leverage is capped at each coin's max.</span>
+      </div>
+    </div>
   );
 }
