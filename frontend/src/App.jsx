@@ -12,6 +12,7 @@ import Toasts from "./components/Toasts.jsx";
 import Planner from "./components/Planner.jsx";
 import AlertsPanel, { notifyEnabled } from "./components/AlertsPanel.jsx";
 import PositionWatch from "./components/PositionWatch.jsx";
+import HoldClock from "./components/HoldClock.jsx";
 import Scanner from "./components/Scanner.jsx";
 import Outcomes from "./components/Outcomes.jsx";
 
@@ -51,6 +52,7 @@ export default function App() {
   const [planning, setPlanning] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [watchOpen, setWatchOpen] = useState(false);
+  const [holdOpen, setHoldOpen] = useState(false);
   const [scanning, setScanning] = useState(false); // the More coins list is showing
   const [predicting, setPredicting] = useState(false); // the prediction markets (Outcomes) view is showing
   const seenAlerts = useRef(null); // ids already shown, so only new alerts notify
@@ -162,6 +164,7 @@ export default function App() {
         onPlan={() => setPlanning(true)}
         onAlerts={() => setAlertsOpen(true)}
         onPositions={() => setWatchOpen(true)}
+        onHold={() => setHoldOpen(true)}
       />
 
       {predicting ? (
@@ -264,6 +267,7 @@ export default function App() {
       <Toasts coin={snap.coin} nowMs={snap.now_ms} marketEvents={snap.market_events || []} />
       {alertsOpen && <AlertsPanel coin={snap.coin} onClose={() => setAlertsOpen(false)} />}
       {watchOpen && <PositionWatch onClose={() => setWatchOpen(false)} />}
+      {holdOpen && <HoldClock coins={snap.coins} defaultCoin={snap.coins?.includes(snap.coin) ? snap.coin : snap.coins?.[0]} onClose={() => setHoldOpen(false)} />}
       {planning && <Planner coin={snap.coin} mid={snap.price?.mid} explanations={snap.explanations} onClose={() => setPlanning(false)} />}
     </div>
   );

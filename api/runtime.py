@@ -38,6 +38,7 @@ from config import (
     WATCH_FILE,
 )
 from api.alerts import AlertService
+from api.holdclock import HoldClock
 from api.outcomes import OutcomeService
 from api.planner import PlannerService
 from api.positions import PositionWatch
@@ -106,6 +107,7 @@ class Runtime:
         self.extra: dict[str, float] = {}               # coin opened from More coins → when it was last viewed
         self.external: ExternalFeed | None = None       # Binance and Bybit prices, for where moves start
         self.outcomes = OutcomeService(self)            # Hyperliquid's prediction markets (HIP-4), own socket
+        self.hold = HoldClock(self, self.bars_db)       # how long very high leverage survives, from the live book
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -157,6 +159,7 @@ class Runtime:
                 self._tasks.append(asyncio.create_task(self.external.run(), name="external"))
         await self.scanner.start()
         await self.outcomes.start()
+        await self.hold.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
@@ -164,6 +167,7 @@ class Runtime:
     async def stop(self) -> None:
         await self.scanner.stop()
         await self.outcomes.stop()
+        await self.hold.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
