@@ -146,6 +146,7 @@ def book(ts, bid, ask):
 def test_service_validates_and_trades_from_the_card(tmp_path):
     rt, st, an = fake_runtime(tmp_path)
     svc = BotService(rt, tmp_path / "bot.json")
+    svc.save_auto({"on": False})                       # this test is about a hand-made rule
     with pytest.raises(BotError, match="closer"):
         svc.save_rule({"coin": "BTC", "leverage": 40, "stop_loss_bps": 300})
     with pytest.raises(BotError, match="Pick at least one"):

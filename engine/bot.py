@@ -314,7 +314,7 @@ def stats(trades: list[dict], missed: int = 0) -> dict:
     out["avg_hold_s"] = sum((t["exit_ms"] - t["entry_ms"]) / 1000 for t in trades) / n
     for t in trades:
         out["by_reason"][t["reason"]] = out["by_reason"].get(t["reason"], 0) + 1
-    if n >= 2:
+    if n >= 10:                                   # too few trades and the t-stat means nothing
         mean = sum(pcts) / n
         sd = math.sqrt(sum((x - mean) ** 2 for x in pcts) / (n - 1))
         out["t_stat"] = mean / (sd / math.sqrt(n)) if sd > 0 else None

@@ -4,8 +4,9 @@ against every book update and trade print since the last tick. Nothing is sent t
 rules live in engine/bot.py.
 
     every second   new book updates and trades → fills, stops, targets, liquidations; then each rule's card →
-                   time limits, flips, new entries
-    on the hour    a Telegram summary per rule that asked for one (live mode)
+                   time limits, flips, new entries; and the auto hunter's setups on every coin (engine/hunter.py) →
+                   new entries for every setup × coin × exit profile that fired
+    on the hour    a Telegram summary per rule that asked for one, and one for the auto hunter (live mode)
     storage        rules in data/bot.json; closed trades in the bars SQLite file (live mode), so the track record
                    survives restarts. Positions open during a restart are dropped.
 """
@@ -21,6 +22,7 @@ from config import BOT_FILE, WINDOWS
 from engine.bot import (
     MAKER_FEE, STYLES, TAKER_FEE, Rule, Sim, break_even_win_rate, card_signal, liq_distance, stats,
 )
+from engine.hunter import EXIT_WORDS, EXITS, SETUPS, CoinMemory, detect
 from engine.summary import layout_for
 
 log = logging.getLogger("analytix.bot")
@@ -36,6 +38,13 @@ LIMITS = {"min_strength": (0.05, 1.0), "leverage": (1, 200), "margin_usd": (1, 1
           "stop_loss_bps": (1, 2000), "max_hold_s": (5, 7 * 86400), "cooldown_s": (0, 86400),
           "max_trades_per_hour": (1, 120), "daily_loss_usd": (1, 1e7), "limit_wait_s": (1, 600)}
 META_EVERY_S = 3600
+AUTO_DEFAULT = {"on": True, "coins": [], "setups": list(SETUPS), "exits": list(EXITS), "leverage": 20.0,
+                "margin_usd": 100.0, "daily_loss_usd": 100.0, "telegram": "hourly"}
+AUTO_MONEY = ("leverage", "margin_usd", "daily_loss_usd")      # changing these starts a fresh auto record
+AUTO_COOLDOWN_S = 5
+AUTO_PER_HOUR = 120
+AUTO_CACHE_S = 2.0
+SIGNALS_KEPT = 5000
 
 
 class BotError(ValueError):
@@ -55,7 +64,13 @@ class BotService:
         self._db: sqlite3.Connection | None = None
         self._tasks: list[asyncio.Task] = []
         self._hour = int(time.time() // 3600)
+        self.auto = dict(AUTO_DEFAULT)
+        self.auto_rules: dict[str, Rule] = {}
+        self._mem: dict[str, CoinMemory] = {}
+        self.signals: list[tuple[int, str, str, int]] = []      # (ms, coin, setup, side), newest last
+        self._auto_cache: tuple[float, dict] | None = None
         self._load()
+        self._build_auto()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -67,7 +82,7 @@ class BotService:
                 self._db.execute("CREATE INDEX IF NOT EXISTS bot_trades_rule ON bot_trades (rule_id, style, exit_ms)")
                 self._db.commit()
                 for rid, style, data in self._db.execute("SELECT rule_id, style, data FROM bot_trades ORDER BY exit_ms"):
-                    if rid in self.rules:
+                    if rid in self.rules or rid in self.auto_rules:
                         self.trades.setdefault((rid, style), []).append(json.loads(data))
                 for k, v in self.trades.items():
                     self.trades[k] = v[-KEEP_TRADES:]
@@ -95,7 +110,8 @@ class BotService:
 
     async def _meta_loop(self) -> None:
         while True:
-            for coin in {r.coin for r in self.rules.values()}:
+            before = dict(self.max_lev)
+            for coin in {r.coin for r in self.rules.values()} | set(self._auto_coins()):
                 try:
                     lev = await self.rt.planner.max_leverage(coin)
                 except Exception:
@@ -105,6 +121,8 @@ class BotService:
                     for sim in self.sims.values():
                         if sim.rule.coin == coin:
                             sim.max_leverage = lev
+            if self.max_lev != before:
+                self._build_auto()                         # cap the auto hunter's leverage at each coin's max
             await asyncio.sleep(META_EVERY_S)
 
     # ── the work ───────────────────────────────────────────────────────────
@@ -144,10 +162,20 @@ class BotService:
             if last is None or last.best_bid <= 0 or last.best_ask <= 0:
                 continue
             funding = st.context.funding if st.context else 0.0
+            fired: dict[str, int] = {}
+            if any(s.rule.timeframe == "auto" for s in sims):
+                fired = detect(pipe, self._mem.setdefault(coin, CoinMemory()), now)
+                for setup, side in fired.items():
+                    self.signals.append((now, coin, setup, side))
+                if len(self.signals) > SIGNALS_KEPT:
+                    del self.signals[: len(self.signals) - SIGNALS_KEPT]
             for s in sims:
-                ex = pipe.analyzer.latest.get(s.rule.timeframe)
-                side = card_signal(ex.summary, s.rule.signals, s.rule.min_strength) if ex else 0
-                done = s.on_tick(now, side, last.best_bid, last.best_ask, funding)
+                if s.rule.timeframe == "auto":
+                    side_now, side = 0, fired.get(s.rule.signals[0], 0)
+                else:
+                    ex = pipe.analyzer.latest.get(s.rule.timeframe)
+                    side_now = side = card_signal(ex.summary, s.rule.signals, s.rule.min_strength) if ex else 0
+                done = s.on_tick(now, side_now, last.best_bid, last.best_ask, funding)
                 if done:
                     closed.append(done)
                 s.signal(now, side, last.best_bid, last.best_ask)
@@ -168,9 +196,10 @@ class BotService:
                 self._db.commit()
             except sqlite3.Error:
                 log.exception("could not save a bot trade")
+        self._auto_cache = None
         rule = self.rules.get(t["rule_id"])
         sim = self.sims.get(key)
-        if rule is None:
+        if rule is None:                                  # the auto hunter reports hourly, not per trade
             return
         if rule.telegram == "trades":
             self._notify(rule, trade_message(rule, t))
@@ -190,6 +219,10 @@ class BotService:
             msg = hourly_message(r, {st: self.trades.get((r.id, st), []) for st in STYLES}, start, end)
             if msg:
                 self._notify(r, msg)
+        if self.auto["on"] and self.auto["telegram"] == "hourly":
+            msg = auto_hourly_message(self._auto_trades(), {k: r.name for k, r in self.auto_rules.items()}, start, end)
+            if msg:
+                self._notify(Rule("auto", coin="AUTO"), msg)
 
     def _notify(self, rule: Rule, msg: tuple[str, tuple[str, ...]]) -> None:
         if self.rt.mode != "live" or not getattr(self.rt, "alerts", None):
@@ -208,6 +241,9 @@ class BotService:
         except (OSError, ValueError):
             log.exception("could not read %s; the bot starts with no rules", self.path)
             return
+        auto = saved.get("auto")
+        if isinstance(auto, dict):
+            self.auto.update({k: v for k, v in auto.items() if k in AUTO_DEFAULT})
         for d in saved.get("rules") or []:
             try:
                 r = Rule.from_dict(d)
@@ -220,10 +256,139 @@ class BotService:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"rules": [r.to_dict() for r in self.rules.values()]}, indent=1), encoding="utf-8")
+            tmp.write_text(json.dumps({"rules": [r.to_dict() for r in self.rules.values()], "auto": self.auto}, indent=1), encoding="utf-8")
             tmp.replace(self.path)
         except OSError:
             log.exception("could not save the bot's rules")
+
+    # ── the auto hunter ────────────────────────────────────────────────────
+    def _auto_coins(self) -> list[str]:
+        want = self.auto.get("coins") or []
+        return [c for c in self.rt.coins if not want or c in want]
+
+    def _build_auto(self) -> None:
+        """One strategy per setup × coin × exit profile, each run with market and limit orders. Strategies that
+        are switched off are dropped with their record; the rest keep theirs."""
+        a = self.auto
+        rules = {}
+        for coin in self._auto_coins():
+            lev = min(float(a["leverage"]), self.max_lev.get(coin) or float(a["leverage"]))
+            for setup in a["setups"]:
+                for ex in a["exits"]:
+                    tp, sl, hold, wait = EXITS[ex]
+                    rid = f"auto-{setup}-{coin}-{ex}"
+                    rules[rid] = Rule(rid, f"{SETUPS[setup][0]} · {coin} · {EXIT_WORDS[ex]}", coin, "auto", (setup,), 0.0,
+                                      "both", lev, float(a["margin_usd"]), tp, sl, hold, False, AUTO_COOLDOWN_S,
+                                      AUTO_PER_HOUR, float(a["daily_loss_usd"]), wait, "off", True)
+        for rid in list(self.auto_rules):
+            if rid not in rules:
+                self._forget(rid)
+        for rid, r in rules.items():
+            old = self.auto_rules.get(rid)
+            if old is None or old.to_dict() != r.to_dict() or (rid, STYLES[0]) not in self.sims:
+                for style in STYLES:
+                    self.sims.pop((rid, style), None)
+                if a["on"]:
+                    self._make_sims(r)
+        if not a["on"]:
+            for rid in rules:
+                for style in STYLES:
+                    self.sims.pop((rid, style), None)
+        self.auto_rules = rules
+        self._auto_cache = None
+
+    def save_auto(self, patch: dict) -> dict:
+        if not isinstance(patch, dict):
+            raise BotError("Send the settings as an object.")
+        new = {**self.auto, **{k: v for k, v in patch.items() if k in AUTO_DEFAULT}}
+        new["on"] = bool(new["on"])
+        new["coins"] = [c for c in self.rt.coins if c in set(new.get("coins") or [])]
+        new["setups"] = [k for k in SETUPS if k in set(new.get("setups") or [])]
+        new["exits"] = [k for k in EXITS if k in set(new.get("exits") or [])]
+        if not new["setups"]:
+            raise BotError("Pick at least one setup.")
+        if not new["exits"]:
+            raise BotError("Pick at least one exit profile.")
+        for k, (lo, hi) in (("leverage", (1, 200)), ("margin_usd", (1, 1e6)), ("daily_loss_usd", (1, 1e7))):
+            try:
+                new[k] = float(new[k])
+            except (TypeError, ValueError) as exc:
+                raise BotError(f"{k} must be a number.") from exc
+            if not lo <= new[k] <= hi:
+                raise BotError(f"{k} must be between {lo:g} and {hi:g}.")
+        if new["telegram"] not in ("off", "hourly"):
+            raise BotError("telegram must be off or hourly.")
+        fresh = any(new[k] != self.auto[k] for k in AUTO_MONEY)
+        self.auto = new
+        if fresh:
+            self.reset_auto(rebuild=False)
+        self._build_auto()
+        self._save()
+        return self.public()
+
+    def reset_auto(self, rebuild: bool = True) -> dict:
+        for rid in list(self.auto_rules):
+            self._forget(rid)
+        self.signals.clear()
+        if rebuild:
+            self._build_auto()
+        self._auto_cache = None
+        return self.public()
+
+    def _auto_trades(self) -> dict[str, dict[str, list[dict]]]:
+        return {rid: {st: self.trades.get((rid, st), []) for st in STYLES} for rid in self.auto_rules}
+
+    def auto_public(self) -> dict:
+        hit = self._auto_cache
+        if hit and time.time() - hit[0] < AUTO_CACHE_S:
+            return hit[1]
+        now_ms = max([p.state.now_ms for p in self.rt.pipelines.values()] + [0]) or int(time.time() * 1000)
+        hour_ago = now_ms - 3_600_000
+        by_rule = self._auto_trades()
+        per_setup = {}
+        for key, (label, help_) in SETUPS.items():
+            fired = [x for x in self.signals if x[2] == key]
+            row = {"key": key, "label": label, "help": help_, "on": key in self.auto["setups"],
+                   "signals_1h": sum(1 for x in fired if x[0] >= hour_ago), "last_ms": fired[-1][0] if fired else None}
+            for st in STYLES:
+                trades = [t for rid, d in by_rule.items() if self.auto_rules[rid].signals[0] == key for t in d[st]]
+                s = stats(trades)
+                row[st] = {"trades": s["trades"], "net_usd": s["net_usd"], "win_rate": s["win_rate"],
+                           "avg_net_pct": s["avg_net_pct"]}
+            per_setup[key] = row
+        board = []
+        for rid, d in by_rule.items():
+            r = self.auto_rules[rid]
+            for st in STYLES:
+                if len(d[st]) >= 3:
+                    s = stats(d[st])
+                    board.append({"id": rid, "name": r.name, "style": st, "coin": r.coin, "setup": r.signals[0],
+                                  "trades": s["trades"], "win_rate": s["win_rate"], "net_usd": s["net_usd"],
+                                  "fees_usd": s["fees_usd"], "avg_net_pct": s["avg_net_pct"], "t_stat": s["t_stat"],
+                                  "verdict": s["verdict"]})
+        board.sort(key=lambda x: x["net_usd"], reverse=True)
+        mids = {c: (p.state.books.newest.mid if p.state.books.newest else None) for c, p in self.rt.pipelines.items()}
+        open_ = []
+        for rid, r in self.auto_rules.items():
+            for st in STYLES:
+                sim = self.sims.get((rid, st))
+                o = sim.open_view(mids.get(r.coin)) if sim else None
+                if o and not o.get("waiting"):
+                    open_.append({**o, "name": r.name, "coin": r.coin})
+        recent = [t for d in by_rule.values() for lst in d.values() for t in lst if t["exit_ms"] >= hour_ago]
+        out = {**self.auto, "now_ms": now_ms, "coins_on": self._auto_coins(), "all_coins": list(self.rt.coins),
+               "setups_all": [{"key": k, "label": v[0], "help": v[1]} for k, v in SETUPS.items()],
+               "exits_all": [{"key": k, "label": EXIT_WORDS[k], "target_bps": v[0], "stop_bps": v[1], "hold_s": v[2]}
+                             for k, v in EXITS.items()],
+               "strategies": len(self.auto_rules),
+               "last_hour": {"signals": sum(1 for x in self.signals if x[0] >= hour_ago), "trades": len(recent),
+                             **{f"{st}_net_usd": sum(t["net_usd"] for t in recent if t["style"] == st) for st in STYLES}},
+               "total": {st: stats([t for d in by_rule.values() for t in d[st]]) for st in STYLES},
+               "setup_stats": list(per_setup.values()), "best": board[:12], "worst": board[-3:][::-1] if len(board) > 12 else [],
+               "open": sorted(open_, key=lambda o: o["entry_ms"], reverse=True)[:20],
+               "signals": [{"ms": ms, "coin": c, "setup": SETUPS[k][0], "side": sd} for ms, c, k, sd in self.signals[-12:][::-1]]}
+        self._auto_cache = (time.time(), out)
+        return out
 
     def _make_sims(self, r: Rule) -> None:
         for style in STYLES:
@@ -343,11 +508,12 @@ class BotService:
                         "rows_now": rows, "styles": styles,
                         "liq_bps": liq_distance(r.leverage, self.max_lev.get(r.coin)) * 1e4})
         recent = sorted((t for lst in self.trades.values() for t in lst[-60:]), key=lambda t: t["exit_ms"])[-60:][::-1]
-        names = {r.id: r.name for r in self.rules.values()}
+        names = {**{k: r.name for k, r in self.auto_rules.items()}, **{r.id: r.name for r in self.rules.values()}}
         return {"mode": "shadow", "rules": out, "recent": [{**t, "rule": names.get(t["rule_id"], "")} for t in recent],
                 "fees": {"taker": TAKER_FEE, "maker": MAKER_FEE}, "coins": list(self.rt.coins),
                 "timeframes": {k: [x for x in layout_for(v) if x not in NO_DIRECTION] for k, v in WINDOWS.items()},
-                "max_leverage": {c: self.max_lev.get(c) for c in self.rt.coins}, "max_rules": MAX_RULES}
+                "max_leverage": {c: self.max_lev.get(c) for c in self.rt.coins}, "max_rules": MAX_RULES,
+                "auto": self.auto_public()}
 
 
 # ── messages (plain words, no dashes) ────────────────────────────────────────
@@ -402,3 +568,27 @@ def hourly_message(r: Rule, by_style: dict[str, list[dict]], start_ms: int, end_
                      f"in fees, {s_all['win_rate'] * 100:.0f}% won.")
     lines.append("Shadow mode: no real orders were placed.")
     return f"Bot (shadow) {r.name}: the last hour", tuple(lines)
+
+
+def auto_hourly_message(by_rule: dict[str, dict[str, list[dict]]], names: dict[str, str], start_ms: int, end_ms: int):
+    hour = [t for d in by_rule.values() for lst in d.values() for t in lst if start_ms <= t["exit_ms"] < end_ms]
+    if not hour:
+        return None
+    lines = []
+    for st in STYLES:
+        h = [t for t in hour if t["style"] == st]
+        lines.append(f"{STYLE_WORDS[st].capitalize()}: {len(h)} trades, {_usd(sum(t['net_usd'] for t in h))}.")
+    best = None
+    for rid, d in by_rule.items():
+        for st, lst in d.items():
+            if len(lst) >= 10:
+                s = stats(lst)
+                if best is None or s["net_usd"] > best[2]["net_usd"]:
+                    best = (rid, st, s)
+    if best:
+        rid, st, s = best
+        name = names.get(rid, rid)
+        lines.append(f"Best so far: {name} with {STYLE_WORDS[st]}, {_usd(s['net_usd'])} over {s['trades']} trades "
+                     f"({s['win_rate'] * 100:.0f}% won).")
+    lines.append("Shadow mode: no real orders were placed.")
+    return "Bot (shadow) auto hunter: the last hour", tuple(lines)

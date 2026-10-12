@@ -299,3 +299,15 @@ def bot_delete_rule(request: Request, rule_id: str):
 @router.post("/bot/rules/{rule_id}/reset")
 def bot_reset_rule(request: Request, rule_id: str):
     return _bot_call(_rt(request).bot.reset_rule, rule_id)
+
+
+@router.put("/bot/auto")
+def bot_auto(request: Request, patch: dict):
+    """The auto hunter's settings: {"on", "coins", "setups", "exits", "leverage", "margin_usd", "daily_loss_usd",
+    "telegram"}. New leverage, margin or daily stop starts a fresh auto record."""
+    return _bot_call(_rt(request).bot.save_auto, patch)
+
+
+@router.post("/bot/auto/reset")
+def bot_auto_reset(request: Request):
+    return _bot_call(_rt(request).bot.reset_auto)
