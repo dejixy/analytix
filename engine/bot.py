@@ -133,6 +133,7 @@ class Pending:                       # a limit entry waiting to fill
     side: int
     price: float
     placed_ms: int
+    stop_bps: float | None = None
 
 
 @dataclass
@@ -151,6 +152,7 @@ class Sim:
     stopped_for_day: bool = False
     missed: int = 0                          # limit entries that never filled
     closing: tuple | None = None             # maker_exit: (price, placed ms, reason) of a resting closing order
+    skipped: dict = field(default_factory=dict)   # entries passed up, by reason ("spread", "cost")
 
     # ── entries ───────────────────────────────────────────────────────────
     def can_enter(self, now_ms: int, side: int) -> bool:
@@ -165,19 +167,24 @@ class Sim:
         self.entries = [t for t in self.entries if now_ms - t < 3_600_000]
         return len(self.entries) < r.max_trades_per_hour
 
-    def signal(self, now_ms: int, side: int, best_bid: float, best_ask: float) -> None:
+    def signal(self, now_ms: int, side: int, best_bid: float, best_ask: float, stop_bps: float | None = None) -> bool:
+        """Enter if allowed. stop_bps overrides the rule's stop for this trade (a volatility stop)."""
         if side == 0 or not self.can_enter(now_ms, side):
-            return
+            return False
         self.entries.append(now_ms)
         if self.style in ("market", "maker_exit"):
-            self.market_due = (side, now_ms + LATENCY_MS)
+            self.market_due = (side, now_ms + LATENCY_MS, stop_bps)
         else:
-            self.pending = Pending(side, best_bid if side > 0 else best_ask, now_ms)
+            self.pending = Pending(side, best_bid if side > 0 else best_ask, now_ms, stop_bps)
+        return True
 
-    def _open(self, side: int, px: float, now_ms: int, fee_rate: float) -> None:
+    def skip(self, reason: str) -> None:
+        self.skipped[reason] = self.skipped.get(reason, 0) + 1
+
+    def _open(self, side: int, px: float, now_ms: int, fee_rate: float, stop_bps: float | None = None) -> None:
         r = self.rule
         tp = px * (1 + side * r.take_profit_bps / 1e4)
-        sl = px * (1 - side * r.stop_loss_bps / 1e4)
+        sl = px * (1 - side * (stop_bps or r.stop_loss_bps) / 1e4)
         liq = px * (1 - side * liq_distance(r.leverage, self.max_leverage))
         self.pos = Position(side, self.style, now_ms, px, r.notional, r.notional * fee_rate, tp, sl, liq,
                             last_funding_ms=now_ms)
@@ -187,12 +194,12 @@ class Sim:
         """One book update. Fills a due market entry; checks the open position's stop, liquidation and (market
         style) take-profit. Returns the closed trade, if any."""
         if self.market_due and ts >= self.market_due[1]:
-            side = self.market_due[0]
+            side, _, stop_bps = self.market_due
             self.market_due = None
             px = None
             if levels is not None:
                 px = walk(levels[0] if side > 0 else levels[1], self.rule.notional)
-            self._open(side, px or (best_ask if side > 0 else best_bid), ts, self.rule.taker_fee)
+            self._open(side, px or (best_ask if side > 0 else best_bid), ts, self.rule.taker_fee, stop_bps)
             return None
         if self.pending and side_crossed(self.pending, best_bid, best_ask):
             self._fill_pending(ts)
@@ -243,7 +250,7 @@ class Sim:
     def _fill_pending(self, ts: int) -> None:
         pe = self.pending
         self.pending = None
-        self._open(pe.side, pe.price, ts, self.rule.maker_fee)
+        self._open(pe.side, pe.price, ts, self.rule.maker_fee, pe.stop_bps)
 
     def on_tick(self, now_ms: int, side_now: int, best_bid: float, best_ask: float, funding_rate: float = 0.0) -> dict | None:
         """Once a second: funding, the limit entry timing out, the time limit and the flip exit."""
