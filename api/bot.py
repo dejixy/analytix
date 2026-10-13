@@ -34,6 +34,7 @@ from engine.hunter import (
     detect, lead_check, vol_stop_bps,
 )
 from engine.summary import layout_for
+from storage.sqlite import connect, transaction
 
 log = logging.getLogger("analytix.bot")
 
@@ -99,6 +100,7 @@ class BotService:
         self.markouts: dict[tuple[str, str, int], list[float]] = {}   # (setup, coin, s) → mid [n, Σ, Σ², wins] + paid [n, Σ, Σ², wins]
         self._pending: dict[int, deque] = {h: deque() for h in MARKOUT_S}   # s → (due ms, coin, setup, side, mid)
         self._markouts_dirty = False
+        self._unsaved: list[tuple] = []                         # closed trades waiting to be written (once a tick)
         self._ticks = 0
         self._load()
         self._build_auto()
@@ -107,14 +109,14 @@ class BotService:
     async def start(self) -> None:
         if self.db_path:
             try:
-                self._db = sqlite3.connect(self.db_path, check_same_thread=False)
+                self._db = connect(self.db_path)
                 self._db.execute("CREATE TABLE IF NOT EXISTS bot_trades (rule_id TEXT NOT NULL, style TEXT NOT NULL, "
                                  "exit_ms INTEGER NOT NULL, data TEXT NOT NULL)")
                 self._db.execute("CREATE INDEX IF NOT EXISTS bot_trades_rule ON bot_trades (rule_id, style, exit_ms)")
                 self._db.commit()
                 if self._auto_fresh:                        # the auto hunter changed: its old record would mislead
-                    self._db.execute("DELETE FROM bot_trades WHERE rule_id LIKE 'auto-%'")
-                    self._db.commit()
+                    with transaction(self._db):
+                        self._db.execute("DELETE FROM bot_trades WHERE rule_id LIKE 'auto-%'")
                     log.info("auto hunter updated to version %d: starting a fresh record", AUTO_VERSION)
                 for rid, style, data in self._db.execute("SELECT rule_id, style, data FROM bot_trades ORDER BY exit_ms"):
                     if rid in self.rules or rid in self.auto_rules:
@@ -230,8 +232,31 @@ class BotService:
                         self._fire(coin, pipe, setup, side, now, last, mem)
         for t in closed:
             self._record(t)
+        self._flush_trades()
         self._settle_markouts()
         return closed
+
+    def _db_write(self, sql: str, args: tuple) -> None:
+        if not self._db:
+            return
+        try:
+            with transaction(self._db):
+                self._db.execute(sql, args)
+        except sqlite3.Error as exc:
+            log.warning("bot database write failed: %s", exc)
+
+    def _flush_trades(self) -> None:
+        """This tick's closed trades in one short transaction; kept for the next tick if the file is busy."""
+        if not self._db or not self._unsaved:
+            return
+        try:
+            with transaction(self._db):
+                self._db.executemany("INSERT INTO bot_trades (rule_id, style, exit_ms, data) VALUES (?, ?, ?, ?)",
+                                     self._unsaved)
+            self._unsaved = []
+        except sqlite3.Error as exc:
+            log.warning("could not save %d bot trades (will retry): %s", len(self._unsaved), exc)
+            del self._unsaved[:-20_000]
 
     def on_quote(self, coin: str) -> None:
         """A Binance quote just arrived for `coin`: check Binance leads now, not at the next one-second tick."""
@@ -354,13 +379,13 @@ class BotService:
         if not self._db or not self._markouts_dirty:
             return
         try:
-            self._db.executemany("INSERT OR REPLACE INTO bot_markouts2 (setup, coin, horizon, n, s, s2, wins, ne, se, "
-                                 "se2, winse) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                 [(*k, *v) for k, v in self.markouts.items()])
-            self._db.commit()
+            with transaction(self._db):
+                self._db.executemany("INSERT OR REPLACE INTO bot_markouts2 (setup, coin, horizon, n, s, s2, wins, ne, "
+                                     "se, se2, winse) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                     [(*k, *v) for k, v in self.markouts.items()])
             self._markouts_dirty = False
-        except sqlite3.Error:
-            log.exception("could not save signal markouts")
+        except sqlite3.Error as exc:
+            log.warning("could not save signal markouts (will retry): %s", exc)
 
     def _record(self, t: dict) -> None:
         key = (t["rule_id"], t["style"])
@@ -369,12 +394,7 @@ class BotService:
         if len(lst) > KEEP_TRADES:
             del lst[: len(lst) - KEEP_TRADES]
         if self._db:
-            try:
-                self._db.execute("INSERT INTO bot_trades (rule_id, style, exit_ms, data) VALUES (?, ?, ?, ?)",
-                                 (t["rule_id"], t["style"], t["exit_ms"], json.dumps(t)))
-                self._db.commit()
-            except sqlite3.Error:
-                log.exception("could not save a bot trade")
+            self._unsaved.append((t["rule_id"], t["style"], t["exit_ms"], json.dumps(t)))
         self._auto_cache = None
         if t["rule_id"] in self.auto_rules:
             self._maybe_bench(key)
@@ -550,9 +570,7 @@ class BotService:
         for dq in self._pending.values():
             dq.clear()
         self._open_event.clear()
-        if self._db:
-            self._db.execute("DELETE FROM bot_markouts2")
-            self._db.commit()
+        self._db_write("DELETE FROM bot_markouts2", ())
         if rebuild:
             self._build_auto()
         self._auto_cache = None
@@ -728,9 +746,7 @@ class BotService:
         for st in STYLES:
             self.sims.pop((rule_id, st), None)
             self.trades.pop((rule_id, st), None)
-        if self._db:
-            self._db.execute("DELETE FROM bot_trades WHERE rule_id = ?", (rule_id,))
-            self._db.commit()
+        self._db_write("DELETE FROM bot_trades WHERE rule_id = ?", (rule_id,))
 
     def reset_rule(self, rule_id: str) -> dict:
         if rule_id not in self.rules:
@@ -740,9 +756,7 @@ class BotService:
             sim = self.sims[(rule_id, st)]
             sim.drop()
             sim.missed, sim.day_net, sim.stopped_for_day, sim.entries = 0, 0.0, False, []
-        if self._db:
-            self._db.execute("DELETE FROM bot_trades WHERE rule_id = ?", (rule_id,))
-            self._db.commit()
+        self._db_write("DELETE FROM bot_trades WHERE rule_id = ?", (rule_id,))
         return self.public()
 
     def validate(self, d: dict) -> Rule:

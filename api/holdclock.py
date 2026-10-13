@@ -18,6 +18,8 @@ from pathlib import Path
 
 import numpy as np
 
+from storage.sqlite import connect, transaction
+
 from engine.holdclock import (
     PAPERTRADE, fill_drift, make_grid, now_read, papertrade_net, race, survival, time_at,
 )
@@ -55,7 +57,7 @@ class HoldClock:
             return
         if self.db_path:
             try:
-                self._db = sqlite3.connect(self.db_path, check_same_thread=False)
+                self._db = connect(self.db_path)
                 self._db.execute("CREATE TABLE IF NOT EXISTS hold_grid (coin TEXT NOT NULL, t INTEGER NOT NULL, "
                                  "bid REAL, ask REAL, mid REAL, ok INTEGER, PRIMARY KEY (coin, t))")
                 since = int(time.time()) - KEEP_S
@@ -141,15 +143,19 @@ class HoldClock:
         if not self._db:
             self._unsaved.clear()
             return
+        cutoff = int(time.time()) - KEEP_S
         try:
-            for coin, rows in self._unsaved.items():
-                self._db.executemany("INSERT OR REPLACE INTO hold_grid (coin, t, bid, ask, mid, ok) VALUES (?, ?, ?, ?, ?, ?)",
-                                     [(coin, t, b, a, m, int(ok)) for t, b, a, m, ok in rows])
-            self._db.execute("DELETE FROM hold_grid WHERE t < ?", (int(time.time()) - KEEP_S,))
-            self._db.commit()
-        except sqlite3.Error:
-            log.exception("could not save the hold-clock grid")
-        self._unsaved.clear()
+            with transaction(self._db):
+                for coin, rows in self._unsaved.items():
+                    self._db.executemany("INSERT OR REPLACE INTO hold_grid (coin, t, bid, ask, mid, ok) "
+                                         "VALUES (?, ?, ?, ?, ?, ?)", [(coin, t, b, a, m, int(ok)) for t, b, a, m, ok in rows])
+                for coin in self.rows:                      # by coin, so the (coin, t) key is used, not a full scan
+                    self._db.execute("DELETE FROM hold_grid WHERE coin = ? AND t < ?", (coin, cutoff))
+            self._unsaved.clear()
+        except sqlite3.Error as exc:
+            log.warning("could not save the hold-clock grid (will retry): %s", exc)
+            for coin, rows in self._unsaved.items():        # keep at most an hour waiting
+                del rows[:-3600]
 
     def grid(self, coin: str):
         hit = self._grid.get(coin)
