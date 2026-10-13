@@ -12,8 +12,8 @@ triggers. Each one fires once when a new opportunity appears (not every second i
     absorb     heavy one-way market orders that aren't moving price (1m or 10m): trade against them
     level      a defended price level gives way: follow the break
 
-The auto hunter runs every setup on every coin with four exit profiles (quick, standard, runner, swing) and both order
-styles, skipping combinations whose target can't cover the fees, and benches strategies that are clearly losing, so
+The auto hunter runs every setup on every coin with six exit profiles (timed 30s and 1 min, quick, standard, runner,
+swing) and three order styles (market, limit, market in and limit out), skipping combinations whose target can't cover the fees, and benches strategies that are clearly losing, so
 its leaderboard shows which combinations survive Hyperliquid's costs.
 """
 import math
@@ -34,13 +34,20 @@ SETUPS = {
     "absorb": ("Absorption", "Heavy one-way flow that isn't moving price: trade against it"),
     "level": ("Level break", "A defended price level gave way: follow the break"),
 }
-EXITS = {   # name: (target bps, stop bps, max hold s, limit wait s)
+EXITS = {   # name: (target bps, stop bps, max hold s, limit wait s); timed exits: no target, a volatility stop
+    "t30": (500.0, 30.0, 30, 3),
+    "t60": (500.0, 30.0, 60, 3),
+    "t300": (500.0, 30.0, 300, 5),
     "quick": (12.0, 8.0, 90, 5),
     "standard": (25.0, 15.0, 300, 10),
     "runner": (60.0, 30.0, 1800, 20),
     "swing": (120.0, 50.0, 7200, 30),
 }
-EXIT_WORDS = {"quick": "Quick", "standard": "Standard", "runner": "Runner", "swing": "Swing"}
+TIMED = {"t30", "t60", "t300"}
+DEFAULT_EXITS = ("t30", "t60", "t300")
+VOL_STOP_K = 3.0             # a timed exit's safety stop: three normal moves over the hold (so noise rarely hits it)
+VOL_STOP_RANGE = (5.0, 300.0)
+EXIT_WORDS = {"t30": "30s", "t60": "1 min", "t300": "5 min", "quick": "Quick", "standard": "Standard", "runner": "Runner", "swing": "Swing"}
 MAX_BREAK_EVEN = 0.75        # an exit + order type that must win more often than this to cover its fees isn't run
 BENCH_MIN_TRADES = 20        # a strategy is benched once it has this many trades and is clearly losing:
 BENCH_T = -1.0               # average below zero and a t-stat at or below this
@@ -61,6 +68,8 @@ class CoinMemory:
     state: dict = field(default_factory=dict)          # setup → last direction seen (for level-triggered ones)
     seen: set = field(default_factory=set)             # event ids already traded (cascades, levels)
     lead_until_ms: int = 0
+    strength: dict = field(default_factory=dict)       # setup → the size of what fired it (Binance leads: its bps)
+    lead_detail: dict = field(default_factory=dict)    # the last lead: Binance, Hyperliquid and Bybit moves, bps
     primed: bool = False                               # the first pass only records what's already going on
 
 
@@ -75,7 +84,7 @@ def _dir(d: Direction) -> int:
     return 1 if d is Direction.UP else -1 if d is Direction.DOWN else 0
 
 
-def lead_signal(st, sigma_1s_bps: float | None, now_ms: int) -> tuple[int, float, float]:
+def lead_signal(st, sigma_1s_bps: float | None, now_ms: int, min_bps: float = 0.0) -> tuple[int, float, float]:
     """(side, Binance's move, Hyperliquid's move) over the last few seconds; side is 0 unless Binance moved
     clearly and Hyperliquid has made at most half of it."""
     ext = (getattr(st, "external", None) or {}).get("binance")
@@ -90,7 +99,7 @@ def lead_signal(st, sigma_1s_bps: float | None, now_ms: int) -> tuple[int, float
     if h0 is None or h0.mid <= 0:
         return 0, b_bps, 0.0
     h_bps = (last.mid / h0.mid - 1) * 1e4
-    need = max(LEAD_MIN_BPS, LEAD_SIGMAS * (sigma_1s_bps or 1.0) * math.sqrt(LEAD_SPAN_S))
+    need = max(LEAD_MIN_BPS, min_bps, LEAD_SIGMAS * (sigma_1s_bps or 1.0) * math.sqrt(LEAD_SPAN_S))
     if abs(b_bps) < need:
         return 0, b_bps, h_bps
     side = 1 if b_bps > 0 else -1
@@ -99,19 +108,47 @@ def lead_signal(st, sigma_1s_bps: float | None, now_ms: int) -> tuple[int, float
     return side, b_bps, h_bps
 
 
-def detect(pipe, mem: CoinMemory, now_ms: int) -> dict[str, int]:
-    """Every setup's trigger for this coin right now: {setup: +1 long, -1 short}, only the ones that fired."""
+def vol_stop_bps(sigma_1s_bps: float | None, hold_s: float) -> float:
+    """A stop that sits VOL_STOP_K normal moves away over the hold, so a coin's ordinary jiggle doesn't trip it:
+    wider on HYPE than on BTC, wider on a busy day than a quiet one."""
+    lo, hi = VOL_STOP_RANGE
+    return min(hi, max(lo, VOL_STOP_K * (sigma_1s_bps or 1.0) * math.sqrt(hold_s)))
+
+
+def lead_check(pipe, mem: CoinMemory, now_ms: int, lead_min_bps: float = 0.0) -> int:
+    """Binance leads, on its own: run on every Binance quote (event-driven) or once a second inside detect()."""
+    baseline = getattr(pipe.analyzer, "baseline", None)
+    side, b_bps, h_bps = lead_signal(pipe.state, getattr(baseline, "sigma_1s_bps", None), now_ms, lead_min_bps)
+    if not side or now_ms < mem.lead_until_ms:
+        return 0
+    mem.strength["lead"] = abs(b_bps)
+    mem.lead_detail = {"lead_bps": b_bps, "hl_bps": h_bps, "bybit_bps": venue_move(pipe.state, "bybit")}
+    mem.lead_until_ms = now_ms + LEAD_LOCK_S * 1000
+    return side
+
+
+def venue_move(st, venue: str, span_s: int = LEAD_SPAN_S) -> float | None:
+    """Another exchange's mid move over the last few seconds, in bps."""
+    ext = (getattr(st, "external", None) or {}).get(venue)
+    if ext is None or not len(ext):
+        return None
+    q = ext.window(span_s)
+    return (q[-1].mid / q[0].mid - 1) * 1e4 if len(q) >= 2 and q[0].mid > 0 else None
+
+
+def detect(pipe, mem: CoinMemory, now_ms: int, lead_min_bps: float = 0.0, include_lead: bool = True) -> dict[str, int]:
+    """Every setup's trigger for this coin right now: {setup: +1 long, -1 short}, only the ones that fired.
+    include_lead=False when Binance leads is checked on every Binance quote instead (lead_check)."""
     st, an = pipe.state, pipe.analyzer
     out: dict[str, int] = {}
     ex1, ex10 = an.latest.get("1m"), an.latest.get("10m")
     rows1 = {m.key: m for m in (ex1.summary if ex1 else ())}
 
     # lead: Binance moved, Hyperliquid hasn't yet
-    baseline = getattr(an, "baseline", None)
-    side, _, _ = lead_signal(st, getattr(baseline, "sigma_1s_bps", None), now_ms)
-    if side and now_ms >= mem.lead_until_ms:
-        out["lead"] = side
-        mem.lead_until_ms = now_ms + LEAD_LOCK_S * 1000
+    if include_lead:
+        side = lead_check(pipe, mem, now_ms, lead_min_bps)
+        if side:
+            out["lead"] = side
 
     # flow: Flow and Book agree on 1m
     s = _edge(mem, "flow", card_signal(ex1.summary, ("flow", "book"), 0.3) if ex1 else 0)

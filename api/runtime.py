@@ -118,9 +118,15 @@ class Runtime:
         return self.pipelines[coin or self.default_coin]
 
     def on_message(self, msg: dict[str, Any]) -> None:
-        pipe = self.pipelines.get(coin_of(msg) or "")
+        coin = coin_of(msg) or ""
+        pipe = self.pipelines.get(coin)
         if pipe:
             pipe.on_message(msg)
+            if msg.get("channel") == "ext" and (msg.get("data") or {}).get("venue") == "binance":
+                try:
+                    self.bot.on_quote(coin)               # Binance leads, the moment Binance moves
+                except Exception:
+                    log.exception("bot quote check failed")
 
     def reset(self) -> None:
         for pipe in self.pipelines.values():

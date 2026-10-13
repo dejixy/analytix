@@ -171,7 +171,7 @@ def test_service_validates_and_trades_from_the_card(tmp_path):
     st.books.push(book(2500, 100.25, 100.26))
     st.now_ms = 2500
     closed = svc.tick()
-    assert {t["style"] for t in closed} == {"market", "limit"} and all(t["reason"] == "target" for t in closed)
+    assert {t["style"] for t in closed} == {"market", "limit", "maker_exit"} and all(t["reason"] == "target" for t in closed)
     assert svc.public()["rules"][0]["styles"]["market"]["trades"] == 1
 
     # a new name keeps the record; new trading settings start a fresh one
@@ -192,3 +192,27 @@ def test_messages_are_plain():
     msg = hourly_message(r, {"market": [t], "limit": []}, 0, 3_600_000)
     assert msg and "1 trades this hour" in msg[1][0]
     assert hourly_message(r, {"market": [t]}, 3_600_000, 7_200_000) is None
+
+
+def test_market_in_limit_out_closes_at_the_touch_as_a_maker_or_crosses_after_three_seconds():
+    s = Sim(rule(max_hold_s=10), "maker_exit", 40)
+    s.signal(0, 1, 100.0, 100.02)
+    s.on_book(600, 100.0, 100.02)
+    assert s.pos.entry_px == 100.02 and s.pos.fees == pytest.approx(2000 * TAKER_FEE)
+    assert s.on_tick(11_000, 0, 100.05, 100.07) is None and s.closing[0] == 100.07     # sell limit at the ask
+    t = s.on_trade(11_500, 100.08)                                                       # a buyer lifts it
+    assert t["reason"] == "time" and t["exit_px"] == 100.07
+    assert t["fees_usd"] == pytest.approx(2000 * TAKER_FEE + 2000 * 100.07 / 100.02 * MAKER_FEE)
+    s2 = Sim(rule(max_hold_s=10, cooldown_s=0), "maker_exit", 40)
+    s2.signal(0, 1, 100.0, 100.02)
+    s2.on_book(600, 100.0, 100.02)
+    s2.on_tick(11_000, 0, 100.05, 100.07)
+    t2 = s2.on_tick(14_100, 0, 100.03, 100.05)                                          # nobody took it: cross
+    assert t2["exit_px"] == 100.03 and t2["fees_usd"] > t["fees_usd"] - 0.01
+
+
+def test_fee_rates_follow_the_rule():
+    cheap = rule(take_profit_bps=15, stop_loss_bps=10)
+    cheap.taker_fee, cheap.maker_fee = 0.0003, 0.0
+    assert break_even_win_rate(cheap, "market") < break_even_win_rate(rule(take_profit_bps=15, stop_loss_bps=10), "market")
+    assert break_even_win_rate(cheap, "maker_exit") < break_even_win_rate(cheap, "market")
