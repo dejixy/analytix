@@ -9,6 +9,8 @@ and shown below the new events, so an update or a restart no longer empties the 
 import json
 import logging
 import sqlite3
+
+from storage.sqlite import connect, transaction
 from pathlib import Path
 
 log = logging.getLogger("analytix.storage")
@@ -20,7 +22,7 @@ class EventStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(self.path, check_same_thread=False)
+        self._db = connect(self.path)
         self._db.execute("CREATE TABLE IF NOT EXISTS events (coin TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, "
                          "ts INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (coin, key))")
         self._db.commit()
@@ -28,21 +30,22 @@ class EventStore:
 
     def save(self, coin: str, rows: list[tuple[str, str, int, dict]]) -> int:
         """rows: (key, kind, ts, data). Writes the new and changed ones; returns how many."""
-        n = 0
+        todo = []
+        for key, kind, ts, data in rows:
+            blob = json.dumps(data, separators=(",", ":"))
+            if self._saved.get((coin, key)) != blob:
+                todo.append((coin, key, kind, ts, blob))
+        if not todo:
+            return 0
         try:
-            for key, kind, ts, data in rows:
-                blob = json.dumps(data, separators=(",", ":"))
-                if self._saved.get((coin, key)) == blob:
-                    continue
-                self._db.execute("INSERT OR REPLACE INTO events (coin, key, kind, ts, data) VALUES (?, ?, ?, ?, ?)",
-                                 (coin, key, kind, ts, blob))
-                self._saved[(coin, key)] = blob
-                n += 1
-            if n:
-                self._db.commit()
-        except sqlite3.Error:
-            log.exception("could not save events")
-        return n
+            with transaction(self._db):
+                self._db.executemany("INSERT OR REPLACE INTO events (coin, key, kind, ts, data) VALUES (?, ?, ?, ?, ?)", todo)
+        except sqlite3.Error as exc:
+            log.warning("could not save events (will retry): %s", exc)
+            return 0
+        for c, key, _, _, blob in todo:
+            self._saved[(c, key)] = blob
+        return len(todo)
 
     def load(self, coin: str, kind: str, since_ms: int, limit: int) -> list[dict]:
         """The newest `limit` events of one kind, newest first."""
@@ -59,8 +62,11 @@ class EventStore:
         return out
 
     def prune(self, before_ms: int) -> None:
-        self._db.execute("DELETE FROM events WHERE ts < ?", (before_ms,))
-        self._db.commit()
+        try:
+            with transaction(self._db):
+                self._db.execute("DELETE FROM events WHERE ts < ?", (before_ms,))
+        except sqlite3.Error as exc:
+            log.warning("could not prune events: %s", exc)
 
     def close(self) -> None:
         self._db.commit()
