@@ -25,6 +25,7 @@ from config import (
     BACKFILL_ENABLED,
     BAR_HISTORY_S,
     BARS_DB,
+    POSITIONS_DB,
     BROADCAST_INTERVAL_S,
     COIN,
     COINS,
@@ -41,6 +42,7 @@ from config import (
 from api.alerts import AlertService
 from api.bot import BotService
 from api.holdclock import HoldClock
+from api.liqmap import LiqMapCollector
 from api.outcomes import OutcomeService
 from api.planner import PlannerService
 from api.positions import PositionWatch
@@ -73,7 +75,8 @@ class Runtime:
                  replay_file: Path = REPLAY_FILE, speed: float = REPLAY_SPEED, loop: bool = REPLAY_LOOP,
                  record_file: str | None = RECORD_FILE, record: bool = RECORD, broadcast_interval_s: float = BROADCAST_INTERVAL_S,
                  bars_db: Path | None = BARS_DB, backfill_enabled: bool = BACKFILL_ENABLED,
-                 alerts_file: Path = ALERTS_FILE, watch_file: Path = WATCH_FILE, bot_file: Path = BOT_FILE):
+                 alerts_file: Path = ALERTS_FILE, watch_file: Path = WATCH_FILE, bot_file: Path = BOT_FILE,
+                 positions_db: Path | None = POSITIONS_DB):
         if mode not in ("live", "replay"):
             raise ValueError(f"ANALYTIX_MODE must be 'live' or 'replay', got {mode!r}")
         self.mode = mode
@@ -111,6 +114,7 @@ class Runtime:
         self.outcomes = OutcomeService(self)            # Hyperliquid's prediction markets (HIP-4), own socket
         self.hold = HoldClock(self, self.bars_db)       # how long very high leverage survives, from the live book
         self.bot = BotService(self, bot_file, self.bars_db)   # big-mover alerts, with a shadow record
+        self.liqmap = LiqMapCollector(self, positions_db if mode == "live" else None)   # big traders' liquidation prices
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -127,6 +131,11 @@ class Runtime:
                     self.bot.on_message(msg)              # big-mover alerts, the moment a listed wallet trades
                 except Exception:
                     log.exception("bot feed check failed")
+            if msg.get("channel") == "trades":
+                try:
+                    self.liqmap.on_message(msg)           # who trades most, for the liquidation map
+                except Exception:
+                    log.exception("liquidation map feed check failed")
 
     def reset(self) -> None:
         for pipe in self.pipelines.values():
@@ -170,6 +179,7 @@ class Runtime:
         await self.outcomes.start()
         await self.hold.start()
         await self.bot.start()
+        await self.liqmap.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
@@ -179,6 +189,7 @@ class Runtime:
         await self.outcomes.stop()
         await self.hold.stop()
         await self.bot.stop()
+        await self.liqmap.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
@@ -360,6 +371,9 @@ class Runtime:
                 o = self.outcomes
                 line += (f" · prediction markets: {len(o.markets)} listed, {len(o._followed)} followed, feed "
                          f"{'up' if o.status.connected else 'down'}")
+            if self.liqmap.enabled and self.liqmap.rounds:
+                lm = self.liqmap.last
+                line += f" · liquidation map: {lm['positions']} positions from {lm['wallets']} wallets last round"
             if isinstance(self._recorder, HourlyRecorder):
                 line += (f" · recording this hour {self._recorder.hour_bytes / 1e6:.0f} MB"
                          + (" · PAUSED: disk nearly full" if self._recorder.paused else ""))
