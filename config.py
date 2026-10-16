@@ -54,6 +54,8 @@ BAR_HISTORY_S = MAX_WINDOW_S + 3600
 BACKFILL_INTERVAL = "5m"            # Hyperliquid serves the last 5000 candles: 5m covers ~17 days
 BACKFILL_ENABLED = os.getenv("ANALYTIX_BACKFILL", "1") == "1"
 BARS_DB = Path(os.getenv("ANALYTIX_BARS_DB", str(ROOT / "data" / "bars.sqlite")))
+# Big traders' positions and liquidation prices, collected for the liquidation-map study (api/liqmap.py). Empty = off.
+POSITIONS_DB = Path(os.getenv("ANALYTIX_POSITIONS_DB", str(ROOT / "data" / "positions.sqlite"))) if os.getenv("ANALYTIX_POSITIONS_DB", "x") else None
 
 # ── Cadence ─────────────────────────────────────────────────────────────────
 ANALYSIS_INTERVAL_MS = 1_000   # engine runs once per *exchange* second
