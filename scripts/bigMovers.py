@@ -53,6 +53,32 @@ def t_hourly(t_ms: np.ndarray, v: np.ndarray):
     return float(v.mean() / (m.std(ddof=1) / np.sqrt(len(m))))
 
 
+def load(files, coins: set[str], min_usd: float, progress: bool = True):
+    """One pass over the recordings: each coin's one-second grid, and every wallet decision of min_usd or more
+    (liquidator wallets left out), oldest first."""
+    eb = Episodes()
+
+    def on_line(line: str) -> None:
+        if '"channel":"trades"' not in line:
+            return
+        try:
+            data = json.loads(line)["msg"]["data"]
+        except (ValueError, KeyError, TypeError):
+            return
+        for tr in data or []:
+            coin = tr.get("coin")
+            who = taker_of(tr) if coin in coins else None
+            if who is None:
+                continue
+            try:
+                eb.add(coin, who[0].lower(), int(tr["time"]), who[1], float(tr["px"]) * float(tr["sz"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+
+    g = grids(files, coins, progress=progress, on_other=on_line)
+    return g, [e for e in eb.finish() if e.usd >= min_usd and e.wallet not in LIQUIDATOR_ADDRESSES]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="*", default=[str(RECORD_DIR)])
@@ -78,28 +104,8 @@ def main() -> None:
         files = [p for p in files if (_first_recv(p) or 0) >= newest - a.days * 86_400_000]
     coins = {c.strip().upper() for c in a.coins.split(",") if c.strip()}
     trade = {c.strip().upper() for c in a.trade.split(",") if c.strip()} & coins
-    eb = Episodes()
-
-    def on_line(line: str) -> None:
-        if '"channel":"trades"' not in line:
-            return
-        try:
-            data = json.loads(line)["msg"]["data"]
-        except (ValueError, KeyError, TypeError):
-            return
-        for tr in data or []:
-            coin = tr.get("coin")
-            who = taker_of(tr) if coin in coins else None
-            if who is None:
-                continue
-            try:
-                eb.add(coin, who[0].lower(), int(tr["time"]), who[1], float(tr["px"]) * float(tr["sz"]))
-            except (KeyError, TypeError, ValueError):
-                pass
-
     t0 = time.time()
-    g = grids(files, coins, on_other=on_line)
-    eps = [e for e in eb.finish() if e.usd >= a.min_usd and e.wallet not in LIQUIDATOR_ADDRESSES]
+    g, eps = load(files, coins, a.min_usd)
     if not eps:
         print("No trades with wallets found in these recordings.")
         return

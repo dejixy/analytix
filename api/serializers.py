@@ -149,6 +149,7 @@ def build_snapshot(runtime, coin: str, trades_limit: int = 40, events_limit: int
         },
         "engine": {"runs": an.runs, "dropped": st.dropped, "trades_buffered": len(st.trades)},
         "alerts": [asdict(a) for a in list(runtime.alerts.recent)[-10:]] if hasattr(runtime, "alerts") else [],
+        "bot": runtime.bot.live() if hasattr(runtime, "bot") else None,
     })
 
 

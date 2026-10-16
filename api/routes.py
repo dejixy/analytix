@@ -269,45 +269,35 @@ async def hold(request: Request, coin: str | None = None, side: str = "long",
     return await rt.hold.read(coin, 1 if side == "long" else -1, leverage, target_pct, entry, bust, buffer_bps)
 
 
-# ── trading bot (shadow mode) ───────────────────────────────────────────────
+# ── the bot: big-mover alerts ───────────────────────────────────────────────
 def _bot_call(fn, *args):
     from api.bot import BotError
     try:
         return fn(*args)
     except BotError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @router.get("/bot")
-def bot(request: Request):
-    """The bot's rules, each one's track record with market and limit orders, what's open and the latest trades.
-    Shadow mode: real Hyperliquid prices and costs, no orders sent."""
+async def bot(request: Request):
+    """The bot: its status, the big-mover list, the latest alerts with how each did, the record and the shadow
+    balance."""
     return _rt(request).bot.public()
 
 
-@router.post("/bot/rules")
-def bot_save_rule(request: Request, rule: dict):
-    """Add a rule, or change one (include its id). New trading settings start a fresh track record."""
-    return _bot_call(_rt(request).bot.save_rule, rule)
+@router.put("/bot/settings")
+async def bot_settings(request: Request, patch: dict):
+    """Change settings. Balance, leverage or margin restart the shadow balance; the list settings rebuild the list."""
+    return _bot_call(_rt(request).bot.save_settings, patch)
 
 
-@router.delete("/bot/rules/{rule_id}")
-def bot_delete_rule(request: Request, rule_id: str):
-    return _bot_call(_rt(request).bot.delete_rule, rule_id)
+@router.post("/bot/reset")
+async def bot_reset(request: Request):
+    """Start the shadow balance again from the set balance. The alert record is kept."""
+    return _bot_call(_rt(request).bot.reset_shadow)
 
 
-@router.post("/bot/rules/{rule_id}/reset")
-def bot_reset_rule(request: Request, rule_id: str):
-    return _bot_call(_rt(request).bot.reset_rule, rule_id)
-
-
-@router.put("/bot/auto")
-def bot_auto(request: Request, patch: dict):
-    """The auto hunter's settings: {"on", "coins", "setups", "exits", "leverage", "margin_usd", "daily_loss_usd",
-    "telegram"}. New leverage, margin or daily stop starts a fresh auto record."""
-    return _bot_call(_rt(request).bot.save_auto, patch)
-
-
-@router.post("/bot/auto/reset")
-def bot_auto_reset(request: Request):
-    return _bot_call(_rt(request).bot.reset_auto)
+@router.post("/bot/refresh")
+async def bot_refresh(request: Request):
+    """Rebuild the big-mover list from the recordings now."""
+    return _bot_call(_rt(request).bot.start_refresh)

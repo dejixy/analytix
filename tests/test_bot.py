@@ -1,8 +1,9 @@
+"""The bot maths in engine/bot.py (fills, fees, stops). The live bot is now big-mover alerts (api/bot.py); this
+engine stays for the edge lab's research setups (engine/hunter.py)."""
 from types import SimpleNamespace
 
 import pytest
 
-from api.bot import BotError, BotService, hourly_message, trade_message
 from buffer.ringBuffer import RingBuffer
 from engine.bot import (
     MAKER_FEE, TAKER_FEE, Rule, Sim, break_even_win_rate, card_signal, liq_distance, stats, walk,
@@ -141,57 +142,6 @@ def fake_runtime(tmp_path):
 
 def book(ts, bid, ask):
     return BookSummary(ts, (bid + ask) / 2, bid, ask, (ask - bid) / ((bid + ask) / 2) * 1e4, 1e6, 1e6)
-
-
-def test_service_validates_and_trades_from_the_card(tmp_path):
-    rt, st, an = fake_runtime(tmp_path)
-    svc = BotService(rt, tmp_path / "bot.json")
-    svc.save_auto({"on": False})                       # this test is about a hand-made rule
-    with pytest.raises(BotError, match="closer"):
-        svc.save_rule({"coin": "BTC", "leverage": 40, "stop_loss_bps": 300})
-    with pytest.raises(BotError, match="Pick at least one"):
-        svc.save_rule({"coin": "BTC", "timeframe": "60m", "signals": ["book"]})        # no Book row on 60m
-    out = svc.save_rule({"coin": "BTC", "timeframe": "1m", "signals": ["flow", "book"], "leverage": 20,
-                         "take_profit_bps": 20, "stop_loss_bps": 10, "cooldown_s": 0})
-    rid = out["rules"][0]["id"]
-    assert out["rules"][0]["name"] == "BTC 1m Flow + Book"
-    assert set(out["timeframes"]["1m"]) == {"flow", "who", "forced", "book"}
-
-    st.books.push(book(1000, 100.0, 100.01))
-    st.now_ms = 1000
-    an.latest["1m"] = SimpleNamespace(summary=(m("flow", UP), m("book", UP)))
-    svc.tick()                                         # signal → market entry due, limit order resting at 100.0
-    st.books.push(book(1700, 100.0, 100.01))
-    st.trades.push(Trade(1800, 99.99, 1.0, TradeSide.SELL, 1))
-    st.now_ms = 1800
-    svc.tick()
-    pub = svc.public()
-    styles = pub["rules"][0]["styles"]
-    assert styles["market"]["open"]["entry_px"] == 100.01 and styles["limit"]["open"]["entry_px"] == 100.0
-    st.books.push(book(2500, 100.25, 100.26))
-    st.now_ms = 2500
-    closed = svc.tick()
-    assert {t["style"] for t in closed} == {"market", "limit", "maker_exit"} and all(t["reason"] == "target" for t in closed)
-    assert svc.public()["rules"][0]["styles"]["market"]["trades"] == 1
-
-    # a new name keeps the record; new trading settings start a fresh one
-    out = svc.save_rule({"id": rid, "name": "Scalper", "coin": "BTC", "signals": ["flow", "book"], "leverage": 20,
-                         "take_profit_bps": 20, "stop_loss_bps": 10, "cooldown_s": 0})
-    assert out["rules"][0]["id"] == rid and out["rules"][0]["styles"]["market"]["trades"] == 1
-    out = svc.save_rule({**out["rules"][0], "take_profit_bps": 30})
-    assert out["rules"][0]["id"] != rid and out["rules"][0]["styles"]["market"]["trades"] == 0
-    assert BotService(rt, tmp_path / "bot.json").rules                  # saved to disk and loaded back
-
-
-def test_messages_are_plain():
-    r = rule(name="BTC 1m Flow + Book")
-    t = {"side": 1, "entry_ms": 0, "exit_ms": 90_000, "entry_px": 100.0, "exit_px": 100.2, "reason": "target",
-         "style": "market", "net_usd": 1.2, "net_pct": 1.2, "fees_usd": 1.8, "gross_usd": 3.0}
-    title, lines = trade_message(r, t)
-    assert "hit the target" in title and "+$1.20" in title and "—" not in title + "".join(lines)
-    msg = hourly_message(r, {"market": [t], "limit": []}, 0, 3_600_000)
-    assert msg and "1 trades this hour" in msg[1][0]
-    assert hourly_message(r, {"market": [t]}, 3_600_000, 7_200_000) is None
 
 
 def test_market_in_limit_out_closes_at_the_touch_as_a_maker_or_crosses_after_three_seconds():

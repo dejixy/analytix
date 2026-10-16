@@ -11,3 +11,5 @@ data/alerts.json
 data/watch.json
 data/bot.json
 data/*.tmp
+data/bigmovers.json
+data/bot.old.json
