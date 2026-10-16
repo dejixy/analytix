@@ -25,11 +25,27 @@ def _open(path: Path):
     return gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else path.open(encoding="utf-8")
 
 
+def resolve(path: str | Path) -> Path | None:
+    """The recording as it is now: the file itself, or its .gz if the recorder has compressed it since (None if
+    neither is there)."""
+    path = Path(path)
+    if path.exists():
+        return path
+    gz = path.with_name(path.name + ".gz")
+    if path.suffix == ".jsonl" and gz.exists():
+        return gz
+    log.warning("%s is gone (moved or deleted during the replay); skipping it", path.name)
+    return None
+
+
 def read_session(path: str | Path) -> Iterator[tuple[int, dict[str, Any]]]:
     """(recv_ms, raw message) for each line of a .jsonl or .jsonl.gz recording.
 
-    A line cut off by a crash or power loss (always the last one written) is skipped, not fatal."""
-    path = Path(path)
+    A line cut off by a crash or power loss (always the last one written) is skipped, not fatal. The recorder gzips
+    each finished hour and deletes the .jsonl, so a long replay that listed the files earlier reads the .gz instead."""
+    path = resolve(path)
+    if path is None:
+        return
     try:
         with _open(path) as fh:
             for line in fh:
