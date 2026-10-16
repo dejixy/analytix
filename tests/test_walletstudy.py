@@ -53,5 +53,16 @@ def test_an_early_wallet_scores_well_and_following_it_pays():
     assert abs(st["0xnoise"]["t"]) < 3
     smart = follow_table([e for e in eps if e.wallet == "0xsmart"], marks, lags=(2,), horizons=(60,))[(2, 60)]
     noise = follow_table([e for e in eps if e.wallet == "0xnoise"], marks, lags=(2,), horizons=(60,))[(2, 60)]
-    assert smart["mid"] > 5 and smart["win"] > 0.8 and smart["pt"][100] > 0
+    assert smart["mid"] > 5 and smart["win"] > 0.8 and smart["pt"][200] > 0
     assert abs(noise["mid"]) < 3
+
+
+def test_binance_gap_is_how_far_binance_moved_their_way_beyond_hyperliquid():
+    from engine.walletstudy import last_per_second, lead_gap
+    n = 20
+    hl_mid = np.full(n, 100.0)
+    g = Grid(np.arange(n) + 1000, hl_mid, hl_mid, hl_mid, np.ones(n, bool))
+    b0, bm = last_per_second({1000: 100.0, 1010: 100.0, 1012: 100.05})   # Binance +5 bps by second 1012, gaps filled
+    assert bm[11] == 100.0 and bm[12] == 100.05
+    gaps = lead_gap(np.array([1012_500, 1012_500, 1005_000]), np.array([1, -1, 1]), g, b0, bm, window=3)
+    assert abs(gaps[0] - 5.0) < 1e-6 and abs(gaps[1] + 5.0) < 1e-6 and gaps[2] == 0.0
