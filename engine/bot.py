@@ -1,6 +1,7 @@
 """
-The trading bot's brain, in shadow mode: turns a timeframe card into trades by rules you set, and fills them the
-way Hyperliquid itself would, fees and all. Nothing here places an order; it shows whether a rule survives real
+Research only now (the live bot is big-mover alerts, api/bot.py): the edge lab's setups (engine/hunter.py) use
+card_signal from here. Originally the rule bot's brain: turns a timeframe card into trades by rules you set, and
+fills them the way Hyperliquid itself would, fees and all. Nothing here places an order; it shows whether a rule survives real
 costs before any money is involved.
 
     Entry       every row you picked on the card (e.g. Flow and Book on 1m) leans the same way, each at least

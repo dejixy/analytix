@@ -110,7 +110,7 @@ class Runtime:
         self.external: ExternalFeed | None = None       # Binance and Bybit prices, for where moves start
         self.outcomes = OutcomeService(self)            # Hyperliquid's prediction markets (HIP-4), own socket
         self.hold = HoldClock(self, self.bars_db)       # how long very high leverage survives, from the live book
-        self.bot = BotService(self, bot_file, self.bars_db)   # the trading bot (shadow mode: real costs, no orders)
+        self.bot = BotService(self, bot_file, self.bars_db)   # big-mover alerts, with a shadow record
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -122,11 +122,11 @@ class Runtime:
         pipe = self.pipelines.get(coin)
         if pipe:
             pipe.on_message(msg)
-            if msg.get("channel") == "ext" and (msg.get("data") or {}).get("venue") == "binance":
+            if msg.get("channel") in ("trades", "l2Book"):
                 try:
-                    self.bot.on_quote(coin)               # Binance leads, the moment Binance moves
+                    self.bot.on_message(msg)              # big-mover alerts, the moment a listed wallet trades
                 except Exception:
-                    log.exception("bot quote check failed")
+                    log.exception("bot feed check failed")
 
     def reset(self) -> None:
         for pipe in self.pipelines.values():

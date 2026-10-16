@@ -108,7 +108,7 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
       </>}
 
       <div className="header-right">
-        <button className="alerts-open" onClick={onBot} title="Trading bot (shadow mode): rules built from the timeframe cards, filled with Hyperliquid's real costs, no orders sent">
+        <button className="alerts-open" onClick={onBot} title="Big-mover alerts: the moment a wallet whose trades are followed by big moves buys or sells">
           Bot
         </button>
         <button className="alerts-open" onClick={onHold} title="Very high leverage: how long a position like yours survives, measured on the real best bid and ask">

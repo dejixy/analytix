@@ -1,74 +1,64 @@
 """
-Bot service, shadow mode: runs every rule on the live timeframe cards, in both styles (market and limit orders),
-against every book update and trade print since the last tick. Nothing is sent to an exchange. The maths and fill
-rules live in engine/bot.py.
+The bot: big-mover alerts. Some Hyperliquid wallets' aggressive trades are followed by big moves their way (the
+wallet and big-mover studies, scripts/walletStudy.py and scripts/bigMovers.py). The bot watches those wallets live
+and tells you the moment one trades, so you can follow on Papertrade, and keeps an honest record of how every alert
+did.
 
-    every second   new book updates and trades → fills, stops, targets, liquidations; then each rule's card →
-                   time limits, flips, new entries; and the auto hunter's setups on every coin (engine/hunter.py) →
-                   new entries for every setup × coin × exit profile that fired
-    every Binance quote   Binance leads, checked the moment Binance moves rather than up to a second later
-    the hunter's rules    signals the same way on a coin within 10s are one event; follow-through is measured from
-                   the price you'd pay (ask / bid half a second later), not the mid; an entry is skipped when the
-                   spread is over 2x usual, or when the setup's record on that coin shows it doesn't clear the fees
-                   at that hold; timed exits carry a stop three normal moves away
-    on the hour    a Telegram summary per rule that asked for one, and one for the auto hunter (live mode)
-    storage        rules in data/bot.json; closed trades in the bars SQLite file (live mode), so the track record
-                   survives restarts. Positions open during a restart are dropped.
+    the list       built from the server's recordings (the last 7 days) by scripts/bigMoversList.py, in its own
+                   low-priority process, every hour. A big mover: 20+ decisions, t 2.5+, an average move of 8+ bps
+                   its way within 60 seconds. No alerts while fewer than 10 wallets qualify
+    an alert       a listed wallet's aggressive trades on a watched coin (BTC, ETH) reach $1k on one side within 30s.
+                   Other big movers piling in on the same side within 30s join the same alert
+    what to do     the same side, as fast as you can, closed after the hold (30s)
+    the record     every alert is settled from the live book: in at the mid 2s, your fill delay (6s) and 10s after
+                   it, out after the hold, with the worst the best bid/ask went against you (so busts show at any
+                   leverage). A shadow balance takes the alerts you could (one trade at a time) at your leverage and
+                   margin
+    auto-pause     when the last 50 alerts average below 0 bps at your fill delay, or the last 24 hours below -1 bps,
+                   alerts stop being announced (still recorded) until the last 50 recover above +1 bps
+    storage        settings and the shadow balance in data/bot.json; settled alerts in the bars SQLite file
 """
 import asyncio
 import json
 import logging
-import math
 import sqlite3
+import sys
 import time
-import uuid
 from collections import deque
 from pathlib import Path
 
-from config import BOT_FILE, WINDOWS
-from engine.bot import (
-    LATENCY_MS, MAKER_FEE, STYLES, TAKER_FEE, Rule, Sim, break_even_win_rate, card_signal, liq_distance, stats,
-)
-from engine.hunter import (
-    BENCH_MIN_TRADES, BENCH_T, DEFAULT_EXITS, EXIT_WORDS, EXITS, MAX_BREAK_EVEN, SETUPS, TIMED, VOL_STOP_K, CoinMemory,
-    detect, lead_check, vol_stop_bps,
-)
-from engine.summary import layout_for
+from config import BOT_FILE, ROOT
+from engine.bigmovers import pt_of, settle
 from storage.sqlite import connect, transaction
 
 log = logging.getLogger("analytix.bot")
 
 TICK_S = 1.0
-MAX_RULES = 12
-KEEP_TRADES = 5000                 # per rule and style, in memory
-NO_DIRECTION = {"liquidity"}       # card rows that never lean, so can't trigger a trade
-TRADING_FIELDS = ("coin", "timeframe", "signals", "min_strength", "sides", "leverage", "margin_usd", "take_profit_bps",
-                  "stop_loss_bps", "max_hold_s", "exit_on_flip", "cooldown_s", "max_trades_per_hour",
-                  "daily_loss_usd", "limit_wait_s")
-LIMITS = {"min_strength": (0.05, 1.0), "leverage": (1, 200), "margin_usd": (1, 1e6), "take_profit_bps": (1, 2000),
-          "stop_loss_bps": (1, 2000), "max_hold_s": (5, 7 * 86400), "cooldown_s": (0, 86400),
-          "max_trades_per_hour": (1, 120), "daily_loss_usd": (1, 1e7), "limit_wait_s": (1, 600)}
-META_EVERY_S = 3600
-AUTO_VERSION = 4                   # an older saved hunter starts a fresh record on the new defaults
-AUTO_STYLES = ("market", "maker_exit")      # limit entries mostly fill when the move has failed: off by default
-AUTO_DEFAULT = {"on": True, "coins": [], "setups": list(SETUPS), "exits": list(DEFAULT_EXITS),
-                "styles": list(AUTO_STYLES), "leverage": 20.0, "margin_usd": 100.0, "daily_loss_usd": 100.0,
-                "telegram": "hourly", "benched": [], "taker_bps": 4.5, "maker_bps": 1.5, "lead_min_bps": 0.0,
-                "spread_max": 2.0, "cost_gate": True, "version": AUTO_VERSION}
-EVENT_GAP_S = 10                   # signals the same way on a coin this close together are one event
-GATE_MIN = 30                      # a setup's record needs this many signals on a coin before it can switch entries off
-PROVEN = (30, 3.0)                 # trades and t-stat to count as proven (t ≥ 3: many strategies are being tried)
-PROMISING = (15, 2.0)
-SPREAD_EVERY_S = 30
-EDGE_MIN = 10                      # signals before a setup's edge after fees is shown
-AUTO_MONEY = ("leverage", "margin_usd", "daily_loss_usd", "taker_bps", "maker_bps")   # these start a fresh record
-LEAD_BUCKETS = ((2.0, 4.0, "2–4"), (4.0, 7.0, "4–7"), (7.0, 12.0, "7–12"), (12.0, 1e9, "12+"))
-AUTO_COOLDOWN_S = 5
-AUTO_PER_HOUR = 120
-AUTO_CACHE_S = 2.0
-SIGNALS_KEPT = 5000
-MARKOUT_S = (10, 30, 60, 300, 900)   # how far price went the signal's way this long after it fired
-MARKOUT_SAVE_S = 60
+LIST_FILE = ROOT / "data" / "bigmovers.json"
+REFRESH_S = 3600
+RING_KEEP_S = 20 * 60
+LAGS = (2, 10)                      # always recorded, alongside your fill delay
+MERGE_S = 30
+KEEP_ALERTS = 5000
+LAST_N = 50
+PAUSE_BELOW = 0.0                   # last 50 average, bps
+PAUSE_DAY_BELOW = -1.0              # last 24 h average, bps, with at least DAY_MIN alerts
+DAY_MIN = 20
+RESUME_ABOVE = 1.0
+DAY_MS = 86_400_000
+
+DEFAULTS = {
+    "on": True, "coins": ["BTC", "ETH"], "balance": 50.0, "leverage": 200.0, "margin_pct": 20.0, "fill_s": 6,
+    "hold_s": 30, "telegram": True, "auto_pause": True,
+    "cutoff_bps": 8.0, "t_min": 2.5, "min_n": 20, "min_list": 10, "min_usd": 1000.0, "history_days": 7,
+}
+LIMITS = {"balance": (1, 1e7), "leverage": (1, 1000), "margin_pct": (1, 100), "fill_s": (1, 30), "hold_s": (5, 600),
+          "cutoff_bps": (2, 50), "t_min": (1, 10), "min_n": (5, 1000), "min_list": (1, 200), "min_usd": (100, 1e7),
+          "history_days": (1, 30)}
+INTS = ("fill_s", "hold_s", "min_n", "min_list", "history_days")
+LIST_KEYS = ("cutoff_bps", "t_min", "min_n", "min_usd", "history_days")       # change these and the list is rebuilt
+MONEY_KEYS = ("balance", "leverage", "margin_pct")                            # change these and the shadow restarts
+KNOWN_COINS = ("BTC", "ETH", "SOL", "HYPE")
 
 
 class BotError(ValueError):
@@ -76,70 +66,57 @@ class BotError(ValueError):
 
 
 class BotService:
-    def __init__(self, runtime, path: Path = BOT_FILE, db_path: Path | None = None):
+    def __init__(self, runtime, path: Path = BOT_FILE, db_path: Path | None = None, list_file: Path = LIST_FILE):
         self.rt = runtime
         self.path = Path(path)
         self.db_path = db_path
-        self.rules: dict[str, Rule] = {}
-        self.sims: dict[tuple[str, str], Sim] = {}
-        self.trades: dict[tuple[str, str], list[dict]] = {}
-        self.max_lev: dict[str, float] = {}
-        self._cursor: dict[str, tuple[int, int]] = {}
+        self.list_file = Path(list_file)
+        self.cfg = dict(DEFAULTS)
+        self.shadow = self._fresh_shadow()
+        self.wallets: dict[str, dict] = {}
+        self.list_info: dict = {}
+        self.list_state = "loading"            # loading | building | ready | empty | failed
+        self.list_error = ""
+        self.ring: dict[str, dict[int, list]] = {}
+        self.now_ms: dict[str, int] = {}
+        self._mid: dict[str, float] = {}
+        self._decisions: dict[tuple, list] = {}   # (wallet, coin) → [side, first ms, last ms, usd, fired]
+        self._open: dict[tuple, dict] = {}         # (coin, side) → the open alert
+        self.alerts: deque = deque(maxlen=KEEP_ALERTS)
+        self._pending: deque = deque()
+        self.paused = False
+        self.pause_reason = ""
         self._db: sqlite3.Connection | None = None
         self._tasks: list[asyncio.Task] = []
-        self._hour = int(time.time() // 3600)
-        self.auto = dict(AUTO_DEFAULT)
-        self.auto_rules: dict[str, Rule] = {}
-        self._mem: dict[str, CoinMemory] = {}
-        self.signals: list[tuple] = []                          # (ms, coin, setup, side, event id), newest last
-        self._open_event: dict[str, tuple[int, int, int]] = {}  # coin → (event id, side, last signal ms)
-        self._event_id = 0
-        self._usual_spread: dict[str, tuple[float, float | None]] = {}
-        self._auto_cache: tuple[float, dict] | None = None
-        self._auto_fresh = False
-        self.markouts: dict[tuple[str, str, int], list[float]] = {}   # (setup, coin, s) → mid [n, Σ, Σ², wins] + paid [n, Σ, Σ², wins]
-        self._pending: dict[int, deque] = {h: deque() for h in MARKOUT_S}   # s → (due ms, coin, setup, side, mid)
-        self._markouts_dirty = False
-        self._unsaved: list[tuple] = []                         # closed trades waiting to be written (once a tick)
-        self._ticks = 0
+        self._building: asyncio.Task | None = None
+        self._unsaved: list[dict] = []
         self._load()
-        self._build_auto()
+        self._load_list()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     async def start(self) -> None:
         if self.db_path:
             try:
                 self._db = connect(self.db_path)
-                self._db.execute("CREATE TABLE IF NOT EXISTS bot_trades (rule_id TEXT NOT NULL, style TEXT NOT NULL, "
-                                 "exit_ms INTEGER NOT NULL, data TEXT NOT NULL)")
-                self._db.execute("CREATE INDEX IF NOT EXISTS bot_trades_rule ON bot_trades (rule_id, style, exit_ms)")
+                self._db.execute("CREATE TABLE IF NOT EXISTS bot_alerts (id TEXT PRIMARY KEY, t_ms INTEGER NOT NULL, "
+                                 "data TEXT NOT NULL)")
+                self._db.execute("CREATE INDEX IF NOT EXISTS bot_alerts_t ON bot_alerts (t_ms)")
                 self._db.commit()
-                if self._auto_fresh:                        # the auto hunter changed: its old record would mislead
-                    with transaction(self._db):
-                        self._db.execute("DELETE FROM bot_trades WHERE rule_id LIKE 'auto-%'")
-                    log.info("auto hunter updated to version %d: starting a fresh record", AUTO_VERSION)
-                for rid, style, data in self._db.execute("SELECT rule_id, style, data FROM bot_trades ORDER BY exit_ms"):
-                    if rid in self.rules or rid in self.auto_rules:
-                        self.trades.setdefault((rid, style), []).append(json.loads(data))
-                for k, v in self.trades.items():
-                    self.trades[k] = v[-KEEP_TRADES:]
-                self._db.execute("CREATE TABLE IF NOT EXISTS bot_markouts2 (setup TEXT NOT NULL, coin TEXT NOT NULL, "
-                                 "horizon INTEGER NOT NULL, n REAL, s REAL, s2 REAL, wins REAL, "
-                                 "ne REAL, se REAL, se2 REAL, winse REAL, PRIMARY KEY (setup, coin, horizon))")
-                self._db.commit()
-                for setup, coin, h, *acc in self._db.execute("SELECT * FROM bot_markouts2"):
-                    self.markouts[(setup, coin, int(h))] = list(acc)
+                for (data,) in self._db.execute("SELECT data FROM bot_alerts ORDER BY t_ms DESC LIMIT ?", (KEEP_ALERTS,)):
+                    self.alerts.appendleft(json.loads(data))
+                self._check_pause(quiet=True)
             except Exception:
-                log.exception("could not open the bot's trade history; it starts empty")
+                log.exception("could not open the bot's alert history; it starts empty")
                 self._db = None
-        self._tasks = [asyncio.create_task(self._loop(), name="bot"),
-                       asyncio.create_task(self._meta_loop(), name="bot-meta")]
+        self._tasks = [asyncio.create_task(self._loop(), name="bot")]
+        if self.rt.mode == "live":
+            self._tasks.append(asyncio.create_task(self._refresh_loop(), name="bot-list"))
 
     async def stop(self) -> None:
-        for t in self._tasks:
+        for t in self._tasks + ([self._building] if self._building else []):
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._save_markouts()
+        self._flush()
         if self._db:
             self._db.close()
 
@@ -148,760 +125,397 @@ class BotService:
             await asyncio.sleep(TICK_S)
             try:
                 self.tick()
-                self._hourly()
-                self._ticks += 1
-                if self._ticks % MARKOUT_SAVE_S == 0:
-                    self._save_markouts()
             except Exception:
                 log.exception("bot tick failed")
 
-    async def _meta_loop(self) -> None:
+    async def _refresh_loop(self) -> None:
         while True:
-            before = dict(self.max_lev)
-            for coin in {r.coin for r in self.rules.values()} | set(self._auto_coins()):
-                try:
-                    lev = await self.rt.planner.max_leverage(coin)
-                except Exception:
-                    lev = None
-                if lev:
-                    self.max_lev[coin] = lev
-                    for sim in self.sims.values():
-                        if sim.rule.coin == coin:
-                            sim.max_leverage = lev
-            if self.max_lev != before:
-                self._build_auto()                         # cap the auto hunter's leverage at each coin's max
-            await asyncio.sleep(META_EVERY_S)
+            age = time.time() * 1000 - self.list_info.get("built_ms", 0)
+            if age >= REFRESH_S * 1000 or self.list_state in ("loading", "failed"):
+                await self.refresh()
+            await asyncio.sleep(max(60.0, REFRESH_S - age / 1000) if age < REFRESH_S * 1000 else REFRESH_S)
 
-    # ── the work ───────────────────────────────────────────────────────────
-    def tick(self) -> list[dict]:
-        closed: list[dict] = []
-        auto_coins = set(self._auto_coins()) if self.auto["on"] else set()
-        for coin in {s.rule.coin for s in self.sims.values()} | auto_coins:
-            pipe = self.rt.pipelines.get(coin)
-            if pipe is None or not pipe.state.now_ms:
-                continue
-            st = pipe.state
-            now = st.now_ms
-            sims = [s for s in self.sims.values() if s.rule.coin == coin]
-            cur = self._cursor.get(coin)
-            if cur and now < min(cur):                       # a replay started over: nothing open survives that
-                for s in sims:
-                    s.drop()
-                for dq in self._pending.values():
-                    dq.clear()
-                cur = None
-            if cur is None:
-                cur = (now, now)
-            span = int(min(st.books.max_seconds, max(2, (now - min(cur)) // 1000 + 2)))
-            books = [b for b in st.books.window(span, now) if b.timestamp > cur[0]]
-            prints = [t for t in st.trades.window(span, now) if t.timestamp > cur[1]]
-            events = sorted([(b.timestamp, 0, b) for b in books] + [(t.timestamp, 1, t) for t in prints],
-                            key=lambda e: (e[0], e[1]))
-            full = st.book
-            for ts, kind, e in events:
-                for s in sims:
-                    if kind == 0:
-                        lv = (full.asks, full.bids) if full is not None and full.timestamp == ts else None
-                        done = s.on_book(ts, e.best_bid, e.best_ask, lv)
-                    else:
-                        done = s.on_trade(ts, e.price)
-                    if done:
-                        closed.append(done)
-            self._cursor[coin] = (books[-1].timestamp if books else cur[0], prints[-1].timestamp if prints else cur[1])
-            last = st.books.newest
-            if last is None or last.best_bid <= 0 or last.best_ask <= 0:
-                continue
-            funding = st.context.funding if st.context else 0.0
-            for s in sims:
-                if s.rule.timeframe == "auto":
-                    done = s.on_tick(now, 0, last.best_bid, last.best_ask, funding)
-                    if done:
-                        closed.append(done)
-                    continue
-                ex = pipe.analyzer.latest.get(s.rule.timeframe)
-                side = card_signal(ex.summary, s.rule.signals, s.rule.min_strength) if ex else 0
-                done = s.on_tick(now, side, last.best_bid, last.best_ask, funding)
-                if done:
-                    closed.append(done)
-                s.signal(now, side, last.best_bid, last.best_ask)
-            if coin in auto_coins:
-                mem = self._mem.setdefault(coin, CoinMemory())
-                fired = detect(pipe, mem, now, float(self.auto["lead_min_bps"]), include_lead=False)
-                for setup, side in fired.items():
-                    if setup in self.auto["setups"]:
-                        self._fire(coin, pipe, setup, side, now, last, mem)
-        for t in closed:
-            self._record(t)
-        self._flush_trades()
-        self._settle_markouts()
-        return closed
+    async def refresh(self) -> None:
+        """Rebuild the list from the recordings in a separate, low-priority process."""
+        if self._building and not self._building.done():
+            return
+        self._building = asyncio.current_task()
+        self.list_state = "building"
+        c = self.cfg
+        cmd = [sys.executable, "-m", "scripts.bigMoversList", "--out", str(self.list_file),
+               "--days", str(c["history_days"]), "--min-usd", str(c["min_usd"]), "--min-n", str(c["min_n"]),
+               "--t-min", str(c["t_min"]), "--cutoff", str(c["cutoff_bps"])]
+        try:
+            proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(ROOT), stdout=asyncio.subprocess.DEVNULL,
+                                                        stderr=asyncio.subprocess.PIPE)
+            _, err = await proc.communicate()
+            if proc.returncode != 0:
+                lines = (err or b"").decode(errors="replace").strip().splitlines()
+                raise RuntimeError(lines[-1] if lines else f"exit code {proc.returncode}")
+            self._load_list()
+            log.info("big-mover list: %d wallets", len(self.wallets))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.list_state, self.list_error = "failed", str(exc)[:200]
+            log.warning("could not build the big-mover list: %s", exc)
 
-    def _db_write(self, sql: str, args: tuple) -> None:
-        if not self._db:
+    # ── the live feed ──────────────────────────────────────────────────────
+    def on_message(self, msg: dict) -> None:
+        ch = msg.get("channel")
+        if ch == "l2Book":
+            self._on_book(msg.get("data") or {})
+        elif ch == "trades":
+            for tr in msg.get("data") or []:
+                self._on_trade(tr)
+
+    def _on_book(self, d: dict) -> None:
+        coin = d.get("coin")
+        if coin not in self.cfg["coins"]:
             return
         try:
-            with transaction(self._db):
-                self._db.execute(sql, args)
-        except sqlite3.Error as exc:
-            log.warning("bot database write failed: %s", exc)
+            bids, asks = d["levels"]
+            bid, ask, ms = float(bids[0]["px"]), float(asks[0]["px"]), int(d["time"])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        s = ms // 1000
+        ring = self.ring.setdefault(coin, {})
+        r = ring.get(s)
+        mid = (bid + ask) / 2
+        if r is None:
+            ring[s] = [bid, ask, mid]
+        else:
+            r[0], r[1], r[2] = min(r[0], bid), max(r[1], ask), mid
+        self._mid[coin] = mid
+        self.now_ms[coin] = max(self.now_ms.get(coin, 0), ms)
 
-    def _flush_trades(self) -> None:
-        """This tick's closed trades in one short transaction; kept for the next tick if the file is busy."""
-        if not self._db or not self._unsaved:
+    def _on_trade(self, tr: dict) -> None:
+        coin = tr.get("coin")
+        if coin not in self.cfg["coins"] or not self.wallets:
+            return
+        users, side = tr.get("users") or [], tr.get("side")
+        if len(users) != 2 or side not in ("B", "A"):
+            return
+        wallet, sd = (users[0], 1) if side == "B" else (users[1], -1)
+        wallet = wallet.lower()
+        if wallet not in self.wallets:
             return
         try:
-            with transaction(self._db):
-                self._db.executemany("INSERT INTO bot_trades (rule_id, style, exit_ms, data) VALUES (?, ?, ?, ?)",
-                                     self._unsaved)
-            self._unsaved = []
-        except sqlite3.Error as exc:
-            log.warning("could not save %d bot trades (will retry): %s", len(self._unsaved), exc)
-            del self._unsaved[:-20_000]
-
-    def on_quote(self, coin: str) -> None:
-        """A Binance quote just arrived for `coin`: check Binance leads now, not at the next one-second tick."""
-        if not self.auto["on"] or "lead" not in self.auto["setups"] or coin not in self._auto_coins():
+            ms, usd = int(tr["time"]), float(tr["px"]) * float(tr["sz"])
+        except (KeyError, TypeError, ValueError):
             return
-        pipe = self.rt.pipelines.get(coin)
-        mem = self._mem.get(coin)
-        if pipe is None or mem is None or not mem.primed:
+        self.now_ms[coin] = max(self.now_ms.get(coin, 0), ms)
+        key = (wallet, coin)
+        d = self._decisions.get(key)
+        if d is None or d[0] != sd or ms - d[2] > MERGE_S * 1000:
+            d = self._decisions[key] = [sd, ms, ms, 0.0, False]
+        d[2] = ms
+        d[3] += usd
+        if not d[4] and d[3] >= self.cfg["min_usd"]:
+            d[4] = True
+            self._decision(coin, wallet, sd, ms, d[3])
+
+    def _decision(self, coin: str, wallet: str, side: int, ms: int, usd: float) -> None:
+        key = (coin, side)
+        a = self._open.get(key)
+        if a is not None and ms - a["last_ms"] <= MERGE_S * 1000:
+            if wallet not in a["wallets"]:
+                a["wallets"].append(wallet)
+            a["decisions"] += 1
+            a["usd"] += usd
+            a["last_ms"] = ms
             return
-        st = pipe.state
-        last = st.books.newest
-        if not st.now_ms or last is None or last.best_bid <= 0 or last.best_ask <= 0:
+        status = self.status()
+        a = {"id": f"{coin}-{ms}-{side}", "coin": coin, "side": side, "t_ms": ms, "last_ms": ms, "wallets": [wallet],
+             "decisions": 1, "usd": usd, "mid": self._mid.get(coin), "announced": status == "live",
+             "why": "" if status == "live" else status, "fill_s": self.cfg["fill_s"], "hold_s": self.cfg["hold_s"],
+             "results": None, "shadow": None, "seen": time.time()}
+        self._open[key] = a
+        self.alerts.append(a)
+        self._pending.append(a)
+        if a["announced"] and self.cfg["telegram"]:
+            self._notify(alert_message(a, self.cfg), coin)
+
+    # ── every second: settle, shadow trade, pause ──────────────────────────
+    def tick(self) -> None:
+        while self._pending:
+            a = self._pending[0]
+            lags = sorted({*LAGS, int(self.cfg["fill_s"]), int(a["fill_s"])})
+            hold = int(a["hold_s"])
+            wait_s = max(lags) + hold + 2
+            due = a["t_ms"] + wait_s * 1000
+            now = self.now_ms.get(a["coin"], 0)
+            if now < due and time.time() < a.get("seen", 0) + wait_s + 30:     # the feed stalled: settle anyway
+                break
+            self._pending.popleft()
+            rows = self.ring.get(a["coin"], {})
+            s0 = a["t_ms"] // 1000
+            a["results"] = {str(lag): settle(rows, s0, lag, hold, a["side"]) for lag in lags}
+            self._shadow_trade(a)
+            self._unsaved.append(a)
+            self._check_pause()
+        cutoff = int(max(self.now_ms.values(), default=0) // 1000) - RING_KEEP_S
+        for ring in self.ring.values():
+            for s in [s for s in ring if s < cutoff]:
+                del ring[s]
+        for k in [k for k, a in self._open.items() if max(self.now_ms.values(), default=0) - a["last_ms"] > MERGE_S * 1000]:
+            del self._open[k]
+        for k in [k for k, d in self._decisions.items() if max(self.now_ms.values(), default=0) - d[2] > MERGE_S * 1000]:
+            del self._decisions[k]
+        self._flush()
+
+    def _shadow_trade(self, a: dict) -> None:
+        sh = self.shadow
+        r = (a["results"] or {}).get(str(a["fill_s"]))
+        if not a["announced"] or r is None or sh["busted"]:
             return
-        side = lead_check(pipe, mem, st.now_ms, float(self.auto["lead_min_bps"]))
-        if side:
-            self._fire(coin, pipe, "lead", side, st.now_ms, last, mem)
-
-    def _fire(self, coin: str, pipe, setup: str, side: int, now: int, last, mem: CoinMemory) -> None:
-        """One setup fired: note it (and which event it belongs to), queue its follow-through, and enter every
-        strategy on it that passes the spread and cost checks."""
-        eid = self._event(coin, side, now)
-        self.signals.append((now, coin, setup, side, eid))
-        if len(self.signals) > SIGNALS_KEPT:
-            del self.signals[: len(self.signals) - SIGNALS_KEPT]
-        size = mem.strength.get("lead") if setup == "lead" else None
-        for h in MARKOUT_S:
-            self._pending[h].append((now + h * 1000, coin, setup, side, last.mid, size, now))
-        self._auto_cache = None
-        spread_ok = self._spread_ok(coin, pipe, last)
-        base = pipe.analyzer.baseline
-        sigma = getattr(base, "sigma_1s_bps", None) if base is not None else None
-        for (rid, st), s in list(self.sims.items()):
-            r = self.auto_rules.get(rid)
-            if r is None or r.coin != coin or r.signals[0] != setup or not s.can_enter(now, side):
-                continue
-            if not spread_ok:
-                s.skip("spread")
-                continue
-            if self.auto.get("cost_gate", True) and not self._gate_open(setup, coin, r.max_hold_s, st):
-                s.skip("cost")
-                continue
-            timed = rid.rsplit("-", 1)[-1] in TIMED
-            s.signal(now, side, last.best_bid, last.best_ask, vol_stop_bps(sigma, r.max_hold_s) if timed else None)
-
-    def _event(self, coin: str, side: int, now: int) -> int:
-        ev = self._open_event.get(coin)
-        if ev is not None and ev[1] == side and now - ev[2] <= EVENT_GAP_S * 1000:
-            self._open_event[coin] = (ev[0], side, now)
-            return ev[0]
-        self._event_id += 1
-        self._open_event[coin] = (self._event_id, side, now)
-        return self._event_id
-
-    def _spread_ok(self, coin: str, pipe, last) -> bool:
-        at, usual = self._usual_spread.get(coin, (0.0, None))
-        if time.time() - at > SPREAD_EVERY_S:
-            xs = sorted(b.spread_bps for b in pipe.state.books.window(600))
-            usual = xs[len(xs) // 2] if len(xs) >= 20 else None
-            self._usual_spread[coin] = (time.time(), usual)
-        return usual is None or usual <= 0 or last.spread_bps <= float(self.auto.get("spread_max", 2.0)) * usual
-
-    @staticmethod
-    def _gate_h(hold_s: float) -> int:
-        return max([h for h in MARKOUT_S if h <= hold_s] or [MARKOUT_S[0]])
-
-    def _cost(self, style: str) -> float:
-        t, m = float(self.auto["taker_bps"]), float(self.auto["maker_bps"])
-        return {"market": 2 * t, "maker_exit": t + m, "limit": 2 * m}.get(style, 2 * t)
-
-    def _gate_open(self, setup: str, coin: str, hold_s: float, style: str) -> bool:
-        """Closed once the setup has GATE_MIN signals on this coin and, on average, price hasn't moved its way by
-        more than this order type's round-trip fees by that hold (measured from the price you'd pay)."""
-        acc = self.markouts.get((setup, coin, self._gate_h(hold_s)))
-        if not acc or acc[4] < GATE_MIN:
-            return True
-        return acc[5] / acc[4] - self._cost(style) > 0
-
-    def _settle_markouts(self) -> None:
-        """Signals old enough: how far price went their way, in bps, before any fees: by the mid, and by what a
-        market order paid (the ask half a second after a long signal) and would get (the bid at the horizon)."""
-        for h, dq in self._pending.items():
-            while dq:
-                due, coin, setup, side, mid0, size, t0 = dq[0]
-                pipe = self.rt.pipelines.get(coin)
-                if pipe is None:
-                    dq.popleft()
-                    continue
-                if pipe.state.now_ms < due:
-                    break
-                dq.popleft()
-                b = pipe.state.books.latest_at(due)
-                if b is None or not mid0 or b.mid <= 0:
-                    continue
-                move = side * (b.mid / mid0 - 1) * 1e4
-                eb = pipe.state.books.latest_at(t0 + LATENCY_MS)
-                paid = None
-                if eb is not None and eb.best_bid > 0 and eb.best_ask > 0 and b.best_bid > 0 and b.best_ask > 0:
-                    entry = eb.best_ask if side > 0 else eb.best_bid
-                    out = b.best_bid if side > 0 else b.best_ask
-                    paid = side * (out / entry - 1) * 1e4
-                keys = [(setup, coin, h)]
-                bucket = next((lab for lo, hi, lab in LEAD_BUCKETS if size is not None and lo <= size < hi), None)
-                if bucket:                                     # Binance leads, by how far Binance had moved
-                    keys.append((f"lead:{bucket}", "ALL", h))
-                for key in keys:
-                    acc = self.markouts.setdefault(key, [0.0] * 8)
-                    acc[0] += 1
-                    acc[1] += move
-                    acc[2] += move * move
-                    acc[3] += 1 if move > 0 else 0
-                    if paid is not None:
-                        acc[4] += 1
-                        acc[5] += paid
-                        acc[6] += paid * paid
-                        acc[7] += 1 if paid > 0 else 0
-                self._markouts_dirty = True
-                self._auto_cache = None
-
-    def _save_markouts(self) -> None:
-        if not self._db or not self._markouts_dirty:
+        start = a["t_ms"] + a["fill_s"] * 1000
+        if start < sh["free_ms"]:
+            return                                         # still in the last trade
+        margin = self.cfg["margin_pct"] / 100 * sh["start"]
+        if margin > sh["balance"]:
+            sh["busted"] = True
+            self._save()
             return
-        try:
-            with transaction(self._db):
-                self._db.executemany("INSERT OR REPLACE INTO bot_markouts2 (setup, coin, horizon, n, s, s2, wins, ne, "
-                                     "se, se2, winse) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                     [(*k, *v) for k, v in self.markouts.items()])
-            self._markouts_dirty = False
-        except sqlite3.Error as exc:
-            log.warning("could not save signal markouts (will retry): %s", exc)
+        pt = pt_of(r, self.cfg["leverage"], a["coin"])
+        pnl = margin * pt
+        sh["balance"] += pnl
+        sh["trades"] += 1
+        sh["wins"] += pnl > 0
+        sh["busts"] += pt <= -1.0
+        sh["free_ms"] = start + a["hold_s"] * 1000
+        sh["low"] = min(sh["low"], sh["balance"])
+        if sh["balance"] < margin:
+            sh["busted"] = True
+        a["shadow"] = {"pnl": round(pnl, 4), "balance": round(sh["balance"], 4), "pt": round(pt, 4)}
+        self._save()
 
-    def _record(self, t: dict) -> None:
-        key = (t["rule_id"], t["style"])
-        lst = self.trades.setdefault(key, [])
-        lst.append(t)
-        if len(lst) > KEEP_TRADES:
-            del lst[: len(lst) - KEEP_TRADES]
+    def _check_pause(self, quiet: bool = False) -> None:
+        if not self.cfg["auto_pause"]:
+            self.paused, self.pause_reason = False, ""
+            return
+        lag = str(self.cfg["fill_s"])
+        done = [a for a in self.alerts if a.get("results") and (a["results"].get(lag) or {}).get("bps") is not None]
+        last = [a["results"][lag]["bps"] for a in done[-LAST_N:]]
+        cut = (max(self.now_ms.values(), default=0) or int(time.time() * 1000)) - DAY_MS
+        day = [a["results"][lag]["bps"] for a in done if a["t_ms"] >= cut]
+        avg = sum(last) / len(last) if last else None
+        avg_day = sum(day) / len(day) if day else None
+        was = self.paused
+        if not self.paused:
+            if len(last) >= 30 and avg < PAUSE_BELOW:
+                self.paused, self.pause_reason = True, f"the last {len(last)} alerts averaged {avg:+.1f} bps"
+            elif len(day) >= DAY_MIN and avg_day < PAUSE_DAY_BELOW:
+                self.paused, self.pause_reason = True, f"the last 24 hours averaged {avg_day:+.1f} bps"
+        elif avg is not None and avg > RESUME_ABOVE and (avg_day is None or len(day) < DAY_MIN or avg_day >= PAUSE_DAY_BELOW):
+            self.paused, self.pause_reason = False, ""
+        if self.paused != was and not quiet and self.cfg["telegram"]:
+            self._notify(("Bot paused" if self.paused else "Bot back on",
+                          (f"Alerts stopped: {self.pause_reason}. Still watching." if self.paused
+                           else f"The last {len(last)} alerts are back to {avg:+.1f} bps on average.",)), "")
+
+    def _flush(self) -> None:
+        if not self._unsaved:
+            return
         if self._db:
-            self._unsaved.append((t["rule_id"], t["style"], t["exit_ms"], json.dumps(t)))
-        self._auto_cache = None
-        if t["rule_id"] in self.auto_rules:
-            self._maybe_bench(key)
-        rule = self.rules.get(t["rule_id"])
-        sim = self.sims.get(key)
-        if rule is None:                                  # the auto hunter reports hourly, not per trade
-            return
-        if rule.telegram == "trades":
-            self._notify(rule, trade_message(rule, t))
-        tripped = sim is not None and sim.stopped_for_day and sim.day_net - t["net_usd"] > -rule.daily_loss_usd
-        if tripped and rule.telegram != "off":                          # this trade is the one that hit the daily limit
-            self._notify(rule, stop_message(rule, t["style"], sim.day_net))
+            try:
+                with transaction(self._db):
+                    self._db.executemany("INSERT OR REPLACE INTO bot_alerts (id, t_ms, data) VALUES (?, ?, ?)",
+                                         [(a["id"], a["t_ms"], json.dumps(a)) for a in self._unsaved])
+            except sqlite3.Error as exc:
+                log.warning("could not save bot alerts (will retry): %s", exc)
+                del self._unsaved[:-2000]
+                return
+        self._unsaved.clear()
 
-    def _hourly(self) -> None:
-        hour = int(time.time() // 3600)
-        if hour == self._hour:
-            return
-        start, end = self._hour * 3_600_000, hour * 3_600_000
-        self._hour = hour
-        for r in self.rules.values():
-            if r.telegram != "hourly":
-                continue
-            msg = hourly_message(r, {st: self.trades.get((r.id, st), []) for st in STYLES}, start, end)
-            if msg:
-                self._notify(r, msg)
-        if self.auto["on"] and self.auto["telegram"] == "hourly":
-            msg = auto_hourly_message(self._auto_trades(), {k: r.name for k, r in self.auto_rules.items()}, start, end)
-            if msg:
-                self._notify(Rule("auto", coin="AUTO"), msg)
-
-    def _notify(self, rule: Rule, msg: tuple[str, tuple[str, ...]]) -> None:
+    def _notify(self, msg: tuple[str, tuple[str, ...]], coin: str) -> None:
         if self.rt.mode != "live" or not getattr(self.rt, "alerts", None):
             return
         from engine.alerts import Alert
         title, lines = msg
-        self.rt.alerts.notify(Alert(f"bot-{rule.id}-{time.time_ns()}", rule.coin, "bot", int(time.time() * 1000),
-                                    "neutral", title, lines))
+        self.rt.alerts.notify(Alert(f"bot-{time.time_ns()}", coin, "bot", int(time.time() * 1000), "neutral", title, lines))
 
-    # ── rules ──────────────────────────────────────────────────────────────
+    # ── state ──────────────────────────────────────────────────────────────
+    def status(self) -> str:
+        if not self.cfg["on"]:
+            return "off"
+        if self.list_state in ("loading", "building") and not self.wallets:
+            return "warming"
+        if len(self.wallets) < self.cfg["min_list"]:
+            return "warming"
+        if self.paused:
+            return "paused"
+        return "live"
+
+    def _fresh_shadow(self, start: float | None = None) -> dict:
+        start = float(start if start is not None else self.cfg["balance"])
+        return {"start": start, "balance": start, "low": start, "trades": 0, "wins": 0, "busts": 0, "free_ms": 0,
+                "busted": False, "since_ms": int(time.time() * 1000)}
+
     def _load(self) -> None:
         try:
             saved = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return
-        except (OSError, ValueError):
-            log.exception("could not read %s; the bot starts with no rules", self.path)
+        except (ValueError, OSError):
+            log.warning("could not read %s; using defaults", self.path)
             return
-        auto = saved.get("auto")
-        if isinstance(auto, dict):
-            self.auto.update({k: v for k, v in auto.items() if k in AUTO_DEFAULT})
-            if (auto.get("version") or 1) < AUTO_VERSION:   # an older hunter: new defaults and a fresh record
-                self._auto_fresh = True
-                self.auto.update(exits=list(DEFAULT_EXITS), styles=list(AUTO_STYLES), benched=[])
-            self.auto["version"] = AUTO_VERSION
-        for d in saved.get("rules") or []:
+        if "rules" in saved or "auto" in saved:            # the old rule-based bot: keep a copy, start fresh
             try:
-                r = Rule.from_dict(d)
-            except TypeError:
-                continue
-            self.rules[r.id] = r
-            self._make_sims(r)
+                self.path.with_name(self.path.stem + ".old.json").write_text(json.dumps(saved), encoding="utf-8")
+            except OSError:
+                pass
+            return
+        self.cfg.update({k: v for k, v in (saved.get("settings") or {}).items() if k in DEFAULTS})
+        if saved.get("shadow"):
+            self.shadow.update(saved["shadow"])
 
     def _save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"rules": [r.to_dict() for r in self.rules.values()], "auto": self.auto}, indent=1), encoding="utf-8")
+            tmp.write_text(json.dumps({"settings": self.cfg, "shadow": self.shadow}, indent=1), encoding="utf-8")
             tmp.replace(self.path)
-        except OSError:
-            log.exception("could not save the bot's rules")
+        except OSError as exc:
+            log.warning("could not save the bot settings: %s", exc)
 
-    # ── the auto hunter ────────────────────────────────────────────────────
-    def _auto_coins(self) -> list[str]:
-        want = self.auto.get("coins") or []
-        return [c for c in self.rt.coins if not want or c in want]
-
-    def _auto_styles(self, r: Rule) -> list[str]:
-        """The chosen order types, minus any whose target can't cover the fees (timed exits have no target)."""
-        allowed = [st for st in STYLES if st in (self.auto.get("styles") or AUTO_STYLES)]
-        if r.id.rsplit("-", 1)[-1] in TIMED:
-            return allowed
-        return [st for st in allowed if (be := break_even_win_rate(r, st)) is not None and be <= MAX_BREAK_EVEN]
-
-    def _build_auto(self) -> None:
-        """One strategy per setup × coin × exit profile × order type worth running. Benched and switched-off ones
-        don't trade; strategies dropped from the settings lose their record; the rest keep theirs."""
-        a = self.auto
-        benched = set(a.get("benched") or [])
-        rules = {}
-        for coin in self._auto_coins():
-            lev = min(float(a["leverage"]), self.max_lev.get(coin) or float(a["leverage"]))
-            for setup in a["setups"]:
-                for ex in a["exits"]:
-                    tp, sl, hold, wait = EXITS[ex]
-                    rid = f"auto-{setup}-{coin}-{ex}"
-                    rules[rid] = Rule(rid, f"{SETUPS[setup][0]} · {coin} · {EXIT_WORDS[ex]}", coin, "auto", (setup,), 0.0,
-                                      "both", lev, float(a["margin_usd"]), tp, sl, hold, False, AUTO_COOLDOWN_S,
-                                      AUTO_PER_HOUR, float(a["daily_loss_usd"]), wait, "off", True,
-                                      float(a["taker_bps"]) / 1e4, float(a["maker_bps"]) / 1e4)
-        for rid in list(self.auto_rules):
-            if rid not in rules:
-                self._forget(rid)
-        for rid, r in rules.items():
-            old = self.auto_rules.get(rid)
-            changed = old is None or old.to_dict() != r.to_dict()
-            styles = self._auto_styles(r)
-            for st in STYLES:
-                if not a["on"] or st not in styles or f"{rid}|{st}" in benched:
-                    self.sims.pop((rid, st), None)
-                elif changed or (rid, st) not in self.sims:
-                    self.sims[(rid, st)] = Sim(r, st, self.max_lev.get(r.coin))
-        self.auto_rules = rules
-        self._auto_cache = None
-
-    def _maybe_bench(self, key: tuple[str, str]) -> None:
-        """Stop a strategy that is clearly losing, so the hunter keeps going with what works."""
-        lst = self.trades.get(key, [])
-        if len(lst) < BENCH_MIN_TRADES:
-            return
-        s = stats(lst)
-        tag = f"{key[0]}|{key[1]}"
-        if s["avg_net_pct"] < 0 and s["t_stat"] is not None and s["t_stat"] <= BENCH_T and tag not in self.auto["benched"]:
-            self.auto["benched"].append(tag)
-            self.sims.pop(key, None)
-            self._save()
-            r = self.auto_rules.get(key[0])
-            log.info("auto hunter benched %s (%s): %d trades, %+.1f%% a trade", r.name if r else key[0], key[1],
-                     s["trades"], s["avg_net_pct"])
-
-    def save_auto(self, patch: dict) -> dict:
-        if not isinstance(patch, dict):
-            raise BotError("Send the settings as an object.")
-        new = {**self.auto, **{k: v for k, v in patch.items() if k in AUTO_DEFAULT}}
-        new["on"] = bool(new["on"])
-        new["coins"] = [c for c in self.rt.coins if c in set(new.get("coins") or [])]
-        new["setups"] = [k for k in SETUPS if k in set(new.get("setups") or [])]
-        new["exits"] = [k for k in EXITS if k in set(new.get("exits") or [])]
-        new["styles"] = [k for k in STYLES if k in set(new.get("styles") or [])]
-        new["cost_gate"] = bool(new.get("cost_gate", True))
-        if not new["styles"]:
-            raise BotError("Pick at least one order type.")
-        if not new["setups"]:
-            raise BotError("Pick at least one setup.")
-        if not new["exits"]:
-            raise BotError("Pick at least one exit profile.")
-        for k, (lo, hi) in (("leverage", (1, 200)), ("margin_usd", (1, 1e6)), ("daily_loss_usd", (1, 1e7)),
-                            ("taker_bps", (0, 10)), ("maker_bps", (-0.5, 5)), ("lead_min_bps", (0, 100)),
-                            ("spread_max", (1, 20))):
-            try:
-                new[k] = float(new[k])
-            except (TypeError, ValueError) as exc:
-                raise BotError(f"{k} must be a number.") from exc
-            if not lo <= new[k] <= hi:
-                raise BotError(f"{k} must be between {lo:g} and {hi:g}.")
-        if new["telegram"] not in ("off", "hourly"):
-            raise BotError("telegram must be off or hourly.")
-        new["benched"] = [str(x) for x in (new.get("benched") or []) if isinstance(x, str)]
-        new["version"] = AUTO_VERSION
-        fresh = any(new[k] != self.auto[k] for k in AUTO_MONEY)
-        self.auto = new
-        if fresh:
-            self.reset_auto(rebuild=False)
-        self._build_auto()
-        self._save()
-        return self.public()
-
-    def reset_auto(self, rebuild: bool = True) -> dict:
-        for rid in list(self.auto_rules):
-            self._forget(rid)
-        self.signals.clear()
-        self.auto["benched"] = []
-        self.markouts.clear()
-        for dq in self._pending.values():
-            dq.clear()
-        self._open_event.clear()
-        self._db_write("DELETE FROM bot_markouts2", ())
-        if rebuild:
-            self._build_auto()
-        self._auto_cache = None
-        return self.public()
-
-    def _auto_trades(self) -> dict[str, dict[str, list[dict]]]:
-        return {rid: {st: self.trades.get((rid, st), []) for st in STYLES} for rid in self.auto_rules}
-
-    @staticmethod
-    def _cell(accs, paid: bool = True, cost: float = 0.0) -> dict:
-        """Signals scored, the average move their way in bps (by the price paid, or the mid) less `cost`, how
-        often it went their way, and a t-stat (from 10 signals)."""
-        o = 4 if paid else 0
-        n = sum(a[o] for a in accs)
-        if not n:
-            return {"n": 0, "avg_bps": None, "won": None, "t": None}
-        s1, s2, w = sum(a[o + 1] for a in accs), sum(a[o + 2] for a in accs), sum(a[o + 3] for a in accs)
-        mean = s1 / n
-        var = (s2 - n * mean * mean) / (n - 1) if n > 1 else 0.0
-        net = mean - cost
-        return {"n": int(n), "avg_bps": net, "won": w / n,
-                "t": net / math.sqrt(var / n) if n >= 10 and var > 0 else None}
-
-    def setup_edge(self, setup: str, coin: str | None = None) -> dict | None:
-        """The setup's best hold and order type by its follow-through after fees (all coins, or one)."""
-        best = None
-        for h in MARKOUT_S:
-            accs = [v for (s, c, hh), v in self.markouts.items() if s == setup and hh == h and (coin is None or c == coin)]
-            for style in [st for st in ("market", "maker_exit") if st in (self.auto.get("styles") or AUTO_STYLES)]:
-                c = self._cell(accs, True, self._cost(style))
-                if c["n"] and (best is None or c["avg_bps"] > best["avg_bps"]):
-                    best = {**c, "h": h, "style": style}
-        if best is not None and best["n"] < EDGE_MIN:           # too few to say: no number that invites a guess
-            return {"n": best["n"], "learning": True}
-        return best
-
-    def auto_public(self) -> dict:
-        hit = self._auto_cache
-        if hit and time.time() - hit[0] < AUTO_CACHE_S:
-            return hit[1]
-        now_ms = max([p.state.now_ms for p in self.rt.pipelines.values()] + [0]) or int(time.time() * 1000)
-        day_ago = now_ms - 86_400_000
-        by_rule = self._auto_trades()
-        recent = [x for x in self.signals if x[0] >= day_ago]
-        per_setup = []
-        for key, (label, help_) in SETUPS.items():
-            fired = [x for x in self.signals if x[2] == key]
-            skipped: dict[str, int] = {}
-            for (rid, _), sim in self.sims.items():
-                r = self.auto_rules.get(rid)
-                if r is not None and r.signals[0] == key:
-                    for why, n in sim.skipped.items():
-                        skipped[why] = skipped.get(why, 0) + n
-            closed = sorted({r.coin for rid, r in self.auto_rules.items() if r.signals[0] == key
-                             for st in self._auto_styles(r) if not self._gate_open(key, r.coin, r.max_hold_s, st)})
-            per_setup.append({"key": key, "label": label, "help": help_, "on": key in self.auto["setups"],
-                              "events_24h": len({x[4] for x in recent if x[2] == key}),
-                              "last_ms": fired[-1][0] if fired else None, "edge": self.setup_edge(key),
-                              "gated_coins": closed, "skipped": skipped})
-        board, benched, learning = [], set(self.auto["benched"]), 0
-        for rid, d in by_rule.items():
-            r = self.auto_rules[rid]
-            for st in STYLES:
-                if not d[st]:
-                    continue
-                s = stats(d[st])
-                row = {"id": rid, "name": r.name, "style": st, "coin": r.coin, "setup": r.signals[0],
-                       "trades": s["trades"], "win_rate": s["win_rate"], "net_usd": s["net_usd"], "gross_usd": s["gross_usd"],
-                       "fees_usd": s["fees_usd"], "avg_net_pct": s["avg_net_pct"], "t_stat": s["t_stat"],
-                       "verdict": s["verdict"], "benched": f"{rid}|{st}" in benched}
-                t = s["t_stat"] or 0
-                if s["net_usd"] > 0 and s["trades"] >= PROVEN[0] and t >= PROVEN[1]:
-                    row["grade"] = "proven"
-                elif s["net_usd"] > 0 and s["trades"] >= PROMISING[0] and t >= PROMISING[1]:
-                    row["grade"] = "promising"
-                elif s["trades"] >= PROMISING[0]:
-                    row["grade"] = "losing" if s["net_usd"] < 0 else "flat"
-                else:
-                    row["grade"] = "learning"
-                    learning += 1
-                board.append(row)
-        graded = sorted([b for b in board if b["grade"] in ("proven", "promising")],
-                        key=lambda x: (x["grade"] != "proven", -(x["t_stat"] or 0)))
-        worst = sorted([b for b in board if b["grade"] == "losing"], key=lambda x: x["net_usd"])[:3]
-        mids = {c: (p.state.books.newest.mid if p.state.books.newest else None) for c, p in self.rt.pipelines.items()}
-        open_ = []
-        for rid, r in self.auto_rules.items():
-            for st in STYLES:
-                sim = self.sims.get((rid, st))
-                o = sim.open_view(mids.get(r.coin)) if sim else None
-                if o and not o.get("waiting"):
-                    open_.append({**o, "name": r.name, "coin": r.coin})
-        trades_24h = sum(1 for d in by_rule.values() for lst in d.values() for t in lst if t["exit_ms"] >= day_ago)
-        out = {**self.auto, "now_ms": now_ms, "coins_on": self._auto_coins(), "all_coins": list(self.rt.coins),
-               "setups_all": [{"key": k, "label": v[0], "help": v[1]} for k, v in SETUPS.items()],
-               "exits_all": [{"key": k, "label": EXIT_WORDS[k], "target_bps": v[0], "stop_bps": v[1], "hold_s": v[2],
-                              "timed": k in TIMED} for k, v in EXITS.items()],
-               "styles_all": [{"key": k, "label": STYLE_WORDS[k]} for k in STYLES],
-               "strategies": sum(len(self._auto_styles(r)) for r in self.auto_rules.values()),
-               "running": sum(1 for (rid, _) in self.sims if rid in self.auto_rules),
-               "benched_n": len(benched), "bench_min_trades": BENCH_MIN_TRADES, "vol_stop_k": VOL_STOP_K,
-               "gate_min": GATE_MIN, "proven_rule": PROVEN, "promising_rule": PROMISING,
-               "day": {"events": len({x[4] for x in recent}), "signals": len(recent), "trades": trades_24h},
-               "total": {st: stats([t for d in by_rule.values() for t in d[st]]) for st in STYLES},
-               "setup_stats": per_setup, "graded": graded[:12], "worst": worst, "learning": learning,
-               "open": sorted(open_, key=lambda o: o["entry_ms"], reverse=True)[:20],
-               "signals": [{"ms": x[0], "coin": x[1], "setup": SETUPS[x[2]][0], "side": x[3], "event": x[4]}
-                           for x in self.signals[-12:][::-1]],
-               "markouts": self.markout_table(), "markout_s": list(MARKOUT_S), "lead_sizes": self.lead_size_table(),
-               "costs": {st: self._cost(st) for st in STYLES}}
-        self._auto_cache = (time.time(), out)
-        return out
-
-    def markout_table(self) -> list[dict]:
-        """Per setup and horizon: the average move the signal's way by the price paid (before fees), how often it
-        went its way and a t-stat; per coin too."""
-        out = []
-        coins = sorted({c for s, c, _ in self.markouts if ":" not in s})
-        for key, (label, _) in SETUPS.items():
-            if key not in self.auto["setups"]:
-                continue
-            out.append({"key": key, "label": label,
-                        "all": [self._cell([v for (s, _, h), v in self.markouts.items() if s == key and h == hh])
-                                for hh in MARKOUT_S],
-                        "coins": {c: [self._cell([self.markouts[(key, c, hh)]] if (key, c, hh) in self.markouts else [])
-                                      for hh in MARKOUT_S] for c in coins}})
-        return out
-
-    def lead_size_table(self) -> list[dict]:
-        """Binance leads split by how far Binance had moved: does a bigger lead follow through by enough to pay?"""
-        return [{"label": lab, "cells": [self._cell([self.markouts[(f"lead:{lab}", "ALL", h)]]
-                                                    if (f"lead:{lab}", "ALL", h) in self.markouts else []) for h in MARKOUT_S]}
-                for lo, hi, lab in LEAD_BUCKETS]
-
-    def _make_sims(self, r: Rule) -> None:
-        for style in STYLES:
-            self.sims[(r.id, style)] = Sim(r, style, self.max_lev.get(r.coin))
-
-    def save_rule(self, d: dict) -> dict:
-        """Add a rule, or change one (send its id). New trading settings start a fresh track record; a new name,
-        Telegram choice or on/off doesn't."""
-        r = self.validate(d)
-        old = self.rules.get(str(d.get("id") or ""))
-        if old is None:
-            if len(self.rules) >= MAX_RULES:
-                raise BotError(f"Up to {MAX_RULES} rules.")
-            r.id = uuid.uuid4().hex[:10]
-            self.rules[r.id] = r
-            self._make_sims(r)
-        elif any(getattr(old, f) != getattr(r, f) for f in TRADING_FIELDS):
-            self._forget(old.id)
-            r.id = uuid.uuid4().hex[:10]
-            self.rules = {(r.id if k == old.id else k): (r if k == old.id else v) for k, v in self.rules.items()}
-            self._make_sims(r)
-        else:
-            old.name, old.telegram, old.on = r.name, r.telegram, r.on
-            r = old
-        if not r.on:
-            for st in STYLES:
-                self.sims[(r.id, st)].drop()
-        self._save()
-        return self.public()
-
-    def delete_rule(self, rule_id: str) -> dict:
-        if rule_id not in self.rules:
-            raise BotError("No such rule.")
-        self.rules.pop(rule_id)
-        self._forget(rule_id)
-        self._save()
-        return self.public()
-
-    def _forget(self, rule_id: str) -> None:
-        for st in STYLES:
-            self.sims.pop((rule_id, st), None)
-            self.trades.pop((rule_id, st), None)
-        self._db_write("DELETE FROM bot_trades WHERE rule_id = ?", (rule_id,))
-
-    def reset_rule(self, rule_id: str) -> dict:
-        if rule_id not in self.rules:
-            raise BotError("No such rule.")
-        for st in STYLES:
-            self.trades.pop((rule_id, st), None)
-            sim = self.sims[(rule_id, st)]
-            sim.drop()
-            sim.missed, sim.day_net, sim.stopped_for_day, sim.entries = 0, 0.0, False, []
-        self._db_write("DELETE FROM bot_trades WHERE rule_id = ?", (rule_id,))
-        return self.public()
-
-    def validate(self, d: dict) -> Rule:
-        if not isinstance(d, dict):
-            raise BotError("Send the rule as an object.")
+    def _load_list(self) -> None:
         try:
-            r = Rule.from_dict({**Rule("").to_dict(), **d})
-        except (TypeError, ValueError) as exc:
-            raise BotError(f"Couldn't read the rule: {exc}") from exc
-        if r.coin not in self.rt.coins:
-            raise BotError(f"The bot covers {', '.join(self.rt.coins)}.")
-        if r.timeframe not in WINDOWS:
-            raise BotError(f"Timeframe must be one of {', '.join(WINDOWS)}.")
-        rows = [k for k in layout_for(WINDOWS[r.timeframe]) if k not in NO_DIRECTION]
-        r.signals = tuple(k for k in rows if k in set(r.signals))
-        if not r.signals:
-            raise BotError(f"Pick at least one of the {r.timeframe} card's rows: {', '.join(rows)}.")
-        for k, (lo, hi) in LIMITS.items():
-            try:
-                v = float(getattr(r, k))
-            except (TypeError, ValueError) as exc:
-                raise BotError(f"{k} must be a number.") from exc
-            if not lo <= v <= hi:
-                raise BotError(f"{k} must be between {lo:g} and {hi:g}.")
-            setattr(r, k, int(v) if k in ("max_hold_s", "cooldown_s", "max_trades_per_hour", "limit_wait_s") else v)
-        max_lev = self.max_lev.get(r.coin)
-        if max_lev and r.leverage > max_lev:
-            raise BotError(f"Hyperliquid allows up to {max_lev:g}× on {r.coin}.")
-        liq = liq_distance(r.leverage, max_lev) * 1e4
-        if r.stop_loss_bps >= liq:
-            raise BotError(f"At {r.leverage:g}× {r.coin} is liquidated about {liq:.0f} bps away, so the stop has to be closer.")
-        if r.sides not in ("both", "long", "short"):
-            raise BotError("sides must be both, long or short.")
-        if r.telegram not in ("off", "hourly", "trades"):
-            raise BotError("telegram must be off, hourly or trades.")
-        r.exit_on_flip, r.on = bool(r.exit_on_flip), bool(r.on)
-        r.name = (str(r.name or "").strip() or default_name(r))[:60]
-        r.taker_fee, r.maker_fee = float(self.auto["taker_bps"]) / 1e4, float(self.auto["maker_bps"]) / 1e4
-        return r
+            info = json.loads(self.list_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (ValueError, OSError) as exc:
+            self.list_state, self.list_error = "failed", str(exc)[:200]
+            return
+        self.set_list(info)
 
-    # ── reads ──────────────────────────────────────────────────────────────
+    def set_list(self, info: dict) -> None:
+        self.list_info = {k: v for k, v in info.items() if k != "wallets"}
+        self.wallets = {w["wallet"].lower(): w for w in info.get("wallets") or []}
+        self.list_state = "ready" if self.wallets else "empty"
+        self.list_error = ""
+
+    def save_settings(self, patch: dict) -> dict:
+        new = dict(self.cfg)
+        for k, v in (patch or {}).items():
+            if k not in DEFAULTS:
+                raise BotError(f"Unknown setting: {k}.")
+            if k in ("on", "telegram", "auto_pause"):
+                new[k] = bool(v)
+            elif k == "coins":
+                coins = [str(c).upper() for c in (v or [])]
+                if not coins or any(c not in KNOWN_COINS for c in coins):
+                    raise BotError(f"Coins must be some of {', '.join(KNOWN_COINS)}.")
+                new[k] = coins
+            else:
+                try:
+                    x = float(v)
+                except (TypeError, ValueError):
+                    raise BotError(f"{k.replace('_', ' ')} must be a number.") from None
+                lo, hi = LIMITS[k]
+                if not lo <= x <= hi:
+                    raise BotError(f"{k.replace('_', ' ')} must be between {lo:g} and {hi:g}.")
+                new[k] = int(round(x)) if k in INTS else x
+        rebuild = any(new[k] != self.cfg[k] for k in LIST_KEYS)
+        restart = any(new[k] != self.cfg[k] for k in MONEY_KEYS)
+        self.cfg = new
+        if restart:
+            self.shadow = self._fresh_shadow()
+        if not new["auto_pause"]:
+            self.paused, self.pause_reason = False, ""
+        self._save()
+        if rebuild and self.rt.mode == "live":
+            asyncio.get_running_loop().create_task(self.refresh())
+        return self.public()
+
+    def reset_shadow(self) -> dict:
+        self.shadow = self._fresh_shadow()
+        self._save()
+        return self.public()
+
+    def start_refresh(self) -> dict:
+        if self.rt.mode != "live":
+            raise BotError("The list is built from live recordings, so only in live mode.")
+        asyncio.get_running_loop().create_task(self.refresh())
+        self.list_state = "building"
+        return self.public()
+
+    # ── what the dashboard reads ───────────────────────────────────────────
+    def live(self) -> dict:
+        """The small piece every snapshot carries, so an alert reaches every open tab within half a second."""
+        st = self.status()
+        a = self.alerts[-1] if self.alerts else None
+        active = None
+        if a and a["announced"]:
+            now = max(self.now_ms.values(), default=0)
+            if now - a["t_ms"] <= (a["fill_s"] + a["hold_s"]) * 1000:
+                active = {"id": a["id"], "coin": a["coin"], "side": a["side"], "t_ms": a["t_ms"], "fill_s": a["fill_s"],
+                          "hold_s": a["hold_s"], "wallets": len(a["wallets"]), "usd": round(a["usd"]), "mid": a["mid"]}
+        return {"status": st, "alert": active}
+
+    def _row(self, a: dict) -> dict:
+        lag = str(self.cfg["fill_s"])
+        r = (a.get("results") or {}).get(lag) if a.get("results") else None
+        return {"id": a["id"], "coin": a["coin"], "side": a["side"], "t_ms": a["t_ms"], "wallets": len(a["wallets"]),
+                "usd": round(a["usd"]), "announced": a["announced"], "why": a.get("why", ""),
+                "settled": a.get("results") is not None, "bps": None if r is None else round(r["bps"], 2),
+                "pt": None if r is None else pt_of(r, self.cfg["leverage"], a["coin"]),
+                "shadow": a.get("shadow")}
+
+    def record(self, since_ms: int | None = None, announced_only: bool = False) -> dict:
+        """How the alerts did: per fill delay, the average move, win rate and Papertrade result at your leverage."""
+        lev = self.cfg["leverage"]
+        out = {}
+        for lag in sorted({*LAGS, int(self.cfg["fill_s"])}):
+            k = str(lag)
+            rs = [(a["results"][k], a["coin"]) for a in self.alerts
+                  if a.get("results") and a["results"].get(k) and (since_ms is None or a["t_ms"] >= since_ms)
+                  and (a["announced"] or not announced_only)]
+            if not rs:
+                out[k] = {"n": 0}
+                continue
+            bps = [r["bps"] for r, _ in rs]
+            pts = [pt_of(r, lev, c) for r, c in rs]
+            out[k] = {"n": len(rs), "bps": sum(bps) / len(bps), "win": sum(b > 0 for b in bps) / len(bps),
+                      "pt": sum(pts) / len(pts), "busts": sum(p <= -1.0 for p in pts) / len(pts)}
+        return out
+
     def public(self) -> dict:
-        out = []
-        for r in self.rules.values():
-            pipe = self.rt.pipelines.get(r.coin)
-            last = pipe.state.books.newest if pipe else None
-            mid = last.mid if last else None
-            ex = pipe.analyzer.latest.get(r.timeframe) if pipe else None
-            rows = [{"key": m.key, "label": m.label, "lean": m.lean.value, "bar": m.bar, "tag": m.tag, "partial": m.partial}
-                    for m in (ex.summary if ex else ()) if m.key in r.signals]
-            styles = {}
-            for st in STYLES:
-                sim = self.sims.get((r.id, st))
-                trades = self.trades.get((r.id, st), [])
-                styles[st] = {**stats(trades, sim.missed if sim else 0),
-                              "open": sim.open_view(mid) if sim else None,
-                              "stopped_for_day": bool(sim and sim.stopped_for_day),
-                              "day_net_usd": sim.day_net if sim else 0.0,
-                              "break_even_win_rate": break_even_win_rate(r, st)}
-            out.append({**r.to_dict(), "signal_now": card_signal(ex.summary, r.signals, r.min_strength) if ex else 0,
-                        "rows_now": rows, "styles": styles,
-                        "liq_bps": liq_distance(r.leverage, self.max_lev.get(r.coin)) * 1e4})
-        recent = sorted((t for lst in self.trades.values() for t in lst[-60:]), key=lambda t: t["exit_ms"])[-60:][::-1]
-        names = {**{k: r.name for k, r in self.auto_rules.items()}, **{r.id: r.name for r in self.rules.values()}}
-        return {"mode": "shadow", "rules": out, "recent": [{**t, "rule": names.get(t["rule_id"], "")} for t in recent],
-                "fees": {"taker": float(self.auto["taker_bps"]) / 1e4, "maker": float(self.auto["maker_bps"]) / 1e4},
-                "coins": list(self.rt.coins),
-                "timeframes": {k: [x for x in layout_for(v) if x not in NO_DIRECTION] for k, v in WINDOWS.items()},
-                "max_leverage": {c: self.max_lev.get(c) for c in self.rt.coins}, "max_rules": MAX_RULES,
-                "auto": self.auto_public()}
-
-
-# ── messages (plain words, no dashes) ────────────────────────────────────────
-ROW_NAMES = {"flow": "Flow", "who": "Who", "forced": "Forced", "book": "Book", "trend": "Trend", "vwap": "Avg price",
-             "positioning": "Positions", "funding": "Funding"}
-REASONS = {"target": "hit the target", "stop": "hit the stop", "time": "ran out of time", "flip": "signal flipped",
-           "liquidated": "was liquidated"}
-STYLE_WORDS = {"market": "market orders", "limit": "limit orders", "maker_exit": "market in, limit out"}
-
-
-def default_name(r: Rule) -> str:
-    return f"{r.coin} {r.timeframe} " + " + ".join(ROW_NAMES.get(k, k) for k in r.signals)
+        now = max(self.now_ms.values(), default=0) or int(time.time() * 1000)
+        settled = [a for a in self.alerts if a.get("results")]
+        lag = str(self.cfg["fill_s"])
+        last = [a["results"][lag]["bps"] for a in settled if (a["results"].get(lag) or {}).get("bps") is not None][-LAST_N:]
+        day = [a for a in self.alerts if a["t_ms"] >= now - DAY_MS]
+        return {
+            "status": self.status(), "pause_reason": self.pause_reason, "settings": self.cfg, "limits": LIMITS,
+            "known_coins": list(KNOWN_COINS), "live": self.live(),
+            "list": {"state": self.list_state, "error": self.list_error, "count": len(self.wallets), **self.list_info,
+                     "wallets": sorted(self.wallets.values(), key=lambda w: -w.get("mean_bps", 0))[:40]},
+            "shadow": {**self.shadow, "margin": self.cfg["margin_pct"] / 100 * self.shadow["start"]},
+            "last50": {"n": len(last), "bps": sum(last) / len(last) if last else None},
+            "today": {"alerts": len(day), "per_hour": len(day) / 24},
+            "record": {"day": self.record(now - DAY_MS), "week": self.record(now - 7 * DAY_MS), "all": self.record()},
+            "alerts": [self._row(a) for a in list(self.alerts)[-30:]][::-1],
+            "now_ms": now,
+        }
 
 
 def _usd(x: float) -> str:
-    return f"{'+' if x >= 0 else '-'}${abs(x):,.2f}"
+    return f"${x / 1000:.1f}k" if x >= 1000 else f"${x:.0f}"
 
 
-def _px(x: float) -> str:
-    return f"{x:,.2f}" if x < 1000 else f"{x:,.1f}"
+def _px(x: float | None) -> str:
+    if x is None:
+        return "-"
+    return f"{x:,.2f}" if x < 10_000 else f"{x:,.1f}"
 
 
-def trade_message(r: Rule, t: dict) -> tuple[str, tuple[str, ...]]:
-    side = "Long" if t["side"] > 0 else "Short"
-    mins = (t["exit_ms"] - t["entry_ms"]) / 60_000
-    held = f"{mins:.1f} min" if mins < 90 else f"{mins / 60:.1f} h"
-    title = f"Bot (shadow) {r.name}: {side} {REASONS.get(t['reason'], t['reason'])}, {_usd(t['net_usd'])} ({t['net_pct']:+.1f}%)"
-    return title, (f"With {STYLE_WORDS[t['style']]}: in at {_px(t['entry_px'])}, out at {_px(t['exit_px'])} after {held}. "
-                   f"Fees {_usd(-t['fees_usd'])}.",
-                   "Shadow mode: no real order was placed.")
-
-
-def stop_message(r: Rule, style: str, day_net: float) -> tuple[str, tuple[str, ...]]:
-    return (f"Bot (shadow) {r.name}: stopped for today with {STYLE_WORDS[style]}",
-            (f"Down {_usd(day_net)} today, past the ${r.daily_loss_usd:,.0f} daily limit. It starts again at 00:00 UTC.",
-             "Shadow mode: no real order was placed."))
-
-
-def hourly_message(r: Rule, by_style: dict[str, list[dict]], start_ms: int, end_ms: int):
-    hour = {st: [t for t in lst if start_ms <= t["exit_ms"] < end_ms] for st, lst in by_style.items()}
-    if not any(hour.values()):
-        return None
-    lines = []
-    for st in STYLES:
-        h, all_ = hour.get(st, []), by_style.get(st, [])
-        if not all_:
-            continue
-        s_all = stats(all_)
-        net_h = sum(t["net_usd"] for t in h)
-        lines.append(f"{STYLE_WORDS[st].capitalize()}: {len(h)} trades this hour, {_usd(net_h)}. "
-                     f"Since the start: {s_all['trades']} trades, {_usd(s_all['net_usd'])} after {_usd(-s_all['fees_usd'])} "
-                     f"in fees, {s_all['win_rate'] * 100:.0f}% won.")
-    lines.append("Shadow mode: no real orders were placed.")
-    return f"Bot (shadow) {r.name}: the last hour", tuple(lines)
-
-
-def auto_hourly_message(by_rule: dict[str, dict[str, list[dict]]], names: dict[str, str], start_ms: int, end_ms: int):
-    hour = [t for d in by_rule.values() for lst in d.values() for t in lst if start_ms <= t["exit_ms"] < end_ms]
-    if not hour:
-        return None
-    lines = []
-    for st in STYLES:
-        h = [t for t in hour if t["style"] == st]
-        lines.append(f"{STYLE_WORDS[st].capitalize()}: {len(h)} trades, {_usd(sum(t['net_usd'] for t in h))}.")
-    best = None
-    for rid, d in by_rule.items():
-        for st, lst in d.items():
-            if len(lst) >= 10:
-                s = stats(lst)
-                if best is None or s["net_usd"] > best[2]["net_usd"]:
-                    best = (rid, st, s)
-    if best:
-        rid, st, s = best
-        name = names.get(rid, rid)
-        lines.append(f"Best so far: {name} with {STYLE_WORDS[st]}, {_usd(s['net_usd'])} over {s['trades']} trades "
-                     f"({s['win_rate'] * 100:.0f}% won).")
-    lines.append("Shadow mode: no real orders were placed.")
-    return "Bot (shadow) auto hunter: the last hour", tuple(lines)
+def alert_message(a: dict, cfg: dict) -> tuple[str, tuple[str, ...]]:
+    side = "LONG" if a["side"] > 0 else "SHORT"
+    did = "bought" if a["side"] > 0 else "sold"
+    margin = cfg["margin_pct"] / 100 * cfg["balance"]
+    close = time.strftime("%H:%M:%S", time.gmtime((a["t_ms"] + (a["fill_s"] + a["hold_s"]) * 1000) / 1000))
+    return (f"{a['coin']} {side} now",
+            (f"A big mover {did} {_usd(a['usd'])} at {_px(a['mid'])}.",
+             f"Get in within {a['fill_s']}s, close after {a['hold_s']}s (about {close} UTC).",
+             f"{cfg['leverage']:g}x, ${margin:g} margin."))

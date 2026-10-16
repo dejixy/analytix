@@ -177,3 +177,44 @@ def bootstrap(returns: np.ndarray, start: float, size: float, compound: bool, tr
     ends = np.concatenate(ends)
     return {"p10": float(np.percentile(ends, 10)), "median": float(np.median(ends)), "p90": float(np.percentile(ends, 90)),
             "up": float((ends > start).mean()), "bust": busts / runs}
+
+
+def settle(rows: dict[int, list], s0: int, lag: int, hold: int, side: int, stale_s: int = 5) -> dict | None:
+    """One alert's result from a coin's per-second rows {second: [lowest best bid, highest best ask, last mid]}:
+    in at the mid `lag` seconds after second s0, out at the mid `hold` seconds later.
+    → {"bps": the move your way, "adv": the furthest the best bid (long) or ask (short) went against you, in bps},
+    or None when the feed had a gap of more than stale_s seconds in that span."""
+    e, x = s0 + lag, s0 + lag + hold
+    last_s, row = None, None
+    for s in range(e - stale_s, e + 1):
+        if s in rows:
+            last_s, row = s, rows[s]
+    if row is None:
+        return None
+    entry = row[2]
+    lo, hi = float("inf"), float("-inf")
+    exit_ = entry
+    for s in range(e + 1, x + 1):
+        r = rows.get(s)
+        if r is None:
+            if s - last_s > stale_s:
+                return None
+            continue
+        last_s = s
+        lo, hi, exit_ = min(lo, r[0]), max(hi, r[1]), r[2]
+    if not entry:
+        return None
+    worst = (entry - lo) / entry if side > 0 else (hi - entry) / entry
+    return {"bps": side * (exit_ / entry - 1) * 1e4, "adv": max(worst, 0.0) * 1e4 if np.isfinite(worst) else 0.0}
+
+
+def pt_of(r: dict | None, leverage: float, coin: str) -> float | None:
+    """A settled result on Papertrade at this leverage, as a fraction of margin: a bust (the best bid/ask reached
+    1/leverage away) loses it all; a win pays after Papertrade's cut; a loss is the raw move."""
+    if not r:
+        return None
+    from engine.holdclock import papertrade_kept
+    if r["adv"] >= 1e4 / leverage:
+        return -1.0
+    move = r["bps"] / 1e4
+    return papertrade_kept(move, coin) * leverage if move > 0 else max(move * leverage, -1.0)

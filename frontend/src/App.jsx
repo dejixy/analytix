@@ -14,6 +14,8 @@ import AlertsPanel, { notifyEnabled } from "./components/AlertsPanel.jsx";
 import PositionWatch from "./components/PositionWatch.jsx";
 import HoldClock from "./components/HoldClock.jsx";
 import Bot from "./components/Bot.jsx";
+import BotBanner from "./components/BotBanner.jsx";
+import { soundOn, unlockSound } from "./botSound.js";
 import Scanner from "./components/Scanner.jsx";
 import Outcomes from "./components/Outcomes.jsx";
 
@@ -79,6 +81,13 @@ export default function App() {
     });
   }, [snap]);
   const railRef = useRef(null);
+
+  // Browsers only play sound after a click: the first click after a reload re-arms the bot's chime.
+  useEffect(() => {
+    const arm = () => soundOn() && unlockSound();
+    document.addEventListener("pointerdown", arm, { once: true });
+    return () => document.removeEventListener("pointerdown", arm);
+  }, []);
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -268,6 +277,7 @@ export default function App() {
       </>
       )}
       <Toasts coin={snap.coin} nowMs={snap.now_ms} marketEvents={snap.market_events || []} />
+      {!botOpen && <BotBanner bot={snap.bot} nowMs={snap.now_ms} onOpen={() => setBotOpen(true)} />}
       {alertsOpen && <AlertsPanel coin={snap.coin} onClose={() => setAlertsOpen(false)} />}
       {watchOpen && <PositionWatch onClose={() => setWatchOpen(false)} />}
       {botOpen && <Bot onClose={() => setBotOpen(false)} />}
