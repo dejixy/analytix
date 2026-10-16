@@ -66,3 +66,18 @@ def test_binance_gap_is_how_far_binance_moved_their_way_beyond_hyperliquid():
     assert bm[11] == 100.0 and bm[12] == 100.05
     gaps = lead_gap(np.array([1012_500, 1012_500, 1005_000]), np.array([1, -1, 1]), g, b0, bm, window=3)
     assert abs(gaps[0] - 5.0) < 1e-6 and abs(gaps[1] + 5.0) < 1e-6 and gaps[2] == 0.0
+
+
+def test_flow_reads_the_net_lean_of_the_last_minutes():
+    from engine.walletstudy import flow_moments
+    n = 3600
+    mid = np.full(n, 100.0)
+    g = Grid(np.arange(n) + 1000, mid, mid, mid, np.ones(n, bool))
+    from engine.walletstudy import Episode
+    eps = [Episode("ETH", f"0x{k}", (1000 + 1000 + k * 10) * 1000, 1, 5000) for k in range(8)]      # 8 buys
+    eps += [Episode("ETH", "0xs", (1000 + 1050) * 1000, -1, 5000)]                                   # 1 sell
+    out = flow_moments("ETH", g, eps, (1000 + 1200) * 1000, window_min=10, step=60)
+    strong = out["strong"]
+    assert strong and all(e.side == 1 for e in strong)                 # 7/9 net = 78%: strong, long
+    assert min(e.t_ms for e in strong) == (1000 + 1200) * 1000
+    assert not out["mixed"]
