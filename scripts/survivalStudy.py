@@ -45,9 +45,10 @@ def book_of(line: str):
         return None
 
 
-def grids(files: list[Path], coins: set[str], progress: bool = True) -> dict[str, Grid]:
+def grids(files: list[Path], coins: set[str], progress: bool = True, on_other=None) -> dict[str, Grid]:
     """One row per second per coin, the way api/holdclock.py builds it live: lowest best bid, highest best ask, last
-    mid, and ok = a real book update within the last STALE_S seconds."""
+    mid, and ok = a real book update within the last STALE_S seconds. Every other line goes to on_other(line), so
+    another study can read trades in the same pass."""
     per: dict[str, dict[int, list]] = {c: {} for c in coins}
     t0 = time.time()
     for k, path in enumerate(files):
@@ -59,6 +60,9 @@ def grids(files: list[Path], coins: set[str], progress: bool = True) -> dict[str
             with opener(path, "rt", encoding="utf-8") as fh:
                 for line in fh:
                     b = book_of(line)
+                    if b is None and on_other is not None:
+                        on_other(line)
+                        continue
                     if not b or b[0] not in per or b[2] <= 0 or b[3] <= 0:
                         continue
                     coin, ms, bid, ask = b
