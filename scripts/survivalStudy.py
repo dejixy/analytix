@@ -24,7 +24,7 @@ import numpy as np
 from config import RECORD_DIR
 from engine.holdclock import Grid, papertrade_kept
 from engine.survivalstudy import GAPS, LAG_S, RACE_S, STEP_S, moments, summarize
-from ingestion.replay import _first_recv, recording_files
+from ingestion.replay import _first_recv, recording_files, resolve
 
 STALE_S = 5
 BOOK = re.compile(r'"coin":"([A-Za-z0-9]+)","time":(\d+),"levels":\[\[\{"px":"([0-9.]+)".*?\}\],\[\{"px":"([0-9.]+)"')
@@ -51,6 +51,9 @@ def grids(files: list[Path], coins: set[str], progress: bool = True) -> dict[str
     per: dict[str, dict[int, list]] = {c: {} for c in coins}
     t0 = time.time()
     for k, path in enumerate(files):
+        path = resolve(path)                                             # the recorder may have gzipped it since
+        if path is None:
+            continue
         opener = gzip.open if path.suffix == ".gz" else open
         try:
             with opener(path, "rt", encoding="utf-8") as fh:
