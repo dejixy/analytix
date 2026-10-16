@@ -22,7 +22,8 @@ import time
 import numpy as np
 
 from config import LIQUIDATOR_ADDRESSES, RECORD_DIR
-from engine.walletstudy import (HORIZONS, LAGS, LEAD_GAP_BPS, LEAD_WINDOW_S, LEVERAGES, Episodes, Marks, follow_table,
+from engine.walletstudy import (FLOW_BUCKETS, FLOW_MIN_DECISIONS, FLOW_STEP_S, FLOW_WINDOWS_MIN, HORIZONS, LAGS,
+                                LEAD_GAP_BPS, LEAD_WINDOW_S, LEVERAGES, Episodes, Marks, flow_moments, follow_table,
                                 last_per_second, lead_gap, spearman, taker_of, wallet_stats)
 from ingestion.replay import _first_recv, recording_files
 from scripts.survivalStudy import grids
@@ -57,6 +58,7 @@ def main() -> None:
     ap.add_argument("--t-min", type=float, default=2.5, help="t-stat to count as skilled (and minus this as wrong)")
     ap.add_argument("--hold", type=int, default=30, help="hold (s) for the main comparison table")
     ap.add_argument("--train", type=float, default=0.6)
+    ap.add_argument("--flow-lag", type=int, default=6, help="seconds from the flow reading to your fill")
     ap.add_argument("--csv", help="write every wallet's scores here")
     a = ap.parse_args()
 
@@ -151,6 +153,8 @@ def main() -> None:
     tier_of = {w: label for w in smart for lo, hi, label in TIERS if lo <= tr[w]["mean"] < hi}
     later = [e for e in test if e.coin in trade]
     skilled = [e for e in later if e.wallet in smart]
+    skilled_all = [e for e in later if e.wallet in smart]          # flow reads only later decisions...
+    everyone_all = later
     lead_t = lambda e: gap.get(id(e), np.nan)
     groups = [("all skilled", skilled, False)]
     groups += [(label, [e for e in skilled if tier_of.get(e.wallet) == label], False) for _, _, label in TIERS]
@@ -211,6 +215,42 @@ def main() -> None:
         L.append(f"   {short(w):<13}{tier_of.get(w, ''):<15}{','.join(s['coins'])[:13]:<14}{s['n']:>10}{f(s['mean']):>9}"
                  f"{s['t']:>6.1f}{l.get('n', 0):>9}{f(l.get('mean')):>11}{'$' + format(s['usd'], ',.0f'):>14}")
     L.append("")
+    # 5. smart-money flow: the skilled wallets' net lean over the last few minutes, as a slower signal
+    FLOW_H = (60, 300, 900)
+    FLOW_LEV = (50, 100, 200, 500)
+    L.append(f"5. SMART-MONEY FLOW. Every {FLOW_STEP_S}s of the later part: did the skilled wallets mostly buy or mostly "
+             f"sell over the last N minutes ((buys - sells) / all, by count, {FLOW_MIN_DECISIONS}+ decisions)? Go "
+             f"that way, filled {a.flow_lag}s later, on {', '.join(sorted(trade))}.")
+    L.append(f"   strong = 60%+ one way, leaning = 30-60%, mixed = under 30%. Everyone = the same reading from all "
+             f"wallets, to show whether the skilled ones add anything. Papertrade numbers are for a 5 min hold.")
+    L.append(f"   {'whose flow':<11}{'window':>7}{'lean':>9}{'per hour':>9}" + "".join(f"{str(h // 60) + 'm hold':>15}" for h in FLOW_H)
+             + f"{'win 5m':>8}" + "".join(f"{str(lev) + 'x':>8}" for lev in FLOW_LEV))
+    start_ms = int(split) + (max(FLOW_WINDOWS_MIN) + 1) * 60_000      # ...so it starts once the longest window is full
+    rows = [("skilled", wmin) for wmin in FLOW_WINDOWS_MIN] + [("everyone", 10)]
+    for who, wmin in rows:
+        pool = skilled_all if who == "skilled" else everyone_all
+        merged: dict[str, list] = {label: [] for _, _, label in FLOW_BUCKETS}
+        for coin in sorted(trade):
+            if coin not in g:
+                continue
+            got = flow_moments(coin, g[coin], [e for e in pool if e.coin == coin], start_ms, wmin)
+            for k, v in got.items():
+                merged[k].extend(v)
+        for _, _, label in FLOW_BUCKETS:
+            sub = merged[label]
+            if not sub:
+                continue
+            tab = follow_table(sub, marks, lags=(a.flow_lag,), horizons=FLOW_H, leverages=FLOW_LEV)
+            cells = []
+            for h in FLOW_H:
+                r = tab.get((a.flow_lag, h))
+                tt = f"{r['mid_t']:.1f}" if r and r["mid_t"] is not None else "-"
+                cells.append("-" if not r else f"{f(r['mid'])} (t {tt})")
+            r5 = tab.get((a.flow_lag, 300))
+            L.append(f"   {who:<11}{str(wmin) + 'm':>7}{label:>9}{len(sub) / test_h:>9.0f}" + "".join(f"{c:>15}" for c in cells)
+                     + (f"{r5['win'] * 100:>7.0f}%" + "".join(f"{pct(r5['pt'][lev]):>8}" for lev in FLOW_LEV) if r5 else ""))
+    L.append("")
+
     L.append("Pick the group and lateness you can live with: it needs a positive Papertrade number at the speed you "
              "can actually fill, and enough decisions per hour to be worth watching.")
     print(f"({time.time() - t0:.0f}s)\n")

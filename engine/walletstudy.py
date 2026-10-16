@@ -236,3 +236,43 @@ def lead_gap(t_ms: np.ndarray, side: np.ndarray, hl: Grid, b_t0: int, bmid: np.n
     h = hl.mid[hi[k]] / hl.mid[hi[k] - window] - 1
     out[k] = side[k] * (b - h) * 1e4
     return out
+
+
+FLOW_WINDOWS_MIN = (5, 10, 15)
+FLOW_STEP_S = 30
+FLOW_MIN_DECISIONS = 5
+FLOW_BUCKETS = ((0.6, 1.01, "strong"), (0.3, 0.6, "leaning"), (0.0, 0.3, "mixed"))
+
+
+def flow_moments(coin: str, g: Grid, eps: list[Episode], start_ms: int, window_min: int, step: int = FLOW_STEP_S,
+                 min_decisions: int = FLOW_MIN_DECISIONS) -> dict[str, list[Episode]]:
+    """Every `step` seconds from start_ms: the net lean of these wallets' decisions on this coin over the last
+    `window_min` minutes, as (buys - sells) / (buys + sells) by count. Returns bucket → pseudo-decisions on the
+    leaning side, so follow_table can price them like any other. Moments with fewer than min_decisions in the
+    window are skipped (nothing to read)."""
+    n = len(g)
+    out: dict[str, list[Episode]] = {label: [] for _, _, label in FLOW_BUCKETS}
+    if not n:
+        return out
+    t0 = int(g.t[0])
+    buy, sell = np.zeros(n + 1), np.zeros(n + 1)
+    for e in eps:
+        i = e.t_ms // 1000 - t0
+        if 0 <= i < n:
+            (buy if e.side > 0 else sell)[i + 1] += 1
+    cb, cs = np.cumsum(buy), np.cumsum(sell)
+    w = window_min * 60
+    first = max(start_ms // 1000 - t0, w)
+    for i in range(first, n, step):
+        if not g.ok[i]:
+            continue
+        b, s = cb[i + 1] - cb[i + 1 - w], cs[i + 1] - cs[i + 1 - w]
+        tot = b + s
+        if tot < min_decisions or b == s:
+            continue
+        imb = (b - s) / tot
+        for lo, hi, label in FLOW_BUCKETS:
+            if lo <= abs(imb) < hi:
+                out[label].append(Episode(coin, "flow", int(g.t[i]) * 1000, 1 if imb > 0 else -1, float(tot)))
+                break
+    return out
