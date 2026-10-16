@@ -23,8 +23,10 @@ from engine.survivalstudy import block_t, future_extreme
 
 MERGE_S = 30
 HORIZONS = (10, 30, 60, 300)
-LAGS = (1, 2, 5)
-LEVERAGES = (100, 841)
+LAGS = (1, 2, 3, 4, 5)
+LEVERAGES = (200, 500, 841)
+LEAD_WINDOW_S = 3
+LEAD_GAP_BPS = 2.0
 
 
 @dataclass(slots=True)
@@ -202,4 +204,35 @@ def follow_table(eps: list[Episode], marks: dict[str, Marks], flip: bool = False
             out[(lag, h)] = {"n": len(m), "mid": float(m.mean()), "mid_t": block_t(tt, m),
                              "spread": float(sp.mean()), "win": float((m > 0).mean()),
                              "pt": {lev: float(np.concatenate(pts[lev]).mean()) for lev in leverages}}
+    return out
+
+
+def last_per_second(rows: dict[int, float]) -> tuple[int, np.ndarray]:
+    """{second: value} → (first second, array with every second filled from the one before)."""
+    if not rows:
+        return 0, np.zeros(0)
+    ts = np.array(sorted(rows))
+    t0 = int(ts[0])
+    out = np.full(int(ts[-1]) - t0 + 1, np.nan)
+    out[ts - t0] = [rows[int(t)] for t in ts]
+    idx = np.where(np.isnan(out), 0, np.arange(len(out)))
+    np.maximum.accumulate(idx, out=idx)
+    return t0, out[idx]
+
+
+def lead_gap(t_ms: np.ndarray, side: np.ndarray, hl: Grid, b_t0: int, bmid: np.ndarray,
+             window: int = LEAD_WINDOW_S) -> np.ndarray:
+    """How far Binance moved the decision's way over the `window` seconds up to the trade, minus how far Hyperliquid
+    did (bps). Positive = Binance had already moved their way and Hyperliquid hadn't caught up: the wallet may just
+    be trading the Binance lead. nan where either feed is missing."""
+    s = t_ms // 1000
+    out = np.full(len(s), np.nan)
+    if not len(bmid) or not len(hl):
+        return out
+    bi, hi = s - b_t0, s - int(hl.t[0])
+    ok = (bi - window >= 0) & (bi < len(bmid)) & (hi - window >= 0) & (hi < len(hl))
+    k = np.nonzero(ok)[0]
+    b = bmid[bi[k]] / bmid[bi[k] - window] - 1
+    h = hl.mid[hi[k]] / hl.mid[hi[k] - window] - 1
+    out[k] = side[k] * (b - h) * 1e4
     return out
