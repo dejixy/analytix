@@ -269,7 +269,7 @@ async def hold(request: Request, coin: str | None = None, side: str = "long",
     return await rt.hold.read(coin, 1 if side == "long" else -1, leverage, target_pct, entry, bust, buffer_bps)
 
 
-# ── the bot: big TWAPs ─────────────────────────────────────────────────────
+# ── the bot: baskets of strategies ─────────────────────────────────────────
 def _bot_call(fn, *args):
     from api.bot import BotError
     try:
@@ -279,18 +279,19 @@ def _bot_call(fn, *args):
 
 
 @router.get("/bot")
-async def bot(request: Request):
-    """The bot: big TWAPs running now, the latest ones with how each did, the record and the shadow balance."""
-    return _rt(request).bot.public()
+async def bot(request: Request, basket: str = "twap"):
+    """One basket of the bot (twap or informed): what it's doing, its record and its shadow balance, plus the list of
+    baskets."""
+    return _bot_call(_rt(request).bot.public, basket)
 
 
 @router.put("/bot/settings")
-async def bot_settings(request: Request, patch: dict):
-    """Change settings. Balance, leverage, margin or hold restart the shadow balance."""
-    return _bot_call(_rt(request).bot.save_settings, patch)
+async def bot_settings(request: Request, patch: dict, basket: str = "twap"):
+    """Change a basket's settings. Balance, leverage, margin or hold restart its shadow balance."""
+    return _bot_call(_rt(request).bot.save_settings, basket, patch)
 
 
 @router.post("/bot/reset")
-async def bot_reset(request: Request):
-    """Start the shadow balance again from the set balance. The TWAP record is kept."""
-    return _bot_call(_rt(request).bot.reset_shadow)
+async def bot_reset(request: Request, basket: str = "twap"):
+    """Start a basket's shadow balance again from its set balance. Its record is kept."""
+    return _bot_call(_rt(request).bot.reset_shadow, basket)

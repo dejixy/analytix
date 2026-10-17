@@ -40,7 +40,7 @@ from config import (
     WATCH_FILE,
 )
 from api.alerts import AlertService
-from api.bot import BotService
+from api.baskets import Bot
 from api.holdclock import HoldClock
 from api.liqmap import LiqMapCollector
 from api.outcomes import OutcomeService
@@ -113,7 +113,7 @@ class Runtime:
         self.external: ExternalFeed | None = None       # Binance and Bybit prices, for where moves start
         self.outcomes = OutcomeService(self)            # Hyperliquid's prediction markets (HIP-4), own socket
         self.hold = HoldClock(self, self.bars_db)       # how long very high leverage survives, from the live book
-        self.bot = BotService(self, bot_file, self.bars_db)   # big TWAPs, live and scored, with a shadow record
+        self.bot = Bot(self, bot_file, self.bars_db)          # baskets of strategies: big TWAPs, informed flow
         self.liqmap = LiqMapCollector(self, positions_db if mode == "live" else None)   # big traders' liquidation prices
         self._saved_fp: dict[tuple, tuple] = {}
 
@@ -128,7 +128,7 @@ class Runtime:
             pipe.on_message(msg)
             if msg.get("channel") in ("trades", "l2Book"):
                 try:
-                    self.bot.on_message(msg)              # big TWAPs, spotted the moment their 4th slice lands
+                    self.bot.on_message(msg)              # every basket sees the trades and the book
                 except Exception:
                     log.exception("bot feed check failed")
             if msg.get("channel") == "trades":

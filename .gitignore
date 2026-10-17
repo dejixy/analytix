@@ -14,3 +14,4 @@ data/*.tmp
 data/bigmovers.json
 data/bot.old.json
 data/history/
+data/bot_informed.json
