@@ -177,3 +177,14 @@ def test_the_alert_rate_uses_the_hours_the_bot_has_run_and_wallets_show_when_las
     assert p["today"]["per_hour"] == pytest.approx(0.5, abs=0.01)
     seen = {w["wallet"]: w["seen_ms"] for w in p["list"]["wallets"]}
     assert seen[BIG] == (T0 + 2) * 1000
+
+
+def test_an_older_bot_file_keeps_the_first_start_time(tmp_path):
+    import os
+    (tmp_path / "bot.json").write_text(json.dumps({"settings": {}}))
+    (tmp_path / "bot.old.json").write_text("{}")
+    os.utime(tmp_path / "bot.old.json", (T0, T0))
+    s = BotService(rt(), tmp_path / "bot.json", None, list_file=tmp_path / "list.json")
+    assert s.since_ms == T0 * 1000
+    s._save()
+    assert json.loads((tmp_path / "bot.json").read_text())["since_ms"] == T0 * 1000

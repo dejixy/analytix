@@ -111,6 +111,8 @@ class BotService:
                 self._db.execute("CREATE TABLE IF NOT EXISTS bot_twaps (id TEXT PRIMARY KEY, t_ms INTEGER NOT NULL, "
                                  "data TEXT NOT NULL)")
                 self._db.commit()
+                if self.alerts:
+                    self.since_ms = min(self.since_ms, self.alerts[0]["t_ms"])
                 self.twaps.load([json.loads(d) for (d,) in self._db.execute(
                     "SELECT data FROM bot_twaps ORDER BY t_ms DESC LIMIT 2000")][::-1])
                 self._check_pause(quiet=True)
@@ -393,7 +395,12 @@ class BotService:
                 pass
             return
         self.cfg.update({k: v for k, v in (saved.get("settings") or {}).items() if k in DEFAULTS})
-        self.since_ms = int(saved.get("since_ms") or self.since_ms)
+        if saved.get("since_ms"):
+            self.since_ms = int(saved["since_ms"])
+        else:                                          # saved before this was kept: the new bot's first start
+            old = self.path.with_name(self.path.stem + ".old.json")
+            if old.exists():
+                self.since_ms = min(self.since_ms, int(old.stat().st_mtime * 1000))
         if saved.get("shadow"):
             self.shadow.update(saved["shadow"])
 
