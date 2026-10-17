@@ -22,6 +22,10 @@ def test_the_check_replays_the_bot_and_compares_with_live(tmp_path, monkeypatch,
         if k in (100, 1000, 2000):                            # three big-mover buys, minutes apart
             lines.append({"recv_ms": ms + 1, "msg": {"channel": "trades", "data": [
                 {"coin": "ETH", "side": "B", "px": str(mid), "sz": str(4000 / mid), "time": ms, "users": [BIG, OTHER]}]}})
+        if k in (2492, 2500):                                 # a decision that reaches $1k only on its second fill
+            lines.append({"recv_ms": ms + 1, "msg": {"channel": "trades", "data": [
+                {"coin": "ETH", "side": "B", "px": str(mid), "sz": str((400 if k == 2492 else 700) / mid), "time": ms,
+                 "users": [BIG, OTHER]}]}})
     (rec / "a.jsonl").write_text("\n".join(json.dumps(x, separators=(",", ":")) for x in lines) + "\n")
     wallets = [{"wallet": BIG, "n": 40, "mean_bps": 9.0, "t": 4.0, "usd": 2000, "coins": ["ETH"], "last_ms": 0}]
     wallets += [{"wallet": f"0x{k:040x}", "n": 30, "mean_bps": 8.5, "t": 3.0, "usd": 1500, "coins": ["BTC"],
@@ -41,6 +45,7 @@ def test_the_check_replays_the_bot_and_compares_with_live(tmp_path, monkeypatch,
                                       "--list", str(tmp_path / "list.json"), "--db", str(db)])
     botCheck.main()
     out = capsys.readouterr().out
-    assert "replay 3 alerts" in out and "live 2" in out and "in both 2 · replay only 1 · live only 0" in out
+    assert "replay 4 alerts" in out and "live 2" in out and "in both 2 · replay only 2 · live only 0" in out
+    assert "over 6s for 25%" in out                            # the $400 + $700 decision: 8s from first fill to $1k
     assert "losing trades" in out
     assert "0x" + "b" * 4 in out                               # the wallet table
