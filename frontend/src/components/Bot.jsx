@@ -167,7 +167,7 @@ function Numbers({ d }) {
         <div className="tile-sub">{wk.n ? `${pct(wk.win, false)} wins · ${pct(wk.busts, false)} busts` : "no alerts yet"}</div>
       </div>
       <div className="tile">
-        <div className="tile-label">Alerts, last 24 h</div>
+        <div className="tile-label">Alerts, last {d.today.hours >= 23.9 ? "24" : Math.max(1, Math.round(d.today.hours))} h</div>
         <div className="tile-value">{d.today.alerts}</div>
         <div className="tile-sub">about {d.today.per_hour.toFixed(1)} an hour</div>
       </div>
@@ -319,12 +319,50 @@ function Record({ d }) {
         </tbody>
       </table>
       <p className="plan-note muted">Every alert, settled from the live book: in at the mid that many seconds after it, out after the hold. Papertrade's cut on wins included.</p>
+      <Twaps d={d} per={per} />
     </section>
+  );
+}
+
+const TWAP_HOLDS = [["300", "5 min"], ["900", "15 min"], ["1800", "30 min"], ["end", "To the end"]];
+
+function Twaps({ d, per }) {
+  const t = d.twaps;
+  if (!t) return null;
+  const rec = t.periods[per] || {};
+  return (
+    <>
+      <h3 className="bm-sub-head">Silent test: big TWAPs</h3>
+      <p className="plan-note muted" style={{ marginTop: 0 }}>
+        Not called, only scored. A wallet sending $20k+ every 30s, in 6s after its 4th slice, its way. {t.spotted_24h} spotted in 24 h.
+      </p>
+      <table className="plan-table">
+        <thead>
+          <tr><th>Hold</th><th>Seen</th><th>Move</th><th>Wins</th><th>{d.settings.leverage}×</th><th>Busts</th></tr>
+        </thead>
+        <tbody>
+          {TWAP_HOLDS.map(([k, label]) => {
+            const r = rec[k] || { n: 0 };
+            return (
+              <tr key={k}>
+                <td>{label}</td>
+                <td>{r.n}</td>
+                <td className={tone(r.bps)}>{r.n ? bps(r.bps) : "-"}</td>
+                <td>{r.n ? pct(r.win, false) : "-"}</td>
+                <td className={tone(r.pt)}>{r.n ? pct(r.pt) : "-"}</td>
+                <td>{r.n ? pct(r.busts, false) : "-"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </>
   );
 }
 
 function Wallets({ d, call }) {
   const l = d.list;
+  const [all, setAll] = useState(false);
   return (
     <section className="plan-sec">
       <p className="plan-note" style={{ marginTop: 0 }}>
@@ -335,22 +373,26 @@ function Wallets({ d, call }) {
       {l.wallets?.length > 0 && (
         <div className="bot-scroll">
           <table className="plan-table">
-            <thead><tr><th>Wallet</th><th>Avg move</th><th>Skill (t)</th><th>Decisions</th><th>Coins</th></tr></thead>
+            <thead><tr><th>Wallet</th><th>Avg move</th><th>Skill (t)</th><th>Decisions</th><th>Coins</th><th>Last seen</th></tr></thead>
             <tbody>
-              {l.wallets.slice(0, 15).map((w) => (
+              {(all ? l.wallets : l.wallets.slice(0, 15)).map((w) => (
                 <tr key={w.wallet}>
                   <td title={w.wallet}>{short(w.wallet)}</td>
                   <td className="up">{bps(w.mean_bps)}</td>
                   <td>{w.t.toFixed(1)}</td>
                   <td>{w.n}</td>
                   <td>{(w.coins || []).join(", ")}</td>
+                  <td className="muted">{w.seen_ms ? ago(w.seen_ms, d.now_ms) : "-"}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
-      <button className="plan-chip bm-more" disabled={l.state === "building"} onClick={() => call("POST", "/api/bot/refresh")}>Rebuild now</button>
+      <div className="plan-holds bm-more">
+        {l.wallets?.length > 15 && <button className="plan-chip" onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${l.wallets.length}`}</button>}
+        <button className="plan-chip" disabled={l.state === "building"} onClick={() => call("POST", "/api/bot/refresh")}>Rebuild now</button>
+      </div>
     </section>
   );
 }

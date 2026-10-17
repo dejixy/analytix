@@ -28,6 +28,7 @@ from collections import deque
 from pathlib import Path
 
 from config import BOT_FILE, ROOT
+from api.twaptrack import HOLDS_S as TWAP_HOLDS, TwapTracker
 from engine.bigmovers import pt_of, settle
 from storage.sqlite import connect, transaction
 
@@ -36,7 +37,7 @@ log = logging.getLogger("analytix.bot")
 TICK_S = 1.0
 LIST_FILE = ROOT / "data" / "bigmovers.json"
 REFRESH_S = 3600
-RING_KEEP_S = 20 * 60
+RING_KEEP_S = 65 * 60                # the silent TWAP test scores holds of up to an hour
 LAGS = (2, 10)                      # always recorded, alongside your fill delay
 MERGE_S = 30
 KEEP_ALERTS = 5000
@@ -74,6 +75,7 @@ class BotService:
         self.cfg = dict(DEFAULTS)
         self.shadow = self._fresh_shadow()
         self.wallets: dict[str, dict] = {}
+        self.seen: dict[str, int] = {}             # listed wallet → its last trade the live bot saw (ms)
         self.list_info: dict = {}
         self.list_state = "loading"            # loading | building | ready | empty | failed
         self.list_error = ""
@@ -90,6 +92,8 @@ class BotService:
         self._tasks: list[asyncio.Task] = []
         self._building: asyncio.Task | None = None
         self._unsaved: list[dict] = []
+        self.twaps = TwapTracker()                # big TWAPs, scored silently (api/twaptrack.py)
+        self.since_ms = int(time.time() * 1000)  # when this bot first ran (kept in bot.json), for the alert rate
         self._load()
         self._load_list()
 
@@ -104,10 +108,19 @@ class BotService:
                 self._db.commit()
                 for (data,) in self._db.execute("SELECT data FROM bot_alerts ORDER BY t_ms DESC LIMIT ?", (KEEP_ALERTS,)):
                     self.alerts.appendleft(json.loads(data))
+                self._db.execute("CREATE TABLE IF NOT EXISTS bot_twaps (id TEXT PRIMARY KEY, t_ms INTEGER NOT NULL, "
+                                 "data TEXT NOT NULL)")
+                self._db.commit()
+                if self.alerts:
+                    self.since_ms = min(self.since_ms, self.alerts[0]["t_ms"])
+                self.twaps.load([json.loads(d) for (d,) in self._db.execute(
+                    "SELECT data FROM bot_twaps ORDER BY t_ms DESC LIMIT 2000")][::-1])
                 self._check_pause(quiet=True)
             except Exception:
                 log.exception("could not open the bot's alert history; it starts empty")
                 self._db = None
+        if self.rt.mode == "live":
+            self._save()                            # so the first start time is kept
         self._tasks = [asyncio.create_task(self._loop(), name="bot")]
         if self.rt.mode == "live":
             self._tasks.append(asyncio.create_task(self._refresh_loop(), name="bot-list"))
@@ -191,20 +204,22 @@ class BotService:
 
     def _on_trade(self, tr: dict) -> None:
         coin = tr.get("coin")
-        if coin not in self.cfg["coins"] or not self.wallets:
+        if coin not in self.cfg["coins"]:
             return
         users, side = tr.get("users") or [], tr.get("side")
         if len(users) != 2 or side not in ("B", "A"):
             return
         wallet, sd = (users[0], 1) if side == "B" else (users[1], -1)
         wallet = wallet.lower()
-        if wallet not in self.wallets:
-            return
         try:
             ms, usd = int(tr["time"]), float(tr["px"]) * float(tr["sz"])
         except (KeyError, TypeError, ValueError):
             return
         self.now_ms[coin] = max(self.now_ms.get(coin, 0), ms)
+        self.twaps.on_fill(wallet, coin, sd, ms, usd)
+        if wallet not in self.wallets:
+            return
+        self.seen[wallet] = max(self.seen.get(wallet, 0), ms)
         key = (wallet, coin)
         d = self._decisions.get(key)
         if d is None or d[0] != sd or ms - d[2] > MERGE_S * 1000:
@@ -254,6 +269,9 @@ class BotService:
             self._shadow_trade(a)
             self._unsaved.append(a)
             self._check_pause()
+        now_all = max(self.now_ms.values(), default=0)
+        if now_all:
+            self.twaps.tick(now_all, lambda c: self.ring.get(c, {}))
         cutoff = int(max(self.now_ms.values(), default=0) // 1000) - RING_KEEP_S
         for ring in self.ring.values():
             for s in [s for s in ring if s < cutoff]:
@@ -315,6 +333,16 @@ class BotService:
                            else f"The last {len(last)} alerts are back to {avg:+.1f} bps on average.",)), "")
 
     def _flush(self) -> None:
+        if self.twaps.unsaved and self._db:
+            try:
+                with transaction(self._db):
+                    self._db.executemany("INSERT OR REPLACE INTO bot_twaps (id, t_ms, data) VALUES (?, ?, ?)",
+                                         [(r["id"], r["t_ms"], json.dumps(r)) for r in self.twaps.unsaved])
+                self.twaps.unsaved.clear()
+            except sqlite3.Error as exc:
+                log.warning("could not save TWAP records (will retry): %s", exc)
+        elif not self._db:
+            self.twaps.unsaved.clear()
         if not self._unsaved:
             return
         if self._db:
@@ -367,6 +395,12 @@ class BotService:
                 pass
             return
         self.cfg.update({k: v for k, v in (saved.get("settings") or {}).items() if k in DEFAULTS})
+        if saved.get("since_ms"):
+            self.since_ms = int(saved["since_ms"])
+        else:                                          # saved before this was kept: the new bot's first start
+            old = self.path.with_name(self.path.stem + ".old.json")
+            if old.exists():
+                self.since_ms = min(self.since_ms, int(old.stat().st_mtime * 1000))
         if saved.get("shadow"):
             self.shadow.update(saved["shadow"])
 
@@ -374,7 +408,7 @@ class BotService:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"settings": self.cfg, "shadow": self.shadow}, indent=1), encoding="utf-8")
+            tmp.write_text(json.dumps({"settings": self.cfg, "shadow": self.shadow, "since_ms": self.since_ms}, indent=1), encoding="utf-8")
             tmp.replace(self.path)
         except OSError as exc:
             log.warning("could not save the bot settings: %s", exc)
@@ -392,6 +426,7 @@ class BotService:
     def set_list(self, info: dict) -> None:
         self.list_info = {k: v for k, v in info.items() if k != "wallets"}
         self.wallets = {w["wallet"].lower(): w for w in info.get("wallets") or []}
+        self.seen = {w: t for w, t in getattr(self, "seen", {}).items() if w in self.wallets}
         self.list_state = "ready" if self.wallets else "empty"
         self.list_error = ""
 
@@ -480,20 +515,42 @@ class BotService:
                       "pt": sum(pts) / len(pts), "busts": sum(p <= -1.0 for p in pts) / len(pts)}
         return out
 
+    def twap_record(self, now: int) -> dict:
+        """The silent big-TWAP test: per hold, how riding them did, at your leverage."""
+        lev = self.cfg["leverage"]
+        out = {"spotted_24h": sum(1 for r in self.twaps.records if r["t_ms"] >= now - DAY_MS), "periods": {}}
+        for name, since in (("day", now - DAY_MS), ("week", now - 7 * DAY_MS), ("all", None)):
+            per = {}
+            for k in [*map(str, TWAP_HOLDS), "end"]:
+                rs = [(r["results"][k], r["coin"]) for r in self.twaps.records
+                      if (r.get("results") or {}).get(k) and (since is None or r["t_ms"] >= since)]
+                if not rs:
+                    per[k] = {"n": 0}
+                    continue
+                b = [x["bps"] for x, _ in rs]
+                pts = [pt_of(x, lev, c) for x, c in rs]
+                per[k] = {"n": len(rs), "bps": sum(b) / len(b), "win": sum(v > 0 for v in b) / len(b),
+                          "pt": sum(pts) / len(pts), "busts": sum(p <= -1.0 for p in pts) / len(pts)}
+            out["periods"][name] = per
+        return out
+
     def public(self) -> dict:
         now = max(self.now_ms.values(), default=0) or int(time.time() * 1000)
         settled = [a for a in self.alerts if a.get("results")]
         lag = str(self.cfg["fill_s"])
         last = [a["results"][lag]["bps"] for a in settled if (a["results"].get(lag) or {}).get("bps") is not None][-LAST_N:]
         day = [a for a in self.alerts if a["t_ms"] >= now - DAY_MS]
+        span_h = max((now - max(now - DAY_MS, self.since_ms)) / 3.6e6, 0.25)     # under 24 h if it's newer than that
         return {
             "status": self.status(), "pause_reason": self.pause_reason, "settings": self.cfg, "limits": LIMITS,
             "known_coins": list(KNOWN_COINS), "live": self.live(),
             "list": {"state": self.list_state, "error": self.list_error, "count": len(self.wallets), **self.list_info,
-                     "wallets": sorted(self.wallets.values(), key=lambda w: -w.get("mean_bps", 0))[:40]},
+                     "wallets": [{**w, "seen_ms": max(self.seen.get(k, 0), w.get("last_ms") or 0)} for k, w in
+                                 sorted(self.wallets.items(), key=lambda kw: -kw[1].get("mean_bps", 0))[:40]]},
             "shadow": {**self.shadow, "margin": self.cfg["margin_pct"] / 100 * self.shadow["start"]},
             "last50": {"n": len(last), "bps": sum(last) / len(last) if last else None},
-            "today": {"alerts": len(day), "per_hour": len(day) / 24},
+            "today": {"alerts": len(day), "per_hour": len(day) / span_h, "hours": round(span_h, 1)},
+            "twaps": self.twap_record(now),
             "record": {"day": self.record(now - DAY_MS), "week": self.record(now - 7 * DAY_MS), "all": self.record()},
             "alerts": [self._row(a) for a in list(self.alerts)[-30:]][::-1],
             "now_ms": now,

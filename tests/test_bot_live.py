@@ -148,3 +148,43 @@ def test_alert_message_is_plain():
     assert title == "ETH SHORT now"
     assert lines[0] == "A big mover sold $8.2k at 2,503.45." and "within 6s" in lines[1] and lines[2] == "200x, $10 margin."
     assert all("—" not in x for x in (title, *lines))
+
+
+def test_the_bot_tracks_big_twaps_from_any_wallet_and_reports_them(tmp_path):
+    s = svc(tmp_path, n_wallets=0)                          # no big movers at all: TWAPs are still tracked
+    for k in range(4500):
+        book(s, "ETH", T0 + k, 2500.0 + 0.01 * k)
+        if k % 30 == 0 and k <= 300:
+            trade(s, "ETH", (T0 + k) * 1000, SMALL, "B", 30_000)
+        if k % 5 == 0:
+            s.tick()
+    out = s.public()["twaps"]
+    assert out["spotted_24h"] == 1
+    for k in ("300", "900", "1800", "end"):
+        r = out["periods"]["day"][k]
+        assert r["n"] == 1 and r["bps"] > 0 and r["win"] == 1
+
+
+def test_the_alert_rate_uses_the_hours_the_bot_has_run_and_wallets_show_when_last_seen(tmp_path):
+    s = svc(tmp_path)
+    s.since_ms = T0 * 1000                                   # started at T0
+    run_market(s, secs=10)
+    trade(s, "ETH", (T0 + 2) * 1000, BIG, "B", 5000)
+    run_market(s, start=T0 + 10, secs=3600 * 2 - 10)
+    p = s.public()
+    assert p["today"]["alerts"] == 1
+    assert p["today"]["hours"] == pytest.approx(2.0, abs=0.01)
+    assert p["today"]["per_hour"] == pytest.approx(0.5, abs=0.01)
+    seen = {w["wallet"]: w["seen_ms"] for w in p["list"]["wallets"]}
+    assert seen[BIG] == (T0 + 2) * 1000
+
+
+def test_an_older_bot_file_keeps_the_first_start_time(tmp_path):
+    import os
+    (tmp_path / "bot.json").write_text(json.dumps({"settings": {}}))
+    (tmp_path / "bot.old.json").write_text("{}")
+    os.utime(tmp_path / "bot.old.json", (T0, T0))
+    s = BotService(rt(), tmp_path / "bot.json", None, list_file=tmp_path / "list.json")
+    assert s.since_ms == T0 * 1000
+    s._save()
+    assert json.loads((tmp_path / "bot.json").read_text())["since_ms"] == T0 * 1000
