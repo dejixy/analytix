@@ -19,7 +19,7 @@ def rt():
 
 def svc(tmp_path, **cfg):
     s = BotService(rt(), tmp_path / "bot.json", None)
-    s.cfg.update(cfg)
+    s.cfg.update({"alert_on": "all", **cfg})        # replays have no plans, so "strong" would never alert
     return s
 
 
@@ -74,7 +74,8 @@ def test_a_big_twap_is_spotted_shown_running_settled_and_shadow_traded(tmp_path)
     assert not p["running"] and len(p["recent"]) == 1
     done = p["recent"][0]
     assert done["slices"] == 10 and done["settled"] and done["bps"] > 0 and done["pt"] > 0
-    assert p["record"]["day"]["end"]["n"] == 1 and p["record"]["day"]["300"]["n"] == 1
+    assert p["record"]["day"]["all"]["end"]["n"] == 1 and p["record"]["day"]["all"]["300"]["n"] == 1
+    assert p["record"]["day"]["strong"]["end"]["n"] == 0                  # no plan in a replay, so not strong
     assert s.shadow["trades"] == 1 and s.shadow["balance"] > 50
     assert s.live()["alert"] is None                           # its "close now" moment has passed
 
@@ -93,7 +94,7 @@ def test_a_fixed_hold_and_alerts_off(tmp_path):
     assert s.public()["recent"][0]["bps"] == pytest.approx(s.twaps.records[0]["results"]["300"]["bps"], abs=0.01)
     q = svc(tmp_path / "q", alerts=False)
     run(q, 4000, slices=8)
-    assert q.public()["record"]["all"]["end"]["n"] == 1         # still scored
+    assert q.public()["record"]["all"]["all"]["end"]["n"] == 1  # still scored
     assert q.shadow["trades"] == 0 and q.live()["alert"] is None and q.status() == "silent"
 
 
@@ -133,6 +134,7 @@ def test_the_big_mover_bot_file_keeps_money_settings_but_not_its_shadow(tmp_path
 def test_records_are_saved_and_loaded(tmp_path):
     async def go():
         s = BotService(rt(), tmp_path / "bot.json", tmp_path / "bars.sqlite")
+        s.cfg["alert_on"] = "all"
         await s.start()
         run(s, 4000, slices=8)
         await s.stop()
@@ -213,3 +215,83 @@ def test_the_live_bot_looks_up_the_plan_and_shows_whats_left(tmp_path, monkeypat
     assert s.live()["alert"]["plan"]["minutes"] == 10
     title, lines = spotted_message(s.twaps.records[0], s.cfg)
     assert "Its plan: $600.5k over 10 min" in lines[0]
+
+
+def plan_history(start_s, total_sz, minutes, coin="ETH", side="B"):
+    return [{"time": start_s, "status": {"status": "activated"},
+             "state": {"coin": coin, "side": side, "sz": str(total_sz), "minutes": minutes,
+                       "timestamp": start_s * 1000, "executedSz": "0", "executedNtl": "0"}}]
+
+
+def live_bot(tmp_path, history, **cfg):
+    s = BotService(SimpleNamespace(mode="live", alerts=None), tmp_path / "bot.json", None)
+    s.cfg.update(cfg)
+    asked = []
+
+    async def fetch(wallet):
+        asked.append(wallet)
+        return history
+
+    s._fetch = fetch
+    return s, asked
+
+
+def background(s, coin="ETH", start=T0 - 7200, usd_per_s=300.0):
+    """Two hours of other trading before the TWAP, so the bot knows the coin's usual volume ($ a second)."""
+    for k in range(0, 7200, 60):
+        trade(s, coin, (start + k) * 1000, OTHER[:-1] + "d", "A", usd_per_s * 60)
+
+
+def test_a_big_twap_is_confirmed_at_slice_2_and_called_strong(tmp_path):
+    hist = plan_history(T0 + 100, 2400, 30)                     # 2,400 ETH over 30 min: about $6M
+    s, asked = live_bot(tmp_path, hist)
+
+    async def go():
+        background(s)
+        run(s, 100 + 30 + 3, slices=60)                         # just past the 2nd slice
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    assert asked == [TW] and len(s.twaps.records) == 1
+    rec = s.twaps.records[0]
+    assert rec["spot_slice"] == 2 and rec["strength"]["strong"] and rec["announced"]
+    assert s.live()["alert"]["id"] == rec["id"]
+
+
+def test_a_small_twap_is_scored_but_not_called(tmp_path):
+    hist = plan_history(T0 + 100, 30, 3)                        # $75k over 3 minutes: small slices, little to come
+    s, asked = live_bot(tmp_path, hist)
+
+    async def go():
+        background(s)
+        run(s, 100 + 30 * 3 + 3, slices=6, usd=25_000)
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    rec = s.twaps.records[0]
+    assert rec["spot_slice"] == 4                               # the plan's slices ($12.5k) are too small at slice 2
+    assert rec["strength"]["known"] and not rec["strength"]["strong"] and not rec["announced"]
+    assert s.live()["alert"] is None
+    assert len(asked) == 1                                      # the slice-4 lookup reused the slice-2 answer
+
+
+def test_alert_on_all_calls_every_twap_and_the_record_splits_strong(tmp_path):
+    s, _ = live_bot(tmp_path, [], alert_on="all")
+
+    async def go():
+        run(s, 4000, slices=8)
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    rec = s.twaps.records[0]
+    assert not rec["strength"]["known"] and rec["announced"]   # no plan found: called anyway on "all"
+    rec_all = s.public()["record"]["day"]
+    assert rec_all["all"]["900"]["n"] == 1 and rec_all["strong"]["900"]["n"] == 0
+    with pytest.raises(BotError):
+        s.save_settings({"alert_on": "some"})
+
+
+def test_settings_from_the_first_twap_bot_move_to_a_15_minute_hold(tmp_path):
+    (tmp_path / "bot.json").write_text(json.dumps({"v": 2, "settings": {"alerts": True, "telegram": True, "hold": "end",
+                                                                         "leverage": 500},
+                                                   "shadow": {"balance": 51.0}, "since_ms": 5}))
+    s = BotService(rt(), tmp_path / "bot.json", None)
+    assert s.cfg["hold"] == "900" and s.cfg["alert_on"] == "strong"
+    assert s.cfg["telegram"] is True and s.cfg["leverage"] == 500 and s.shadow["balance"] == 50.0 and s.since_ms == 5

@@ -654,6 +654,7 @@ tr.wall td { color: var(--ink); }
 .bm-row.quiet { opacity: 0.6; }
 .bm-row-run { grid-template-columns: 64px 1fr 96px 64px; }
 .bm-plan { grid-column: 2 / 5; text-align: left !important; font-size: 11px; }
+.bm-gap { width: 10px; }
 .bm-more { margin-top: 8px; }
 .bm-sub-head { margin-top: 16px; }
 .bm-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border); }

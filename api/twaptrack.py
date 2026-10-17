@@ -23,6 +23,8 @@ HOLDS_S = (300, 900, 1800)
 END_AFTER_MS = 35_000
 END_CAP_S = 3600
 KEEP = 2000
+CANDIDATE_AT = 2                 # at the 2nd slice the bot can ask Hyperliquid whether it's a TWAP (and how big)
+MIN_CANDIDATE_USD = 10_000       # each of the first two slices at least this
 
 
 class TwapTracker:
@@ -32,6 +34,7 @@ class TwapTracker:
         self.records: deque = deque(maxlen=KEEP)
         self._pending: list[dict] = []
         self.unsaved: list[dict] = []
+        self.candidates: list[tuple] = []             # keys worth asking about (drained by the bot)
 
     def on_fill(self, wallet: str, coin: str, side: int, t_ms: int, usd: float) -> dict | None:
         """One taker fill. Returns the record when this fill makes a run count as a big TWAP (spotted)."""
@@ -45,21 +48,46 @@ class TwapTracker:
                 st["run"].append(sl)
             else:
                 self._end(st)
-                st["run"], st["rec"] = [sl], None
+                st["run"], st["rec"], st["asked"] = [sl], None, False
             st["last"] = sl
         rec = st["rec"]
+        if (rec is None and not st.get("asked") and len(st["run"]) == CANDIDATE_AT
+                and min(s[1] for s in st["run"]) >= MIN_CANDIDATE_USD):
+            st["asked"] = True
+            self.candidates.append((wallet, coin, side))
         if rec is None and len(st["run"]) == SPOT_AT and median(s[1] for s in st["run"]) >= self.min_slice_usd:
-            rec = st["rec"] = {"id": f"twap-{coin}-{t_ms}-{side}", "coin": coin, "side": side, "wallet": wallet,
-                               "t_ms": t_ms, "start_ms": st["run"][0][0], "last_ms": t_ms, "slices": SPOT_AT,
-                               "usd": sum(s[1] for s in st["run"]), "end_ms": None, "results": {}}
-            self.records.append(rec)
-            self._pending.append(rec)
-            return rec
+            return self._make(st, wallet, coin, side, t_ms)
         if rec is not None:
             rec["slices"] = len(st["run"])
             rec["usd"] = sum(s[1] for s in st["run"])
             rec["last_ms"] = st["run"][-1][0]
         return None
+
+    def _make(self, st: dict, wallet: str, coin: str, side: int, t_ms: int) -> dict:
+        rec = st["rec"] = {"id": f"twap-{coin}-{t_ms}-{side}", "coin": coin, "side": side, "wallet": wallet,
+                           "t_ms": t_ms, "start_ms": st["run"][0][0], "last_ms": st["run"][-1][0],
+                           "slices": len(st["run"]), "spot_slice": len(st["run"]),
+                           "usd": sum(s[1] for s in st["run"]), "end_ms": None, "results": {}}
+        self.records.append(rec)
+        self._pending.append(rec)
+        return rec
+
+    def spot(self, key: tuple, t_ms: int) -> dict | None:
+        """Count this run as a big TWAP now (Hyperliquid confirmed it before slice 4). None if it's gone or
+        already counted."""
+        st = self.keys.get(key)
+        if st is None or st["rec"] is not None or not st["run"]:
+            return None
+        wallet, coin, side = key
+        return self._make(st, wallet, coin, side, t_ms)
+
+    def run_start(self, key: tuple) -> int | None:
+        st = self.keys.get(key)
+        return st["run"][0][0] if st and st["run"] else None
+
+    def run_usd(self, key: tuple) -> float:
+        st = self.keys.get(key)
+        return sum(s[1] for s in st["run"]) if st and st["run"] else 0.0
 
     def _end(self, st: dict) -> None:
         rec = st.get("rec")
