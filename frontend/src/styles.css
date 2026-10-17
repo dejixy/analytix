@@ -653,6 +653,7 @@ tr.wall td { color: var(--ink); }
 .bm-row .bm-span { grid-column: 3 / 5; }
 .bm-row.quiet { opacity: 0.6; }
 .bm-more { margin-top: 8px; }
+.bm-sub-head { margin-top: 16px; }
 .bm-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .bm-settings { display: grid; gap: 10px; }
 .bm-settings .plan-field { grid-template-columns: 128px 1fr; }

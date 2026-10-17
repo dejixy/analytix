@@ -40,3 +40,28 @@ def test_riding_a_run_measures_from_the_fill_to_the_end_of_the_beat():
     short = runs(sl, 4, 1000)[0]
     short.side = -1
     assert ride(g, short, 4, 6, 300, (100,), "ETH")["bps"] < 0
+
+
+def test_the_live_tracker_spots_big_twaps_at_the_4th_slice_and_scores_every_hold():
+    from api.twaptrack import HOLDS_S, TwapTracker
+    tr = TwapTracker()
+    rows = {s: [100 + 0.001 * (s - T0) - 0.01, 100 + 0.001 * (s - T0) + 0.01, 100 + 0.001 * (s - T0)]
+            for s in range(T0, T0 + 4000)}
+    for k in range(10):
+        t = (T0 + 100 + 30 * k) * 1000
+        tr.on_fill("0xbig", "ETH", 1, t, 15_000)
+        tr.on_fill("0xbig", "ETH", 1, t + 500, 10_000)          # one slice of $25k
+        tr.on_fill("0xsmall", "ETH", -1, t, 5_000)              # a small TWAP: ignored
+        if k == 2:
+            assert not tr.records                                # not yet: 3 slices
+        if k == 3:
+            assert len(tr.records) == 1
+    rec = tr.records[0]
+    assert rec["wallet"] == "0xbig" and rec["slices"] == 10 and rec["usd"] == 250_000
+    for s in range(T0 + 100, T0 + 4000, 5):
+        tr.tick(s * 1000, lambda c: rows)
+    assert rec["end_ms"] == (T0 + 100 + 30 * 9) * 1000
+    assert set(rec["results"]) == {*map(str, HOLDS_S), "end"}
+    assert all(r["bps"] > 0 for r in rec["results"].values())    # price rose all along
+    assert rec["hold_end_s"] == (100 + 30 * 9 + 35) - (100 + 30 * 3 + 6)
+    assert tr.unsaved == [rec] and not tr.keys
