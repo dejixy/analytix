@@ -128,10 +128,14 @@ def main() -> None:
         decide = s._decision
 
         def counted(coin, wallet, side, ms, usd):
+            first = (s._decisions.get((wallet, coin)) or [0, ms])[1]     # the decision's first fill
             per_wallet[wallet][ms // D] += 1
-            decs[wallet].append((coin, side, ms))
+            decs[wallet].append((coin, side, ms, first))
             last_dec[wallet] = max(last_dec.get(wallet, 0), ms)
             decide(coin, wallet, side, ms, usd)
+            a_ = s.alerts[-1] if s.alerts else None
+            if a_ is not None and a_["t_ms"] == ms and a_["coin"] == coin and "first_ms" not in a_:
+                a_["first_ms"] = first
 
         s._decision = counted
         last_tick = [0]
@@ -160,6 +164,8 @@ def main() -> None:
     for x in al:
         x["res"] = {lag: settle(rows.get(x["coin"], {}), x["t_ms"] // 1000, lag, hold, x["side"])
                     for lag in sorted({*LAGS, fill})}
+        x["res_first"] = {lag: settle(rows.get(x["coin"], {}), x.get("first_ms", x["t_ms"]) // 1000, lag, hold,
+                                      x["side"]) for lag in sorted({*LAGS, fill})}
     start = min(int(gr.t[0]) for gr in g.values() if len(gr)) * 1000
     end = max(int(gr.t[-1]) for gr in g.values() if len(gr)) * 1000
     hours = (end - start) / H
@@ -221,6 +227,18 @@ def main() -> None:
         h = (min(end, (day + 1) * D) - max(start, day * D)) / H
         L.append(day_row(utc(day * D, '%a %d %b'), xs, h, sum(c[day] for c in per_wallet.values())))
     L.append(day_row("all", al, hours, sum(sum(c.values()) for c in per_wallet.values())))
+    late = np.array([(x["t_ms"] - x.get("first_ms", x["t_ms"])) / 1000 for x in al])
+    if len(late):
+        cells = []
+        for g_ in lags:
+            b = [x["res_first"][g_]["bps"] for x in al if x["res_first"].get(g_)]
+            cells.append(f(np.mean(b)) if b else "-")
+        p = [pt_of(x["res_first"][fill], lev, x["coin"]) for x in al if x["res_first"].get(fill)]
+        L.append(f"   {'test timing':<12}{'':>6}{'':>8}{'':>9}" + "".join(f"{c:>9}" for c in cells)
+                 + f"{pct(np.mean(p)) if p else '-':>12}")
+        L.append(f"   Test timing = counted from the decision's first fill, as the walk-forward test did. The bot can only "
+                 f"call it once the decision reaches ${cfg['min_usd']:,.0f}: that took {np.median(late):.0f}s at the "
+                 f"median, over 2s for {(late > 2).mean() * 100:.0f}% of alerts, over 6s for {(late > 6).mean() * 100:.0f}%.")
     if al:
         hod = Counter(int(utc(x["t_ms"], "%H")) for x in al)
         L.append("   by hour of the day (UTC), all days added up:")
@@ -233,11 +251,11 @@ def main() -> None:
              f"avg, t, n = what got it listed (60s from its trade, all four coins). Following it = each decision on "
              f"{', '.join(sorted(coins))} this week, in 2s or {fill}s late, out after {hold}s, bps")
     L.append(f"   {'wallet':<13}{'avg':>6}{'t':>5}{'n':>5}" + "".join(f"{utc(d * D, '%a'):>5}" for d in days)
-             + f"{'2s late':>9}{str(fill) + 's late':>9}{'last seen':>18}")
+             + f"{'2s late':>9}{str(fill) + 's late':>9}{str(fill) + 's, test':>10}{'last seen':>18}")
 
-    def follow(w, lag):
-        b = [x["bps"] for x in (settle(rows.get(c, {}), ms // 1000, lag, hold, sd) for c, sd, ms in decs.get(w, []))
-             if x]
+    def follow(w, lag, test=False):
+        b = [x["bps"] for x in (settle(rows.get(c, {}), (first if test else ms) // 1000, lag, hold, sd)
+                                for c, sd, ms, first in decs.get(w, [])) if x]
         return f(np.mean(b)) if b else "-"
     order = sorted(s.wallets, key=lambda w: -sum(per_wallet[w].values()))
     for w in order:
@@ -245,7 +263,8 @@ def main() -> None:
         seen = last_dec.get(w) or info_w.get("last_ms")
         L.append(f"   {short(w):<13}{info_w.get('mean_bps', 0):>6.1f}{info_w.get('t', 0):>5.1f}{info_w.get('n', 0):>5}"
                  + "".join(f"{per_wallet[w][d] or '.':>5}" for d in days)
-                 + f"{follow(w, 2):>9}{follow(w, fill):>9}{utc(seen, '%a %d %b %H:%M') if seen else '-':>18}")
+                 + f"{follow(w, 2):>9}{follow(w, fill):>9}{follow(w, fill, True):>10}"
+                 + f"{utc(seen, '%a %d %b %H:%M') if seen else '-':>18}")
     quiet = [w for w in s.wallets if not last_dec.get(w) or last_dec[w] < end - D]
     L.append(f"   {len(quiet)} of {len(s.wallets)} haven't traded {', '.join(sorted(coins))} in the last 24 h. "
              f"(n and avg are over all four coins; alerts only come from {', '.join(sorted(coins))}.)")
