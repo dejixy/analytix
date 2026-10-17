@@ -1,45 +1,44 @@
 import { useEffect, useRef, useState } from "react";
 import { setSound, soundOn } from "../botSound.js";
 
-/* The bot: big-mover alerts. It watches the wallets whose trades are followed by big moves and calls the trade the
-   moment one of them buys or sells. One screen: what it's doing, four numbers, the latest alerts. Settings, the full
-   record, the wallet list and how it works sit behind the tabs. */
+/* The bot: big TWAPs. A wallet selling or buying $20k+ every 30 seconds tends to push price its way. The bot spots
+   them live, shows them while they run, scores every one and (with alerts on) calls them. One screen: what it's
+   doing, four numbers, the TWAPs running now and the latest ones. Settings, the record and how it works sit behind
+   the tabs. */
 
 const usd = (x, sign = false) =>
   x == null ? "-" : `${x < 0 ? "−" : sign && x > 0 ? "+" : ""}$${Math.abs(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const usdk = (x) => (x == null ? "-" : x >= 1000 ? `$${(x / 1000).toFixed(1)}k` : `$${Math.round(x)}`);
+const usdk = (x) => (x == null ? "-" : x >= 1e6 ? `$${(x / 1e6).toFixed(2)}M` : x >= 1000 ? `$${(x / 1000).toFixed(1)}k` : `$${Math.round(x)}`);
 const bps = (x) => (x == null ? "-" : `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(1)} bps`);
 const pct = (x, sign = true) => (x == null ? "-" : `${sign && x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x * 100).toFixed(x !== 0 && Math.abs(x) < 0.1 ? 1 : 0)}%`);
 const tone = (x) => (x == null || Math.abs(x) < 1e-9 ? "" : x > 0 ? "up" : "down");
-const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const mins = (s) => (s < 60 ? `${Math.max(0, Math.round(s))}s` : `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s`);
 const ago = (ms, now) => {
   const s = Math.max(0, (now - ms) / 1000);
   return s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`;
 };
-const short = (w) => (w && w.length > 12 ? `${w.slice(0, 6)}…${w.slice(-4)}` : w);
 const sideWord = (s) => (s > 0 ? "LONG" : "SHORT");
-const STATUS = { live: "Live", paused: "Paused", warming: "Warming up", off: "Off" };
-const TABS = [["settings", "Settings"], ["record", "Record"], ["wallets", "Wallets"], ["how", "How it works"]];
+const HOLD_LABEL = { 300: "5 min", 900: "15 min", 1800: "30 min", end: "Until it stops" };
+const holdWords = (k) => (k === "end" ? "until the TWAP stops" : `for ${HOLD_LABEL[k]}`);
+const STATUS = { live: "Alerts on", silent: "Silent" };
+const TABS = [["settings", "Settings"], ["record", "Record"], ["how", "How it works"]];
 
 function headline(d) {
-  const { status, settings: c, list, live } = d;
-  if (status === "off") return "Off. Turn it on in Settings to get alerts.";
-  if (status === "warming") {
-    if (list.state === "failed") return `Couldn't build the big-mover list: ${list.error || "unknown error"}.`;
-    if (list.state === "building" || list.state === "loading")
-      return `Building the big-mover list from the last ${c.history_days} days of recordings…`;
-    return `Only ${list.count} big movers qualify so far. Alerts start at ${c.min_list}.`;
-  }
-  if (status === "paused") return `Paused: ${d.pause_reason}. Still watching, and alerts come back when it recovers.`;
-  const a = live?.alert;
+  const c = d.settings;
+  const a = d.status === "live" ? d.live?.alert : null;
   if (a) {
-    const closeAt = a.t_ms + (a.fill_s + a.hold_s) * 1000;
-    return `Get in within ${a.fill_s}s, close at ${clock(closeAt)}.`;
+    const age = (d.now_ms - a.t_ms) / 1000;
+    if (age < a.fill_s) return `Get in within ${Math.ceil(a.fill_s - age)}s, ${a.side > 0 ? "long" : "short"}.`;
+    if (a.hold_s != null) return `Close at ${clock(a.t_ms + (a.fill_s + a.hold_s) * 1000)}.`;
+    return a.running ? "Hold while the TWAP keeps going. You'll be told when it stops." : "The TWAP stopped. Close now.";
   }
-  const last = d.alerts.find((x) => x.announced);
-  const watching = `Watching ${list.count} big movers on ${c.coins.join(" and ")}.`;
-  if (!last) return `${watching} No alerts yet.`;
-  return `${watching} Last alert: ${last.coin} ${sideWord(last.side).toLowerCase()} ${ago(last.t_ms, d.now_ms)}${last.settled ? ` (${bps(last.bps)})` : ""}.`;
+  const where = c.coins.join(" and ");
+  const run = d.running.length;
+  const off = d.status === "silent" ? " Alerts are off." : "";
+  if (run) return `${run} big TWAP${run > 1 ? "s" : ""} running on ${where} now.${off}`;
+  const last = d.recent[0];
+  return `Watching for big TWAPs on ${where}.${last ? ` Last one ${ago(last.end_ms || last.t_ms, d.now_ms)}.` : " None yet."}${off}`;
 }
 
 export default function Bot({ onClose }) {
@@ -91,7 +90,7 @@ export default function Bot({ onClose }) {
     <div className="planner-scrim" onClick={onClose}>
       <aside className="planner bm" role="dialog" aria-label="Bot" onClick={(e) => e.stopPropagation()}>
         <div className="panel-head">
-          <h2 className="panel-title">Bot</h2>
+          <h2 className="panel-title">Bot · big TWAPs</h2>
           <span className="bm-head-right">
             {status && <span className={`bm-status ${status}`}>{STATUS[status]}</span>}
             <button className="plan-close" onClick={onClose} aria-label="Close">✕</button>
@@ -104,6 +103,7 @@ export default function Bot({ onClose }) {
           <>
             <Hero d={d} />
             <Numbers d={d} />
+            <Running d={d} />
             <Latest d={d} />
             <div className="bm-tabs" role="tablist">
               {TABS.map(([k, label]) => (
@@ -113,7 +113,6 @@ export default function Bot({ onClose }) {
             </div>
             {tab === "settings" && <Settings d={d} call={call} />}
             {tab === "record" && <Record d={d} />}
-            {tab === "wallets" && <Wallets d={d} call={call} />}
             {tab === "how" && <How d={d} />}
           </>
         )}
@@ -127,17 +126,19 @@ function Hero({ d }) {
   if (!a) return <div className="bm-hero"><p className="bm-say">{headline(d)}</p></div>;
   const age = Math.max(0, (d.now_ms - a.t_ms) / 1000);
   const inLeft = Math.ceil(a.fill_s - age);
-  const closeLeft = Math.ceil(a.fill_s + a.hold_s - age);
+  const right = inLeft > 0 ? `get in now · ${inLeft}s`
+    : a.hold_s != null ? `close in ${mins(a.fill_s + a.hold_s - age)}`
+    : a.running ? `running ${mins(age)}` : "close now";
   return (
     <div className={`bm-hero bm-call ${a.side > 0 ? "long" : "short"}`}>
       <div className="bm-call-top">
         <b>{a.coin} {sideWord(a.side)}</b>
-        <span>{inLeft > 0 ? `get in now · ${inLeft}s` : `close in ${Math.max(0, closeLeft)}s`}</span>
+        <span>{right}</span>
       </div>
       <p className="bm-say">{headline(d)}</p>
       <p className="bm-sub">
-        {a.wallets > 1 ? `${a.wallets} big movers` : "A big mover"} {a.side > 0 ? "bought" : "sold"} {usdk(a.usd)}
-        {a.mid ? ` at ${a.mid.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ""}. {d.settings.leverage}×,{" "}
+        A wallet is {a.side > 0 ? "buying" : "selling"} about {usdk(a.slice_usd)} every 30s ({usdk(a.usd)} so far)
+        {a.mid ? `, spotted at ${a.mid.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ""}. {d.settings.leverage}×,{" "}
         {usd(d.shadow.margin)} margin.
       </p>
     </div>
@@ -147,8 +148,8 @@ function Hero({ d }) {
 function Numbers({ d }) {
   const sh = d.shadow;
   const change = sh.start ? sh.balance / sh.start - 1 : null;
-  const lag = String(d.settings.fill_s);
-  const wk = d.record.week[lag] || {};
+  const k = d.settings.hold;
+  const wk = d.record.week[k] || {};
   return (
     <div className="tiles bm-tiles">
       <div className="tile">
@@ -157,64 +158,77 @@ function Numbers({ d }) {
         <div className="tile-sub">{sh.busted ? "Out of margin: reset in Settings" : `${pct(change)} from ${usd(sh.start)} · ${sh.trades} trades`}</div>
       </div>
       <div className="tile">
-        <div className="tile-label">Last {d.last50.n || 50} alerts</div>
-        <div className={`tile-value ${tone(d.last50.bps)}`}>{bps(d.last50.bps)}</div>
-        <div className="tile-sub">average, filled {lag}s late</div>
+        <div className="tile-label">Average, 7 days</div>
+        <div className={`tile-value ${tone(wk.bps)}`}>{wk.n ? bps(wk.bps) : "-"}</div>
+        <div className="tile-sub">{wk.n ? `${wk.n} TWAPs · ${pct(wk.win, false)} went its way` : "none finished yet"}</div>
       </div>
       <div className="tile">
         <div className="tile-label">{d.settings.leverage}× per trade, 7 days</div>
         <div className={`tile-value ${tone(wk.pt)}`}>{wk.n ? pct(wk.pt) : "-"}</div>
-        <div className="tile-sub">{wk.n ? `${pct(wk.win, false)} wins · ${pct(wk.busts, false)} busts` : "no alerts yet"}</div>
+        <div className="tile-sub">held {HOLD_LABEL[k].toLowerCase()}{wk.n ? ` · ${pct(wk.busts, false)} busts` : ""}</div>
       </div>
       <div className="tile">
-        <div className="tile-label">Alerts, last {d.today.hours >= 23.9 ? "24" : Math.max(1, Math.round(d.today.hours))} h</div>
-        <div className="tile-value">{d.today.alerts}</div>
-        <div className="tile-sub">about {d.today.per_hour.toFixed(1)} an hour</div>
+        <div className="tile-label">Spotted, last {d.today.hours >= 23.9 ? "24" : Math.max(1, Math.round(d.today.hours))} h</div>
+        <div className="tile-value">{d.today.spotted}</div>
+        <div className="tile-sub">about {d.today.per_day.toFixed(0)} a day · {d.running.length} running</div>
       </div>
     </div>
   );
 }
 
-function Latest({ d }) {
-  const [all, setAll] = useState(false);
-  const rows = all ? d.alerts : d.alerts.slice(0, 5);
+function Running({ d }) {
+  if (!d.running.length) return null;
   return (
     <section className="plan-sec">
-      <h3>Latest alerts</h3>
+      <h3>Running now</h3>
+      <div className="bm-list">
+        {d.running.map((r) => (
+          <div key={r.id} className="bm-row bm-row-run">
+            <span className="muted">{mins((d.now_ms - r.t_ms) / 1000)}</span>
+            <span><b>{r.coin}</b> <span className={r.side > 0 ? "up" : "down"}>{sideWord(r.side).toLowerCase()}</span></span>
+            <span className="muted">{usdk(r.slice_usd)} × {r.slices}</span>
+            <span className={tone(r.move_now)} title="How far price has moved its way since 6s after it was spotted">{bps(r.move_now)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function Latest({ d }) {
+  const [all, setAll] = useState(false);
+  const rows = all ? d.recent : d.recent.slice(0, 5);
+  return (
+    <section className="plan-sec">
+      <h3>Latest, held {HOLD_LABEL[d.settings.hold].toLowerCase()}</h3>
       {!rows.length ? (
-        <p className="plan-note muted" style={{ margin: 0 }}>None yet.</p>
+        <p className="plan-note muted" style={{ margin: 0 }}>None finished yet. Big TWAPs come about 18 times a day, fewer at weekends.</p>
       ) : (
         <div className="bm-list">
-          {rows.map((a) => (
-            <div key={a.id} className={`bm-row ${a.announced ? "" : "quiet"}`}>
-              <span className="muted">{clock(a.t_ms)}</span>
-              <span><b>{a.coin}</b> <span className={a.side > 0 ? "up" : "down"}>{sideWord(a.side).toLowerCase()}</span></span>
-              {!a.announced ? (
-                <span className="muted bm-span">not called: {a.why === "warming" ? "warming up" : a.why}</span>
-              ) : !a.settled ? (
-                <span className="muted bm-span">in progress</span>
-              ) : a.bps == null ? (
-                <span className="muted bm-span">feed gap, not scored</span>
+          {rows.map((r) => (
+            <div key={r.id} className={`bm-row ${r.announced ? "" : "quiet"}`}>
+              <span className="muted">{clock(r.t_ms)}</span>
+              <span><b>{r.coin}</b> <span className={r.side > 0 ? "up" : "down"}>{sideWord(r.side).toLowerCase()}</span> <span className="muted">{usdk(r.usd)}</span></span>
+              {!r.settled ? (
+                <span className="muted bm-span">{r.move_now == null ? "feed gap, not scored" : "settling"}</span>
               ) : (
                 <>
-                  <span className={tone(a.bps)}>{bps(a.bps)}</span>
-                  <span className={tone(a.pt)}>{a.pt <= -1 ? "bust" : pct(a.pt)}</span>
+                  <span className={tone(r.bps)}>{bps(r.bps)}</span>
+                  <span className={tone(r.pt)}>{r.pt <= -1 ? "bust" : pct(r.pt)}</span>
                 </>
               )}
             </div>
           ))}
         </div>
       )}
-      {d.alerts.length > 5 && (
-        <button className="plan-chip bm-more" onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${d.alerts.length}`}</button>
+      {d.recent.length > 5 && (
+        <button className="plan-chip bm-more" onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${d.recent.length}`}</button>
       )}
     </section>
   );
 }
 
-const MONEY = [["balance", "Balance", "$"], ["margin_pct", "Margin per trade", "%"], ["fill_s", "Your fill delay", "s"], ["hold_s", "Hold", "s"]];
-const LIST = [["cutoff_bps", "Big mover from", "bps"], ["t_min", "Skill (t) at least", ""], ["min_n", "Decisions at least", ""],
-  ["min_list", "Alerts need wallets", ""], ["history_days", "Learn from last", "days"]];
+const MONEY = [["balance", "Balance", "$"], ["margin_pct", "Margin per trade", "%"]];
 const LEVS = [200, 500, 841];
 
 function Settings({ d, call }) {
@@ -244,13 +258,12 @@ function Settings({ d, call }) {
       </span>
     </label>
   );
-  const money = ["balance", "leverage", "margin_pct"].some((k) => changed.includes(k));
+  const money = ["balance", "leverage", "margin_pct", "hold"].some((k) => changed.includes(k));
   return (
     <section className="plan-sec bm-settings">
       <div className="plan-holds">
-        {flag("on", "Bot")}
+        {flag("alerts", "Alerts")}
         {flag("telegram", "Telegram")}
-        {flag("auto_pause", "Auto-pause")}
         <button className={`plan-chip ${sound ? "on" : ""}`} onClick={() => { setSound(!sound); setSnd(!sound); }}>
           Sound {sound ? "on" : "off"}
         </button>
@@ -265,6 +278,14 @@ function Settings({ d, call }) {
         })}
       </div>
       <label className="plan-field">
+        Hold
+        <span className="bm-lev">
+          {d.holds.map((k) => (
+            <button key={k} className={`plan-chip ${draft.hold === k ? "on" : ""}`} onClick={() => set("hold", k)}>{HOLD_LABEL[k]}</button>
+          ))}
+        </span>
+      </label>
+      <label className="plan-field">
         Leverage
         <span className="bm-lev">
           <span className="plan-input small"><input value={draft.leverage} onChange={(e) => set("leverage", e.target.value)} inputMode="decimal" aria-label="Leverage" />×</span>
@@ -274,15 +295,11 @@ function Settings({ d, call }) {
         </span>
       </label>
       {MONEY.map(field)}
-      <details className="bm-adv">
-        <summary>Big-mover list</summary>
-        {LIST.map(field)}
-      </details>
       <div className="plan-holds">
         <button className="plan-open" disabled={!changed.length || busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
         <button className="plan-chip" onClick={() => call("POST", "/api/bot/reset")}>Reset shadow balance</button>
       </div>
-      {money && <p className="plan-note muted">Changing balance, leverage or margin starts the shadow balance again.</p>}
+      {money && <p className="plan-note muted">Changing balance, leverage, margin or hold starts the shadow balance again.</p>}
     </section>
   );
 }
@@ -290,7 +307,6 @@ function Settings({ d, call }) {
 function Record({ d }) {
   const [per, setPer] = useState("week");
   const rec = d.record[per] || {};
-  const lags = Object.keys(rec).sort((a, b) => Number(a) - Number(b));
   return (
     <section className="plan-sec">
       <div className="plan-holds">
@@ -300,52 +316,15 @@ function Record({ d }) {
       </div>
       <table className="plan-table">
         <thead>
-          <tr><th>Filled</th><th>Alerts</th><th>Move</th><th>Wins</th><th>{d.settings.leverage}×</th><th>Busts</th></tr>
+          <tr><th>Held</th><th>TWAPs</th><th>Move</th><th>Wins</th><th>{d.settings.leverage}×</th><th>Busts</th></tr>
         </thead>
         <tbody>
-          {lags.map((k) => {
-            const r = rec[k];
-            return (
-              <tr key={k} className={k === String(d.settings.fill_s) ? "bm-you" : ""}>
-                <td>{k}s late{k === String(d.settings.fill_s) ? " (you)" : ""}</td>
-                <td>{r.n}</td>
-                <td className={tone(r.bps)}>{r.n ? bps(r.bps) : "-"}</td>
-                <td>{r.n ? pct(r.win, false) : "-"}</td>
-                <td className={tone(r.pt)}>{r.n ? pct(r.pt) : "-"}</td>
-                <td>{r.n ? pct(r.busts, false) : "-"}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <p className="plan-note muted">Every alert, settled from the live book: in at the mid that many seconds after it, out after the hold. Papertrade's cut on wins included.</p>
-      <Twaps d={d} per={per} />
-    </section>
-  );
-}
-
-const TWAP_HOLDS = [["300", "5 min"], ["900", "15 min"], ["1800", "30 min"], ["end", "To the end"]];
-
-function Twaps({ d, per }) {
-  const t = d.twaps;
-  if (!t) return null;
-  const rec = t.periods[per] || {};
-  return (
-    <>
-      <h3 className="bm-sub-head">Silent test: big TWAPs</h3>
-      <p className="plan-note muted" style={{ marginTop: 0 }}>
-        Not called, only scored. A wallet sending $20k+ every 30s, in 6s after its 4th slice, its way. {t.spotted_24h} spotted in 24 h.
-      </p>
-      <table className="plan-table">
-        <thead>
-          <tr><th>Hold</th><th>Seen</th><th>Move</th><th>Wins</th><th>{d.settings.leverage}×</th><th>Busts</th></tr>
-        </thead>
-        <tbody>
-          {TWAP_HOLDS.map(([k, label]) => {
+          {d.holds.map((k) => {
             const r = rec[k] || { n: 0 };
+            const you = k === d.settings.hold;
             return (
-              <tr key={k}>
-                <td>{label}</td>
+              <tr key={k} className={you ? "bm-you" : ""}>
+                <td>{HOLD_LABEL[k]}{you ? " (you)" : ""}</td>
                 <td>{r.n}</td>
                 <td className={tone(r.bps)}>{r.n ? bps(r.bps) : "-"}</td>
                 <td>{r.n ? pct(r.win, false) : "-"}</td>
@@ -356,56 +335,23 @@ function Twaps({ d, per }) {
           })}
         </tbody>
       </table>
-    </>
-  );
-}
-
-function Wallets({ d, call }) {
-  const l = d.list;
-  const [all, setAll] = useState(false);
-  return (
-    <section className="plan-sec">
-      <p className="plan-note" style={{ marginTop: 0 }}>
-        {l.count} big movers
-        {l.built_ms ? ` · built ${ago(l.built_ms, Date.now())} from ${l.hours} h of trades (${(l.decisions || 0).toLocaleString()} decisions)` : ""}
-        {l.state === "building" ? " · rebuilding now…" : ""}
+      <p className="plan-note muted">
+        Every big TWAP, settled from the live book: in at the mid {d.fill_s}s after it was spotted, out after the hold.
+        Papertrade's cut on wins included. In the test week: about +4 bps until it stops, +6 over 15 to 30 min, a little
+        over half going its way. Judge it on 100 or more.
       </p>
-      {l.wallets?.length > 0 && (
-        <div className="bot-scroll">
-          <table className="plan-table">
-            <thead><tr><th>Wallet</th><th>Avg move</th><th>Skill (t)</th><th>Decisions</th><th>Coins</th><th>Last seen</th></tr></thead>
-            <tbody>
-              {(all ? l.wallets : l.wallets.slice(0, 15)).map((w) => (
-                <tr key={w.wallet}>
-                  <td title={w.wallet}>{short(w.wallet)}</td>
-                  <td className="up">{bps(w.mean_bps)}</td>
-                  <td>{w.t.toFixed(1)}</td>
-                  <td>{w.n}</td>
-                  <td>{(w.coins || []).join(", ")}</td>
-                  <td className="muted">{w.seen_ms ? ago(w.seen_ms, d.now_ms) : "-"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <div className="plan-holds bm-more">
-        {l.wallets?.length > 15 && <button className="plan-chip" onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${l.wallets.length}`}</button>}
-        <button className="plan-chip" disabled={l.state === "building"} onClick={() => call("POST", "/api/bot/refresh")}>Rebuild now</button>
-      </div>
     </section>
   );
 }
 
 function How({ d }) {
-  const c = d.settings;
   return (
     <section className="plan-sec">
       <ol className="bm-how">
-        <li>A few wallets' trades are usually followed by a big move their way. The bot finds them from the last {c.history_days} days of trades and refreshes the list every hour.</li>
-        <li>When one of them buys or sells ${Math.round(c.min_usd).toLocaleString()}+ on {c.coins.join(" or ")}, you get the call: coin, side, a sound and Telegram.</li>
-        <li>Go the same way as fast as you can and close after {c.hold_s}s. Every second counts: in tests the edge was about +6.5 bps at 2s and +3.9 at 6s.</li>
-        <li>Every alert is scored from the live book. If the last 50 average below zero, alerts pause until they recover.</li>
+        <li>Hyperliquid's TWAP orders buy or sell in slices every 30 seconds. When one wallet does that with $20k+ slices, price has tended to drift its way while the rest comes in.</li>
+        <li>The bot spots one at its 4th slice (about 90 seconds in) on {d.settings.coins.join(" or ")}. With alerts on you get the call: coin, side, a sound, and Telegram if it's on.</li>
+        <li>Go the same way within {d.fill_s}s and hold {holdWords(d.settings.hold)}. Being a little late matters less here than for most signals.</li>
+        <li>Every TWAP is scored from the live book, alerts on or off. It's still a test: one week of history found it, a week of live results decides it.</li>
       </ol>
     </section>
   );
