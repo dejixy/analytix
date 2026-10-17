@@ -37,25 +37,9 @@ LAG = 6
 LEV = 200
 
 
-def lab(h):
-    return f"{h // 60}m"
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("paths", nargs="*", default=[str(RECORD_DIR)])
-    ap.add_argument("--days", type=float, default=14, help="0 = every recording")
-    ap.add_argument("--coins", default="BTC,ETH,SOL,HYPE")
-    ap.add_argument("--min-usd", type=float, default=50_000)
-    ap.add_argument("--history-h", type=float, default=72, help="hours before the first test day")
-    a = ap.parse_args()
-
-    files = recording_files(a.paths)
-    if a.days and files:
-        newest = max((_first_recv(p) or 0) for p in files)
-        files = [p for p in files if (_first_recv(p) or 0) >= newest - a.days * DAY_MS]
-    coins = {c.strip().upper() for c in a.coins.split(",") if c.strip()}
-    ho = HiddenOrders(min_usd=a.min_usd)
+def load(files, coins: set[str], min_usd: float):
+    """One pass over the recordings: each coin's one-second grid and every hidden order (liquidators left out)."""
+    ho = HiddenOrders(min_usd=min_usd)
 
     def on_line(line: str) -> None:
         if '"channel":"trades"' not in line:
@@ -77,9 +61,30 @@ def main() -> None:
             except (KeyError, TypeError, ValueError):
                 pass
 
-    t0 = time.time()
     g = grids(files, coins, on_other=on_line)
-    orders = [h for h in ho.finish() if h.coin in g]
+    return g, [h for h in ho.finish() if h.coin in g], ho
+
+
+def lab(h):
+    return f"{h // 60}m"
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("paths", nargs="*", default=[str(RECORD_DIR)])
+    ap.add_argument("--days", type=float, default=14, help="0 = every recording")
+    ap.add_argument("--coins", default="BTC,ETH,SOL,HYPE")
+    ap.add_argument("--min-usd", type=float, default=50_000)
+    ap.add_argument("--history-h", type=float, default=72, help="hours before the first test day")
+    a = ap.parse_args()
+
+    files = recording_files(a.paths)
+    if a.days and files:
+        newest = max((_first_recv(p) or 0) for p in files)
+        files = [p for p in files if (_first_recv(p) or 0) >= newest - a.days * DAY_MS]
+    coins = {c.strip().upper() for c in a.coins.split(",") if c.strip()}
+    t0 = time.time()
+    g, orders, ho = load(files, coins, a.min_usd)
     print(f"  {len(orders):,} hidden orders, {time.time() - t0:.0f}s", file=sys.stderr)
     if len(orders) < 50:
         print("Too few hidden orders found.")
