@@ -124,10 +124,12 @@ def main() -> None:
         s.set_list(info)
         per_wallet: dict[str, Counter] = defaultdict(Counter)
         last_dec: dict[str, int] = {}
+        decs: dict[str, list] = defaultdict(list)          # wallet → [(coin, side, ms)]
         decide = s._decision
 
         def counted(coin, wallet, side, ms, usd):
             per_wallet[wallet][ms // D] += 1
+            decs[wallet].append((coin, side, ms))
             last_dec[wallet] = max(last_dec.get(wallet, 0), ms)
             decide(coin, wallet, side, ms, usd)
 
@@ -198,19 +200,27 @@ def main() -> None:
     L.append("")
 
     # 2. per day and per hour of the day
-    L.append(f"2. ALERTS PER DAY with today's list (UTC). Move = in {fill}s late, out after {hold}s, at the mid "
-             f"(in-sample: the list was picked on these days)")
-    L.append(f"   {'day':<12}{'hours':>6}{'alerts':>8}{'an hour':>9}{'move':>8}{str(int(lev)) + 'x':>8}{'decisions':>11}")
+    lags = sorted({*LAGS, fill})
+    L.append(f"2. ALERTS PER DAY with today's list (UTC). Move = in that many seconds late, out after {hold}s, at the mid, "
+             f"bps (in-sample: the list was picked on these days)")
+    L.append(f"   {'day':<12}{'hours':>6}{'alerts':>8}{'an hour':>9}" + "".join(f"{str(g_) + 's late':>9}" for g_ in lags)
+             + f"{str(int(lev)) + 'x at ' + str(fill) + 's':>12}{'decisions':>11}")
     days = sorted({x["t_ms"] // D for x in al} | {d for c in per_wallet.values() for d in c})
+
+    def day_row(label, xs, h, dec):
+        cells = []
+        for g_ in lags:
+            b = [x["res"][g_]["bps"] for x in xs if x["res"].get(g_)]
+            cells.append(f(np.mean(b)) if b else "-")
+        p = [pt_of(x["res"][fill], lev, x["coin"]) for x in xs if x["res"].get(fill)]
+        return (f"   {label:<12}{h:>6.1f}{len(xs):>8}{len(xs) / max(h, 1e-9):>9.1f}" + "".join(f"{c:>9}" for c in cells)
+                + f"{pct(np.mean(p)) if p else '-':>12}{dec:>11}")
+
     for day in days:
         xs = [x for x in al if x["t_ms"] // D == day]
-        b = [x["res"][fill]["bps"] for x in xs if x["res"].get(fill)]
-        p = [pt_of(x["res"][fill], lev, x["coin"]) for x in xs if x["res"].get(fill)]
-        h = min(end, (day + 1) * D) - max(start, day * D)
-        h = max(h / H, 1e-9)
-        dec = sum(c[day] for c in per_wallet.values())
-        L.append(f"   {utc(day * D, '%a %d %b'):<12}{h:>6.1f}{len(xs):>8}{len(xs) / h:>9.1f}"
-                 f"{f(np.mean(b)) if b else '-':>8}{pct(np.mean(p)) if p else '-':>8}{dec:>11}")
+        h = (min(end, (day + 1) * D) - max(start, day * D)) / H
+        L.append(day_row(utc(day * D, '%a %d %b'), xs, h, sum(c[day] for c in per_wallet.values())))
+    L.append(day_row("all", al, hours, sum(sum(c.values()) for c in per_wallet.values())))
     if al:
         hod = Counter(int(utc(x["t_ms"], "%H")) for x in al)
         L.append("   by hour of the day (UTC), all days added up:")
@@ -219,15 +229,23 @@ def main() -> None:
     L.append("")
 
     # 3. the wallets
-    L.append(f"3. THE LIST: each big mover's decisions (${cfg['min_usd']:,.0f}+ on {', '.join(sorted(coins))}) per day")
-    L.append(f"   {'wallet':<13}{'avg':>6}{'t':>5}{'n':>5}" + "".join(f"{utc(d * D, '%a'):>5}" for d in days) + f"{'last seen':>18}")
+    L.append(f"3. THE LIST: each big mover's decisions (${cfg['min_usd']:,.0f}+ on {', '.join(sorted(coins))}) per day. "
+             f"avg, t, n = what got it listed (60s from its trade, all four coins). Following it = each decision on "
+             f"{', '.join(sorted(coins))} this week, in 2s or {fill}s late, out after {hold}s, bps")
+    L.append(f"   {'wallet':<13}{'avg':>6}{'t':>5}{'n':>5}" + "".join(f"{utc(d * D, '%a'):>5}" for d in days)
+             + f"{'2s late':>9}{str(fill) + 's late':>9}{'last seen':>18}")
+
+    def follow(w, lag):
+        b = [x["bps"] for x in (settle(rows.get(c, {}), ms // 1000, lag, hold, sd) for c, sd, ms in decs.get(w, []))
+             if x]
+        return f(np.mean(b)) if b else "-"
     order = sorted(s.wallets, key=lambda w: -sum(per_wallet[w].values()))
     for w in order:
         info_w = s.wallets[w]
         seen = last_dec.get(w) or info_w.get("last_ms")
         L.append(f"   {short(w):<13}{info_w.get('mean_bps', 0):>6.1f}{info_w.get('t', 0):>5.1f}{info_w.get('n', 0):>5}"
                  + "".join(f"{per_wallet[w][d] or '.':>5}" for d in days)
-                 + f"{utc(seen, '%a %d %b %H:%M') if seen else '-':>18}")
+                 + f"{follow(w, 2):>9}{follow(w, fill):>9}{utc(seen, '%a %d %b %H:%M') if seen else '-':>18}")
     quiet = [w for w in s.wallets if not last_dec.get(w) or last_dec[w] < end - D]
     L.append(f"   {len(quiet)} of {len(s.wallets)} haven't traded {', '.join(sorted(coins))} in the last 24 h. "
              f"(n and avg are over all four coins; alerts only come from {', '.join(sorted(coins))}.)")
