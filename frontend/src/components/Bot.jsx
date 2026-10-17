@@ -21,7 +21,7 @@ const ago = (ms, now) => {
 const sideWord = (s) => (s > 0 ? "LONG" : "SHORT");
 const HOLD_LABEL = { 300: "5 min", 900: "15 min", 1800: "30 min", end: "Until it stops" };
 const holdWords = (k) => (k === "end" ? "until the TWAP stops" : `for ${HOLD_LABEL[k]}`);
-const STATUS = { live: "Alerts on", silent: "Silent" };
+const STATUS = { live: "Alerts on", silent: "Silent", research: "In research" };
 const TABS = [["settings", "Settings"], ["record", "Record"], ["how", "How it works"]];
 
 function headline(d) {
@@ -45,13 +45,16 @@ export default function Bot({ onClose }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState(null);
+  const [basket, setBasket] = useState("twap");
   const alive = useRef(true);
+  const current = useRef("twap");
 
   const load = async () => {
+    const want = current.current;
     try {
-      const r = await fetch("/api/bot");
+      const r = await fetch(`/api/bot?basket=${want}`);
       const j = await r.json();
-      if (!alive.current) return;
+      if (!alive.current || want !== current.current) return;
       if (r.ok) {
         setD(j);
         setError(null);
@@ -63,17 +66,20 @@ export default function Bot({ onClose }) {
 
   useEffect(() => {
     alive.current = true;
+    current.current = basket;
+    setD(null);
+    setTab(null);
     load();
     const t = setInterval(load, 2000);
     return () => {
       alive.current = false;
       clearInterval(t);
     };
-  }, []);
+  }, [basket]);
 
-  const call = async (method, url, body) => {
+  const call = async (method, path, body) => {
     try {
-      const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      const r = await fetch(`${path}?basket=${basket}`, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
       const j = await r.json();
       if (!r.ok) throw new Error(j.detail || "That didn't work.");
       setD(j);
@@ -90,15 +96,28 @@ export default function Bot({ onClose }) {
     <div className="planner-scrim" onClick={onClose}>
       <aside className="planner bm" role="dialog" aria-label="Bot" onClick={(e) => e.stopPropagation()}>
         <div className="panel-head">
-          <h2 className="panel-title">Bot · big TWAPs</h2>
+          <h2 className="panel-title">Bot</h2>
           <span className="bm-head-right">
             {status && <span className={`bm-status ${status}`}>{STATUS[status]}</span>}
             <button className="plan-close" onClick={onClose} aria-label="Close">✕</button>
           </span>
         </div>
+        <div className="bm-baskets" role="tablist" aria-label="Baskets">
+          {(d?.baskets || [{ key: "twap", name: "TWAPs" }, { key: "informed", name: "Informed flow", status: "research" }]).map((b) => (
+            <button key={b.key} role="tab" aria-selected={basket === b.key} className={`bm-basket ${basket === b.key ? "on" : ""}`}
+              onClick={() => setBasket(b.key)}>
+              <b>{b.name}</b>
+              <span className={b.status === "research" ? "muted" : tone(b.balance - b.start)}>
+                {b.status === "research" ? "in research" : b.balance != null ? usd(b.balance) : ""}
+              </span>
+            </button>
+          ))}
+        </div>
         {error && <div className="plan-error">{error}</div>}
         {!d ? (
           <p className="plan-note muted" style={{ padding: 12 }}>{error ? "" : "Loading…"}</p>
+        ) : d.status === "research" ? (
+          <Research d={d} call={call} />
         ) : (
           <>
             <Hero d={d} />
@@ -380,5 +399,56 @@ function How({ d }) {
         <li>Every TWAP is scored from the live book, alerts on or off. It's still a test: one week of history found it, a week of live results decides it.</li>
       </ol>
     </section>
+  );
+}
+
+function Research({ d, call }) {
+  const c = d.settings;
+  const [draft, setDraft] = useState(() => ({ balance: c.balance, leverage: c.leverage, margin_pct: c.margin_pct }));
+  const changed = Object.keys(draft).filter((k) => String(draft[k]) !== String(c[k]));
+  const field = (k, label, unit) => (
+    <label key={k} className="plan-field">
+      {label}
+      <span className="plan-input">
+        {unit === "$" && "$"}
+        <input value={draft[k]} onChange={(e) => setDraft((x) => ({ ...x, [k]: e.target.value }))} inputMode="decimal" aria-label={label} />
+        {unit !== "$" && unit}
+      </span>
+    </label>
+  );
+  return (
+    <>
+      <div className="bm-hero">
+        <p className="bm-say">In research. This basket will follow hidden orders from wallets whose trades move price for good. It trades nothing until its model passes the same tests as the TWAPs did.</p>
+      </div>
+      <div className="tiles bm-tiles">
+        <div className="tile">
+          <div className="tile-label">Shadow balance</div>
+          <div className="tile-value">{usd(d.shadow.balance)}</div>
+          <div className="tile-sub">its own money, separate from TWAPs</div>
+        </div>
+        <div className="tile">
+          <div className="tile-label">Status</div>
+          <div className="tile-value">Research</div>
+          <div className="tile-sub">model being built and tested</div>
+        </div>
+      </div>
+      <section className="plan-sec">
+        <h3>How it will work</h3>
+        <ol className="bm-how">
+          <li>Spot hidden orders: a wallet buying or selling one way, in irregular pieces, over minutes.</li>
+          <li>Score each wallet from its past hidden orders: does price keep going its way over 15 to 60 minutes (informed), or snap back (just pressure)?</li>
+          <li>When a wallet that's been informed before starts a new hidden order, call it, with how sure the model is and for how long to hold.</li>
+        </ol>
+      </section>
+      <section className="plan-sec bm-settings">
+        {field("balance", "Balance", "$")}
+        {field("leverage", "Leverage", "×")}
+        {field("margin_pct", "Margin per trade", "%")}
+        <div className="plan-holds">
+          <button className="plan-open" disabled={!changed.length} onClick={() => call("PUT", "/api/bot/settings", Object.fromEntries(changed.map((k) => [k, draft[k]])))}>Save</button>
+        </div>
+      </section>
+    </>
   );
 }

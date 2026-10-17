@@ -627,14 +627,14 @@ tr.wall td { color: var(--ink); }
 .plan-table td.mid { color: var(--ink-2); }
 .plan-table td.down { color: var(--down); }
 
-/* ── The bot: big-mover alerts (drawer + banner) ─────────────────────────── */
+/* ── The bot: baskets of strategies (drawer + banner) ────────────────────── */
 .bm-head-right { display: inline-flex; align-items: center; gap: 10px; }
 .bm-status {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; padding: 1px 7px; border-radius: 2px;
   border: 1px solid var(--border); color: var(--muted);
 }
 .bm-status.live { color: var(--up-bright); border-color: var(--up); background: var(--up-deep); }
-.bm-status.silent { color: var(--ink-2); }
+.bm-status.silent, .bm-status.research { color: var(--ink-2); }
 .bm-hero { padding: 14px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 6px; }
 .bm-say { margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink); }
 .bm-sub { margin: 0; font-size: 11.5px; color: var(--ink-2); }
@@ -655,6 +655,11 @@ tr.wall td { color: var(--ink); }
 .bm-row-run { grid-template-columns: 64px 1fr 96px 64px; }
 .bm-plan { grid-column: 2 / 5; text-align: left !important; font-size: 11px; }
 .bm-gap { width: 10px; }
+.bm-baskets { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--border); }
+.bm-basket { display: grid; gap: 2px; text-align: left; padding: 10px 12px; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--ink-2); cursor: pointer; font: inherit; }
+.bm-basket b { font-size: 12.5px; letter-spacing: 0.04em; }
+.bm-basket span { font-size: 11.5px; }
+.bm-basket.on { color: var(--ink); border-bottom-color: var(--up); background: var(--up-wash); }
 .bm-more { margin-top: 8px; }
 .bm-sub-head { margin-top: 16px; }
 .bm-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
