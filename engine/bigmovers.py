@@ -9,6 +9,7 @@ Big movers: the last checks before following the wallets whose trades are follow
     bankroll      the day-by-day result of taking those trades with a given balance, leverage and share of the
                   balance per trade, and a bootstrap of a week from the per-trade results
 """
+from array import array
 from dataclasses import dataclass
 
 import numpy as np
@@ -218,3 +219,118 @@ def pt_of(r: dict | None, leverage: float, coin: str) -> float | None:
         return -1.0
     move = r["bps"] / 1e4
     return papertrade_kept(move, coin) * leverage if move > 0 else max(move * leverage, -1.0)
+
+
+# ── v4: honest timing ──────────────────────────────────────────────────────────────────────────────────────────
+# The v3 test timed each decision from its first fill but only kept decisions that went on to reach $1,000, so it
+# acted on knowledge it couldn't have had yet. A decision can only be acted on when something about it is known:
+# its first order (all the fills at its first timestamp: one market order sweeping levels), or the moment its
+# running total reaches the size threshold (what the live bot waits for).
+
+@dataclass(slots=True)
+class Decision:
+    coin: str
+    wallet: str
+    side: int
+    t_first: int              # its first fill (ms)
+    usd_first: float          # its first order: the fills at t_first
+    t_cross: int              # when its running total reached min_usd (-1 = never)
+    usd: float                # its final total
+
+
+class Decisions:
+    """Taker fills → decisions (same coin, wallet and side, gaps of MERGE_S or less, as the live bot merges them),
+    keeping both moments above. Keeps decisions that reached min_usd or whose first order was keep_first_usd+.
+    Finished decisions are stored as plain numbers (a week on four coins is millions of them)."""
+
+    def __init__(self, min_usd: float, keep_first_usd: float):
+        self.min_usd = min_usd
+        self.keep_first_usd = keep_first_usd
+        self.open: dict[tuple, list] = {}            # (coin, wallet) → [Decision, last ms]
+        self._w: dict[str, int] = {}
+        self._c: dict[str, int] = {}
+        self._ints = {k: array("q") for k in ("t_first", "t_cross", "side", "wallet", "coin")}
+        self._floats = {k: array("d") for k in ("usd_first", "usd")}
+
+    def add(self, coin: str, wallet: str, t_ms: int, side: int, usd: float) -> None:
+        key = (coin, wallet)
+        cur = self.open.get(key)
+        if cur is not None:
+            d, last = cur
+            if d.side == side and t_ms - last <= MERGE_S * 1000:
+                d.usd += usd
+                if t_ms == d.t_first:
+                    d.usd_first += usd
+                if d.t_cross < 0 and d.usd >= self.min_usd:
+                    d.t_cross = t_ms
+                cur[1] = t_ms
+                return
+            self._close(d)
+        self.open[key] = [Decision(coin, wallet, side, t_ms, usd, t_ms if usd >= self.min_usd else -1, usd), t_ms]
+
+    def _close(self, d: Decision) -> None:
+        if d.usd < self.min_usd and d.usd_first < self.keep_first_usd:
+            return
+        i, fl = self._ints, self._floats
+        i["t_first"].append(d.t_first)
+        i["t_cross"].append(d.t_cross)
+        i["side"].append(d.side)
+        i["wallet"].append(self._w.setdefault(d.wallet, len(self._w)))
+        i["coin"].append(self._c.setdefault(d.coin, len(self._c)))
+        fl["usd_first"].append(d.usd_first)
+        fl["usd"].append(d.usd)
+
+    def finish(self) -> "DecArrays":
+        for d, _ in self.open.values():
+            self._close(d)
+        self.open.clear()
+        cols = {k: np.frombuffer(v, dtype=np.int64).copy() if len(v) else np.zeros(0, np.int64) for k, v in self._ints.items()}
+        cols.update({k: np.frombuffer(v, dtype=np.float64).copy() if len(v) else np.zeros(0) for k, v in self._floats.items()})
+        order = np.argsort(cols["t_first"], kind="stable")
+        return DecArrays(**{k: v[order] for k, v in cols.items()}, wallets=list(self._w), coins=list(self._c))
+
+
+@dataclass
+class DecArrays:
+    t_first: np.ndarray
+    usd_first: np.ndarray
+    t_cross: np.ndarray
+    usd: np.ndarray
+    side: np.ndarray
+    wallet: np.ndarray
+    coin: np.ndarray
+    wallets: list
+    coins: list
+
+
+def score_by_wallet(wallet: np.ndarray, value: np.ndarray, ready_ms: np.ndarray, until_ms: int, n_wallets: int) -> dict:
+    """Per wallet (n, mean, t) from the values that were fully known before until_ms (ready_ms <= until_ms)."""
+    use = np.isfinite(value) & (ready_ms >= 0) & (ready_ms <= until_ms)
+    w, v = wallet[use], value[use]
+    n = np.bincount(w, minlength=n_wallets).astype(float)
+    s = np.bincount(w, weights=v, minlength=n_wallets)
+    ss = np.bincount(w, weights=v * v, minlength=n_wallets)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mean = s / n
+        var = (ss - n * mean * mean) / (n - 1)
+        t = mean / np.sqrt(var / n)
+    return {"n": n, "mean": np.nan_to_num(mean), "t": np.nan_to_num(t)}
+
+
+def merge_at(t: np.ndarray, side: np.ndarray, coin: np.ndarray, wallet: np.ndarray, idx: np.ndarray,
+             coins: list, merge_s: int = MERGE_S) -> list[Alert]:
+    """Decisions (by index) acted on at times t → alerts, merged like alerts() but on the acting time."""
+    out: list[Alert] = []
+    last: dict[tuple, tuple[Alert, int]] = {}
+    for i in idx[np.argsort(t[idx], kind="stable")]:
+        key = (int(coin[i]), int(side[i]))
+        ti = int(t[i])
+        cur = last.get(key)
+        if cur is not None and ti - cur[1] <= merge_s * 1000:
+            cur[0].count += 1
+            last[key] = (cur[0], ti)
+            continue
+        al = Alert(coins[coin[i]], ti, int(side[i]), int(wallet[i]))
+        out.append(al)
+        last[key] = (al, ti)
+    return out
