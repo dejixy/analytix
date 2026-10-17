@@ -1,4 +1,4 @@
-"""The bot maths in engine/bot.py (fills, fees, stops). The live bot is now big-mover alerts (api/bot.py); this
+"""The bot maths in engine/bot.py (fills, fees, stops). The live bot is now big TWAPs (api/bot.py); this
 engine stays for the edge lab's research setups (engine/hunter.py)."""
 from types import SimpleNamespace
 

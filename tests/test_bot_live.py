@@ -1,27 +1,24 @@
-"""The live bot: big-mover alerts (api/bot.py) and their settling (engine/bigmovers.settle / pt_of)."""
+"""The live bot: big TWAPs (api/bot.py, api/twaptrack.py) and their settling (engine/bigmovers.settle / pt_of)."""
+import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
 
-from api.bot import BotError, BotService, alert_message
+from api.bot import BotError, BotService, spotted_message, stopped_message
 from engine.bigmovers import pt_of, settle
 
 T0 = 1_790_000_000          # seconds
-BIG = "0x" + "b" * 40
-SMALL = "0x" + "c" * 40
+TW = "0x" + "a" * 40        # the TWAP's wallet
+OTHER = "0x" + "c" * 40
 
 
 def rt():
     return SimpleNamespace(mode="replay", alerts=None)
 
 
-def svc(tmp_path, n_wallets=12, **cfg):
-    s = BotService(rt(), tmp_path / "bot.json", None, list_file=tmp_path / "list.json")
-    wallets = [{"wallet": BIG, "n": 40, "mean_bps": 9.0, "t": 4.0, "usd": 2000, "coins": ["ETH"], "last_ms": 0}]
-    wallets += [{"wallet": f"0x{k:040x}", "n": 30, "mean_bps": 8.5, "t": 3.0, "usd": 1500, "coins": ["BTC"], "last_ms": 0}
-                for k in range(n_wallets - 1)]
-    s.set_list({"built_ms": 1, "wallets": wallets})
+def svc(tmp_path, **cfg):
+    s = BotService(rt(), tmp_path / "bot.json", None)
     s.cfg.update(cfg)
     return s
 
@@ -32,14 +29,19 @@ def book(s, coin, sec, mid, half=0.05):
 
 
 def trade(s, coin, ms, wallet, side, usd, px=2500.0):
-    users = [wallet, SMALL] if side == "B" else [SMALL, wallet]
+    users = [wallet, OTHER] if side == "B" else [OTHER, wallet]
     s.on_message({"channel": "trades", "data": [{"coin": coin, "side": side, "px": str(px), "sz": str(usd / px),
                                                  "time": ms, "users": users}]})
 
 
-def run_market(s, coin="ETH", start=T0, secs=120, drift=0.0, base=2500.0):
-    for k in range(secs):
-        book(s, coin, start + k, base + drift * k)
+def run(s, secs, slices=10, drift=0.01, start=T0, side="B", usd=30_000, coin="ETH", from_k=0):
+    """A market drifting `drift` a second, with a TWAP of `slices` slices every 30s from start+100."""
+    for k in range(from_k, secs):
+        book(s, coin, start + k, 2500.0 + drift * k)
+        if 100 <= k < 100 + 30 * slices and (k - 100) % 30 == 0:
+            trade(s, coin, (start + k) * 1000, TW, side, usd)
+        if k % 5 == 0:
+            s.tick()
 
 
 def test_settle_reads_the_move_and_the_worst_point():
@@ -58,133 +60,95 @@ def test_settle_reads_the_move_and_the_worst_point():
     assert pt_of({"bps": -3, "adv": 4}, 200, "ETH") == pytest.approx(-3e-4 * 200)
 
 
-def test_a_listed_wallet_reaching_1k_raises_one_alert_and_others_join_it(tmp_path):
-    s = svc(tmp_path)
-    run_market(s, secs=5)
-    trade(s, "ETH", (T0 + 3) * 1000, BIG, "B", 600)          # $600: not a decision yet
-    assert not s.alerts
-    trade(s, "ETH", (T0 + 4) * 1000, BIG, "B", 600)          # $1,200 within 30s: alert
-    assert len(s.alerts) == 1 and s.alerts[0]["side"] == 1 and s.alerts[0]["announced"]
-    other = f"0x{0:040x}"
-    trade(s, "ETH", (T0 + 10) * 1000, other, "B", 5000)      # another big mover, same side, 6s later: joins
-    assert len(s.alerts) == 1 and s.alerts[0]["wallets"] == [BIG, other]
-    trade(s, "ETH", (T0 + 12) * 1000, SMALL, "B", 50_000)    # not listed: ignored
-    trade(s, "BTC", (T0 + 12) * 1000, other, "A", 5000)      # other coin: its own alert
-    assert len(s.alerts) == 2
-    live = s.live()
-    assert live["status"] == "live" and live["alert"]["coin"] == "BTC"
-
-
-def test_alerts_settle_into_the_record_and_the_shadow_balance(tmp_path):
-    s = svc(tmp_path, leverage=200.0, balance=50.0, margin_pct=20.0, fill_s=6, hold_s=30)
-    run_market(s, secs=80, drift=0.05)                       # steady rise: a long wins
-    trade(s, "ETH", (T0 + 2) * 1000, BIG, "B", 2000)
-    s.tick()
-    assert s.alerts[0]["results"] is not None
-    r6 = s.alerts[0]["results"]["6"]
-    assert r6["bps"] > 0
+def test_a_big_twap_is_spotted_shown_running_settled_and_shadow_traded(tmp_path):
+    s = svc(tmp_path, hold="end")
+    run(s, 100 + 30 * 3 + 10, slices=10)                       # just past the 4th slice
+    p = s.public()
+    assert len(p["running"]) == 1 and p["today"]["spotted"] == 1
+    r = p["running"][0]
+    assert r["coin"] == "ETH" and r["side"] == 1 and r["slices"] == 4 and r["usd"] == 120_000
+    a = s.live()["alert"]
+    assert a["coin"] == "ETH" and a["running"] and a["hold_s"] is None and a["fill_s"] == 6
+    run(s, 4000, slices=10, from_k=100 + 30 * 3 + 10)            # the rest of the TWAP, then quiet
+    p = s.public()
+    assert not p["running"] and len(p["recent"]) == 1
+    done = p["recent"][0]
+    assert done["slices"] == 10 and done["settled"] and done["bps"] > 0 and done["pt"] > 0
+    assert p["record"]["day"]["end"]["n"] == 1 and p["record"]["day"]["300"]["n"] == 1
     assert s.shadow["trades"] == 1 and s.shadow["balance"] > 50
-    rec = s.record()
-    assert rec["6"]["n"] == 1 and rec["6"]["win"] == 1.0 and rec["2"]["n"] == 1 and rec["10"]["n"] == 1
-    pub = s.public()
-    assert pub["alerts"][0]["bps"] == pytest.approx(r6["bps"], abs=0.01) and pub["shadow"]["margin"] == 10.0
-    json.dumps(pub)                                          # the dashboard can read it
+    assert s.live()["alert"] is None                           # its "close now" moment has passed
 
 
-def test_one_trade_at_a_time_and_no_alerts_while_the_list_is_short(tmp_path):
+def test_the_banner_says_close_when_the_twap_stops(tmp_path):
+    s = svc(tmp_path, hold="end")
+    run(s, 100 + 30 * 5 + 40, slices=6)                        # 6 slices, then 40s of nothing
+    a = s.live()["alert"]
+    assert a is not None and not a["running"]                  # stopped: still shown, to say close now
+
+
+def test_a_fixed_hold_and_alerts_off(tmp_path):
+    s = svc(tmp_path, hold="300")
+    run(s, 900, slices=8)
+    assert s.shadow["trades"] == 1
+    assert s.public()["recent"][0]["bps"] == pytest.approx(s.twaps.records[0]["results"]["300"]["bps"], abs=0.01)
+    q = svc(tmp_path / "q", alerts=False)
+    run(q, 4000, slices=8)
+    assert q.public()["record"]["all"]["end"]["n"] == 1         # still scored
+    assert q.shadow["trades"] == 0 and q.live()["alert"] is None and q.status() == "silent"
+
+
+def test_small_twaps_and_other_coins_are_ignored(tmp_path):
     s = svc(tmp_path)
-    run_market(s, secs=100)
-    trade(s, "ETH", (T0 + 2) * 1000, BIG, "B", 2000)
-    trade(s, "ETH", (T0 + 3) * 1000, BIG, "A", 2000)         # the other side 1s later: its own alert
-    s.tick()
-    assert len(s.alerts) == 2 and s.shadow["trades"] == 1    # the second came while the first was open
-    short = svc(tmp_path / "x", n_wallets=5)
-    run_market(short, secs=5)
-    trade(short, "ETH", (T0 + 2) * 1000, BIG, "B", 2000)
-    assert short.status() == "warming" and not short.alerts[0]["announced"] and short.alerts[0]["why"] == "warming"
-
-
-def test_auto_pause_and_resume(tmp_path):
-    s = svc(tmp_path)
-    for k in range(40):                                      # 40 losing alerts
-        s.alerts.append({"id": str(k), "coin": "ETH", "side": 1, "t_ms": T0 * 1000 + k, "announced": True,
-                         "results": {"6": {"bps": -2.0, "adv": 3.0}}, "wallets": [BIG], "usd": 2000})
-    s._check_pause(quiet=True)
-    assert s.paused and s.status() == "paused" and "averaged -2.0 bps" in s.pause_reason
-    for k in range(50):
-        s.alerts.append({"id": f"w{k}", "coin": "ETH", "side": 1, "t_ms": T0 * 1000 + 100 + k, "announced": True,
-                         "results": {"6": {"bps": 3.0, "adv": 1.0}}, "wallets": [BIG], "usd": 2000})
-    s._check_pause(quiet=True)
-    assert not s.paused and s.status() == "live"
+    run(s, 600, slices=8, usd=5_000)
+    run(s, 600, slices=8, coin="SOL", start=T0 + 1000)
+    assert not s.twaps.records
 
 
 def test_settings_validate_restart_the_shadow_and_survive_a_restart(tmp_path):
     s = svc(tmp_path)
-    s.shadow["balance"] = 80.0
+    s.shadow["balance"] = 70.0
+    with pytest.raises(BotError):
+        s.save_settings({"hold": "45"})
     with pytest.raises(BotError):
         s.save_settings({"leverage": 5000})
     with pytest.raises(BotError):
-        s.save_settings({"coins": ["DOGE"]})
-    with pytest.raises(BotError):
-        s.save_settings({"nonsense": 1})
-    s.save_settings({"hold_s": 45})
-    assert s.shadow["balance"] == 80.0                       # hold doesn't touch the money
-    s.save_settings({"leverage": 841, "balance": 15})
-    assert s.shadow["balance"] == 15.0 and s.shadow["start"] == 15.0
-    again = BotService(rt(), tmp_path / "bot.json", None, list_file=tmp_path / "list.json")
-    assert again.cfg["leverage"] == 841 and again.cfg["hold_s"] == 45 and again.shadow["start"] == 15.0
+        s.save_settings({"nope": 1})
+    s.save_settings({"telegram": True})
+    assert s.shadow["balance"] == 70.0                        # not a money setting
+    s.save_settings({"hold": "900", "leverage": 500})
+    assert s.shadow["balance"] == 50.0                        # restarted
+    again = BotService(rt(), tmp_path / "bot.json", None)
+    assert again.cfg["hold"] == "900" and again.cfg["leverage"] == 500 and again.cfg["telegram"] is True
 
 
-def test_the_old_rule_bot_settings_are_set_aside(tmp_path):
-    (tmp_path / "bot.json").write_text(json.dumps({"rules": [{"id": "x"}], "auto": {"on": True}}))
-    s = BotService(rt(), tmp_path / "bot.json", None, list_file=tmp_path / "list.json")
-    assert s.cfg["leverage"] == 200.0
-    assert json.loads((tmp_path / "bot.old.json").read_text())["rules"][0]["id"] == "x"
+def test_the_big_mover_bot_file_keeps_money_settings_but_not_its_shadow(tmp_path):
+    (tmp_path / "bot.json").write_text(json.dumps({"settings": {"on": False, "telegram": True, "leverage": 841,
+                                                                "cutoff_bps": 8, "fill_s": 6},
+                                                   "shadow": {"balance": 12.0}, "since_ms": 5}))
+    s = BotService(rt(), tmp_path / "bot.json", None)
+    assert s.cfg["leverage"] == 841 and s.cfg["telegram"] is True and s.cfg["alerts"] is True
+    assert "cutoff_bps" not in s.cfg and s.shadow["balance"] == 50.0 and s.since_ms > 5
 
 
-def test_alert_message_is_plain():
-    a = {"coin": "ETH", "side": -1, "usd": 8200, "mid": 2503.45, "t_ms": T0 * 1000, "fill_s": 6, "hold_s": 30}
-    title, lines = alert_message(a, {"leverage": 200.0, "margin_pct": 20.0, "balance": 50.0})
-    assert title == "ETH SHORT now"
-    assert lines[0] == "A big mover sold $8.2k at 2,503.45." and "within 6s" in lines[1] and lines[2] == "200x, $10 margin."
-    assert all("—" not in x for x in (title, *lines))
+def test_records_are_saved_and_loaded(tmp_path):
+    async def go():
+        s = BotService(rt(), tmp_path / "bot.json", tmp_path / "bars.sqlite")
+        await s.start()
+        run(s, 4000, slices=8)
+        await s.stop()
+        again = BotService(rt(), tmp_path / "bot.json", tmp_path / "bars.sqlite")
+        await again.start()
+        await again.stop()
+        return again
+    again = asyncio.run(go())
+    assert len(again.twaps.records) == 1 and again.twaps.records[0]["results"]["end"]["bps"] > 0
+    assert again.public()["recent"][0]["shadow"] is not None
 
 
-def test_the_bot_tracks_big_twaps_from_any_wallet_and_reports_them(tmp_path):
-    s = svc(tmp_path, n_wallets=0)                          # no big movers at all: TWAPs are still tracked
-    for k in range(4500):
-        book(s, "ETH", T0 + k, 2500.0 + 0.01 * k)
-        if k % 30 == 0 and k <= 300:
-            trade(s, "ETH", (T0 + k) * 1000, SMALL, "B", 30_000)
-        if k % 5 == 0:
-            s.tick()
-    out = s.public()["twaps"]
-    assert out["spotted_24h"] == 1
-    for k in ("300", "900", "1800", "end"):
-        r = out["periods"]["day"][k]
-        assert r["n"] == 1 and r["bps"] > 0 and r["win"] == 1
-
-
-def test_the_alert_rate_uses_the_hours_the_bot_has_run_and_wallets_show_when_last_seen(tmp_path):
-    s = svc(tmp_path)
-    s.since_ms = T0 * 1000                                   # started at T0
-    run_market(s, secs=10)
-    trade(s, "ETH", (T0 + 2) * 1000, BIG, "B", 5000)
-    run_market(s, start=T0 + 10, secs=3600 * 2 - 10)
-    p = s.public()
-    assert p["today"]["alerts"] == 1
-    assert p["today"]["hours"] == pytest.approx(2.0, abs=0.01)
-    assert p["today"]["per_hour"] == pytest.approx(0.5, abs=0.01)
-    seen = {w["wallet"]: w["seen_ms"] for w in p["list"]["wallets"]}
-    assert seen[BIG] == (T0 + 2) * 1000
-
-
-def test_an_older_bot_file_keeps_the_first_start_time(tmp_path):
-    import os
-    (tmp_path / "bot.json").write_text(json.dumps({"settings": {}}))
-    (tmp_path / "bot.old.json").write_text("{}")
-    os.utime(tmp_path / "bot.old.json", (T0, T0))
-    s = BotService(rt(), tmp_path / "bot.json", None, list_file=tmp_path / "list.json")
-    assert s.since_ms == T0 * 1000
-    s._save()
-    assert json.loads((tmp_path / "bot.json").read_text())["since_ms"] == T0 * 1000
+def test_messages_are_plain():
+    rec = {"coin": "ETH", "side": 1, "usd": 120_000, "slices": 4, "mid": 2500.0, "hold": "end"}
+    title, lines = spotted_message(rec, {"margin_pct": 20, "balance": 50, "leverage": 200, "hold": "end"})
+    assert title == "Big TWAP: ETH LONG"
+    assert "buying about $30.0k every 30s ($120.0k so far)" in lines[0]
+    assert "within 6s near 2,500.00, close when it stops" in lines[1] and "$10.00 margin" in lines[2]
+    assert stopped_message({**rec, "slices": 10, "usd": 300_000})[0] == "ETH TWAP stopped: close your long"

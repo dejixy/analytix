@@ -1,64 +1,46 @@
 """
-The bot: big-mover alerts. Some Hyperliquid wallets' aggressive trades are followed by big moves their way (the
-wallet and big-mover studies, scripts/walletStudy.py and scripts/bigMovers.py). The bot watches those wallets live
-and tells you the moment one trades, so you can follow on Papertrade, and keeps an honest record of how every alert
-did.
+The bot: big Hyperliquid TWAPs. A TWAP buys or sells a big order in slices every 30 seconds. The big ones ($20k+ a
+slice) have pushed price their way over the next 5 to 30 minutes (scripts/twapStudy.py; Runs 9 and 10 in the
+findings). The bot spots them live, shows them while they run, scores every one, and, with alerts on, tells you the
+moment one is spotted. It is still a test: the edge was found on one week and needs a week of live results.
 
-    the list       built from the server's recordings (the last 7 days) by scripts/bigMoversList.py, in its own
-                   low-priority process, every hour. A big mover: 20+ decisions, t 2.5+, an average move of 8+ bps
-                   its way within 60 seconds. No alerts while fewer than 10 wallets qualify
-    an alert       a listed wallet's aggressive trades on a watched coin (BTC, ETH) reach $1k on one side within 30s.
-                   Other big movers piling in on the same side within 30s join the same alert
-    what to do     the same side, as fast as you can, closed after the hold (30s)
-    the record     every alert is settled from the live book: in at the mid 2s, your fill delay (6s) and 10s after
-                   it, out after the hold, with the worst the best bid/ask went against you (so busts show at any
-                   leverage). A shadow balance takes the alerts you could (one trade at a time) at your leverage and
-                   margin
-    auto-pause     when the last 50 alerts average below 0 bps at your fill delay, or the last 24 hours below -1 bps,
-                   alerts stop being announced (still recorded) until the last 50 recover above +1 bps
-    storage        settings and the shadow balance in data/bot.json; settled alerts in the bars SQLite file
+    spotted     api/twaptrack.py: one wallet's market orders on one coin and side, 25-35s apart, at the 4th slice,
+                if the slices' median is $20k+
+    what to do  the TWAP's side within FILL_S seconds, closed after your hold (5, 15 or 30 min) or when the TWAP
+                stops (no slice for 35s; the bot says so)
+    the record  every TWAP settled from the live book: in at the mid FILL_S after it was spotted, out after 5, 15 and
+                30 min and when it stopped (at most an hour), with the worst the best bid/ask went against you (so
+                busts show at any leverage). A shadow balance takes the TWAPs you could (one at a time) at your
+                leverage, margin and hold
+    storage     settings and the shadow balance in data/bot.json; settled TWAPs in the bars SQLite file (bot_twaps)
 """
 import asyncio
 import json
 import logging
 import sqlite3
-import sys
 import time
 from collections import deque
 from pathlib import Path
 
-from config import BOT_FILE, ROOT
-from api.twaptrack import HOLDS_S as TWAP_HOLDS, TwapTracker
-from engine.bigmovers import pt_of, settle
+from config import BOT_FILE
+from api.twaptrack import END_AFTER_MS, END_CAP_S, HOLDS_S, LAG_S as FILL_S, TwapTracker
+from engine.bigmovers import pt_of
 from storage.sqlite import connect, transaction
 
 log = logging.getLogger("analytix.bot")
 
 TICK_S = 1.0
-LIST_FILE = ROOT / "data" / "bigmovers.json"
-REFRESH_S = 3600
-RING_KEEP_S = 65 * 60                # the silent TWAP test scores holds of up to an hour
-LAGS = (2, 10)                      # always recorded, alongside your fill delay
-MERGE_S = 30
-KEEP_ALERTS = 5000
-LAST_N = 50
-PAUSE_BELOW = 0.0                   # last 50 average, bps
-PAUSE_DAY_BELOW = -1.0              # last 24 h average, bps, with at least DAY_MIN alerts
-DAY_MIN = 20
-RESUME_ABOVE = 1.0
+RING_KEEP_S = END_CAP_S + 5 * 60        # the longest hold is an hour
+KEEP = 2000
 DAY_MS = 86_400_000
+STOPPED_SHOW_S = 60                     # how long "it stopped: close now" stays up
+HOLDS = [*map(str, HOLDS_S), "end"]     # "300", "900", "1800", "end"
+VERSION = 2                             # bot.json from the big-mover bot (no version) keeps settings, not its shadow
 
-DEFAULTS = {
-    "on": True, "coins": ["BTC", "ETH"], "balance": 50.0, "leverage": 200.0, "margin_pct": 20.0, "fill_s": 6,
-    "hold_s": 30, "telegram": True, "auto_pause": True,
-    "cutoff_bps": 8.0, "t_min": 2.5, "min_n": 20, "min_list": 10, "min_usd": 1000.0, "history_days": 7,
-}
-LIMITS = {"balance": (1, 1e7), "leverage": (1, 1000), "margin_pct": (1, 100), "fill_s": (1, 30), "hold_s": (5, 600),
-          "cutoff_bps": (2, 50), "t_min": (1, 10), "min_n": (5, 1000), "min_list": (1, 200), "min_usd": (100, 1e7),
-          "history_days": (1, 30)}
-INTS = ("fill_s", "hold_s", "min_n", "min_list", "history_days")
-LIST_KEYS = ("cutoff_bps", "t_min", "min_n", "min_usd", "history_days")       # change these and the list is rebuilt
-MONEY_KEYS = ("balance", "leverage", "margin_pct")                            # change these and the shadow restarts
+DEFAULTS = {"alerts": True, "telegram": False, "coins": ["BTC", "ETH"], "balance": 50.0, "leverage": 200.0,
+            "margin_pct": 20.0, "hold": "end"}
+LIMITS = {"balance": (1, 1e7), "leverage": (1, 1000), "margin_pct": (1, 100)}
+MONEY_KEYS = ("balance", "leverage", "margin_pct", "hold")          # change these and the shadow restarts
 KNOWN_COINS = ("BTC", "ETH", "SOL", "HYPE")
 
 
@@ -66,67 +48,50 @@ class BotError(ValueError):
     pass
 
 
+def hold_s(rec: dict, hold: str) -> int | None:
+    """Seconds held for this TWAP at this hold setting (None while a hold-until-it-stops TWAP is still running)."""
+    if hold != "end":
+        return int(hold)
+    return rec.get("hold_end_s")
+
+
 class BotService:
-    def __init__(self, runtime, path: Path = BOT_FILE, db_path: Path | None = None, list_file: Path = LIST_FILE):
+    def __init__(self, runtime, path: Path = BOT_FILE, db_path: Path | None = None):
         self.rt = runtime
         self.path = Path(path)
         self.db_path = db_path
-        self.list_file = Path(list_file)
         self.cfg = dict(DEFAULTS)
+        self.since_ms = int(time.time() * 1000)
         self.shadow = self._fresh_shadow()
-        self.wallets: dict[str, dict] = {}
-        self.seen: dict[str, int] = {}             # listed wallet → its last trade the live bot saw (ms)
-        self.list_info: dict = {}
-        self.list_state = "loading"            # loading | building | ready | empty | failed
-        self.list_error = ""
+        self.twaps = TwapTracker()
         self.ring: dict[str, dict[int, list]] = {}
         self.now_ms: dict[str, int] = {}
         self._mid: dict[str, float] = {}
-        self._decisions: dict[tuple, list] = {}   # (wallet, coin) → [side, first ms, last ms, usd, fired]
-        self._open: dict[tuple, dict] = {}         # (coin, side) → the open alert
-        self.alerts: deque = deque(maxlen=KEEP_ALERTS)
-        self._pending: deque = deque()
-        self.paused = False
-        self.pause_reason = ""
+        self._queue: deque = deque()              # spotted TWAPs waiting for their shadow trade, in time order
+        self._told_end: set[str] = set()
         self._db: sqlite3.Connection | None = None
         self._tasks: list[asyncio.Task] = []
-        self._building: asyncio.Task | None = None
-        self._unsaved: list[dict] = []
-        self.twaps = TwapTracker()                # big TWAPs, scored silently (api/twaptrack.py)
-        self.since_ms = int(time.time() * 1000)  # when this bot first ran (kept in bot.json), for the alert rate
         self._load()
-        self._load_list()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     async def start(self) -> None:
         if self.db_path:
             try:
                 self._db = connect(self.db_path)
-                self._db.execute("CREATE TABLE IF NOT EXISTS bot_alerts (id TEXT PRIMARY KEY, t_ms INTEGER NOT NULL, "
-                                 "data TEXT NOT NULL)")
-                self._db.execute("CREATE INDEX IF NOT EXISTS bot_alerts_t ON bot_alerts (t_ms)")
-                self._db.commit()
-                for (data,) in self._db.execute("SELECT data FROM bot_alerts ORDER BY t_ms DESC LIMIT ?", (KEEP_ALERTS,)):
-                    self.alerts.appendleft(json.loads(data))
                 self._db.execute("CREATE TABLE IF NOT EXISTS bot_twaps (id TEXT PRIMARY KEY, t_ms INTEGER NOT NULL, "
                                  "data TEXT NOT NULL)")
                 self._db.commit()
-                if self.alerts:
-                    self.since_ms = min(self.since_ms, self.alerts[0]["t_ms"])
                 self.twaps.load([json.loads(d) for (d,) in self._db.execute(
-                    "SELECT data FROM bot_twaps ORDER BY t_ms DESC LIMIT 2000")][::-1])
-                self._check_pause(quiet=True)
+                    "SELECT data FROM bot_twaps ORDER BY t_ms DESC LIMIT ?", (KEEP,))][::-1])
             except Exception:
-                log.exception("could not open the bot's alert history; it starts empty")
+                log.exception("could not open the bot's TWAP history; it starts empty")
                 self._db = None
         if self.rt.mode == "live":
-            self._save()                            # so the first start time is kept
+            self._save()
         self._tasks = [asyncio.create_task(self._loop(), name="bot")]
-        if self.rt.mode == "live":
-            self._tasks.append(asyncio.create_task(self._refresh_loop(), name="bot-list"))
 
     async def stop(self) -> None:
-        for t in self._tasks + ([self._building] if self._building else []):
+        for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._flush()
@@ -140,38 +105,6 @@ class BotService:
                 self.tick()
             except Exception:
                 log.exception("bot tick failed")
-
-    async def _refresh_loop(self) -> None:
-        while True:
-            age = time.time() * 1000 - self.list_info.get("built_ms", 0)
-            if age >= REFRESH_S * 1000 or self.list_state in ("loading", "failed"):
-                await self.refresh()
-            await asyncio.sleep(max(60.0, REFRESH_S - age / 1000) if age < REFRESH_S * 1000 else REFRESH_S)
-
-    async def refresh(self) -> None:
-        """Rebuild the list from the recordings in a separate, low-priority process."""
-        if self._building and not self._building.done():
-            return
-        self._building = asyncio.current_task()
-        self.list_state = "building"
-        c = self.cfg
-        cmd = [sys.executable, "-m", "scripts.bigMoversList", "--out", str(self.list_file),
-               "--days", str(c["history_days"]), "--min-usd", str(c["min_usd"]), "--min-n", str(c["min_n"]),
-               "--t-min", str(c["t_min"]), "--cutoff", str(c["cutoff_bps"])]
-        try:
-            proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(ROOT), stdout=asyncio.subprocess.DEVNULL,
-                                                        stderr=asyncio.subprocess.PIPE)
-            _, err = await proc.communicate()
-            if proc.returncode != 0:
-                lines = (err or b"").decode(errors="replace").strip().splitlines()
-                raise RuntimeError(lines[-1] if lines else f"exit code {proc.returncode}")
-            self._load_list()
-            log.info("big-mover list: %d wallets", len(self.wallets))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self.list_state, self.list_error = "failed", str(exc)[:200]
-            log.warning("could not build the big-mover list: %s", exc)
 
     # ── the live feed ──────────────────────────────────────────────────────
     def on_message(self, msg: dict) -> None:
@@ -210,84 +143,57 @@ class BotService:
         if len(users) != 2 or side not in ("B", "A"):
             return
         wallet, sd = (users[0], 1) if side == "B" else (users[1], -1)
-        wallet = wallet.lower()
         try:
             ms, usd = int(tr["time"]), float(tr["px"]) * float(tr["sz"])
         except (KeyError, TypeError, ValueError):
             return
         self.now_ms[coin] = max(self.now_ms.get(coin, 0), ms)
-        self.twaps.on_fill(wallet, coin, sd, ms, usd)
-        if wallet not in self.wallets:
-            return
-        self.seen[wallet] = max(self.seen.get(wallet, 0), ms)
-        key = (wallet, coin)
-        d = self._decisions.get(key)
-        if d is None or d[0] != sd or ms - d[2] > MERGE_S * 1000:
-            d = self._decisions[key] = [sd, ms, ms, 0.0, False]
-        d[2] = ms
-        d[3] += usd
-        if not d[4] and d[3] >= self.cfg["min_usd"]:
-            d[4] = True
-            self._decision(coin, wallet, sd, ms, d[3])
+        rec = self.twaps.on_fill(wallet.lower(), coin, sd, ms, usd)
+        if rec is not None:
+            self._spotted(rec)
 
-    def _decision(self, coin: str, wallet: str, side: int, ms: int, usd: float) -> None:
-        key = (coin, side)
-        a = self._open.get(key)
-        if a is not None and ms - a["last_ms"] <= MERGE_S * 1000:
-            if wallet not in a["wallets"]:
-                a["wallets"].append(wallet)
-            a["decisions"] += 1
-            a["usd"] += usd
-            a["last_ms"] = ms
-            return
-        status = self.status()
-        a = {"id": f"{coin}-{ms}-{side}", "coin": coin, "side": side, "t_ms": ms, "last_ms": ms, "wallets": [wallet],
-             "decisions": 1, "usd": usd, "mid": self._mid.get(coin), "announced": status == "live",
-             "why": "" if status == "live" else status, "fill_s": self.cfg["fill_s"], "hold_s": self.cfg["hold_s"],
-             "results": None, "shadow": None, "seen": time.time()}
-        self._open[key] = a
-        self.alerts.append(a)
-        self._pending.append(a)
-        if a["announced"] and self.cfg["telegram"]:
-            self._notify(alert_message(a, self.cfg), coin)
+    def _spotted(self, rec: dict) -> None:
+        rec["mid"] = self._mid.get(rec["coin"])
+        rec["announced"] = bool(self.cfg["alerts"])
+        rec["hold"] = self.cfg["hold"]
+        self._queue.append(rec)
+        if rec["announced"] and self.cfg["telegram"]:
+            self._notify(spotted_message(rec, self.cfg), rec["coin"])
 
-    # ── every second: settle, shadow trade, pause ──────────────────────────
+    # ── every second: settle, shadow trade, tell when a TWAP stops ─────────
     def tick(self) -> None:
-        while self._pending:
-            a = self._pending[0]
-            lags = sorted({*LAGS, int(self.cfg["fill_s"]), int(a["fill_s"])})
-            hold = int(a["hold_s"])
-            wait_s = max(lags) + hold + 2
-            due = a["t_ms"] + wait_s * 1000
-            now = self.now_ms.get(a["coin"], 0)
-            if now < due and time.time() < a.get("seen", 0) + wait_s + 30:     # the feed stalled: settle anyway
+        now = max(self.now_ms.values(), default=0)
+        if now:
+            self.twaps.tick(now, lambda c: self.ring.get(c, {}))
+        for rec in list(self._queue)[:50]:
+            if (rec["announced"] and rec.get("hold") == "end" and rec["end_ms"] is not None
+                    and rec["id"] not in self._told_end):
+                self._told_end.add(rec["id"])
+                if self.cfg["telegram"]:
+                    self._notify(stopped_message(rec), rec["coin"])
+        while self._queue:
+            rec = self._queue[0]
+            k = rec.get("hold", self.cfg["hold"])
+            done = k in rec["results"]
+            stale = now - rec["t_ms"] > (END_CAP_S + 300) * 1000
+            if not done and not stale:
                 break
-            self._pending.popleft()
-            rows = self.ring.get(a["coin"], {})
-            s0 = a["t_ms"] // 1000
-            a["results"] = {str(lag): settle(rows, s0, lag, hold, a["side"]) for lag in lags}
-            self._shadow_trade(a)
-            self._unsaved.append(a)
-            self._check_pause()
-        now_all = max(self.now_ms.values(), default=0)
-        if now_all:
-            self.twaps.tick(now_all, lambda c: self.ring.get(c, {}))
-        cutoff = int(max(self.now_ms.values(), default=0) // 1000) - RING_KEEP_S
+            self._queue.popleft()
+            self._told_end.discard(rec["id"])
+            if done:
+                self._shadow_trade(rec, k)
+        cutoff = now // 1000 - RING_KEEP_S
         for ring in self.ring.values():
             for s in [s for s in ring if s < cutoff]:
                 del ring[s]
-        for k in [k for k, a in self._open.items() if max(self.now_ms.values(), default=0) - a["last_ms"] > MERGE_S * 1000]:
-            del self._open[k]
-        for k in [k for k, d in self._decisions.items() if max(self.now_ms.values(), default=0) - d[2] > MERGE_S * 1000]:
-            del self._decisions[k]
         self._flush()
 
-    def _shadow_trade(self, a: dict) -> None:
+    def _shadow_trade(self, rec: dict, k: str) -> None:
         sh = self.shadow
-        r = (a["results"] or {}).get(str(a["fill_s"]))
-        if not a["announced"] or r is None or sh["busted"]:
+        r = rec["results"].get(k)
+        if not rec["announced"] or r is None or sh["busted"] or k != self.cfg["hold"]:
             return
-        start = a["t_ms"] + a["fill_s"] * 1000
+        start = rec["t_ms"] + FILL_S * 1000
         if start < sh["free_ms"]:
             return                                         # still in the last trade
         margin = self.cfg["margin_pct"] / 100 * sh["start"]
@@ -295,66 +201,33 @@ class BotService:
             sh["busted"] = True
             self._save()
             return
-        pt = pt_of(r, self.cfg["leverage"], a["coin"])
+        pt = pt_of(r, self.cfg["leverage"], rec["coin"])
         pnl = margin * pt
         sh["balance"] += pnl
         sh["trades"] += 1
         sh["wins"] += pnl > 0
         sh["busts"] += pt <= -1.0
-        sh["free_ms"] = start + a["hold_s"] * 1000
+        sh["free_ms"] = start + (hold_s(rec, k) or 0) * 1000
         sh["low"] = min(sh["low"], sh["balance"])
         if sh["balance"] < margin:
             sh["busted"] = True
-        a["shadow"] = {"pnl": round(pnl, 4), "balance": round(sh["balance"], 4), "pt": round(pt, 4)}
+        rec["shadow"] = {"pnl": round(pnl, 4), "balance": round(sh["balance"], 4), "pt": round(pt, 4)}
+        if rec not in self.twaps.unsaved:
+            self.twaps.unsaved.append(rec)                 # save it again with its shadow result
         self._save()
 
-    def _check_pause(self, quiet: bool = False) -> None:
-        if not self.cfg["auto_pause"]:
-            self.paused, self.pause_reason = False, ""
-            return
-        lag = str(self.cfg["fill_s"])
-        done = [a for a in self.alerts if a.get("results") and (a["results"].get(lag) or {}).get("bps") is not None]
-        last = [a["results"][lag]["bps"] for a in done[-LAST_N:]]
-        cut = (max(self.now_ms.values(), default=0) or int(time.time() * 1000)) - DAY_MS
-        day = [a["results"][lag]["bps"] for a in done if a["t_ms"] >= cut]
-        avg = sum(last) / len(last) if last else None
-        avg_day = sum(day) / len(day) if day else None
-        was = self.paused
-        if not self.paused:
-            if len(last) >= 30 and avg < PAUSE_BELOW:
-                self.paused, self.pause_reason = True, f"the last {len(last)} alerts averaged {avg:+.1f} bps"
-            elif len(day) >= DAY_MIN and avg_day < PAUSE_DAY_BELOW:
-                self.paused, self.pause_reason = True, f"the last 24 hours averaged {avg_day:+.1f} bps"
-        elif avg is not None and avg > RESUME_ABOVE and (avg_day is None or len(day) < DAY_MIN or avg_day >= PAUSE_DAY_BELOW):
-            self.paused, self.pause_reason = False, ""
-        if self.paused != was and not quiet and self.cfg["telegram"]:
-            self._notify(("Bot paused" if self.paused else "Bot back on",
-                          (f"Alerts stopped: {self.pause_reason}. Still watching." if self.paused
-                           else f"The last {len(last)} alerts are back to {avg:+.1f} bps on average.",)), "")
-
     def _flush(self) -> None:
-        if self.twaps.unsaved and self._db:
-            try:
-                with transaction(self._db):
-                    self._db.executemany("INSERT OR REPLACE INTO bot_twaps (id, t_ms, data) VALUES (?, ?, ?)",
-                                         [(r["id"], r["t_ms"], json.dumps(r)) for r in self.twaps.unsaved])
-                self.twaps.unsaved.clear()
-            except sqlite3.Error as exc:
-                log.warning("could not save TWAP records (will retry): %s", exc)
-        elif not self._db:
-            self.twaps.unsaved.clear()
-        if not self._unsaved:
+        if not self.twaps.unsaved:
             return
         if self._db:
             try:
                 with transaction(self._db):
-                    self._db.executemany("INSERT OR REPLACE INTO bot_alerts (id, t_ms, data) VALUES (?, ?, ?)",
-                                         [(a["id"], a["t_ms"], json.dumps(a)) for a in self._unsaved])
+                    self._db.executemany("INSERT OR REPLACE INTO bot_twaps (id, t_ms, data) VALUES (?, ?, ?)",
+                                         [(r["id"], r["t_ms"], json.dumps(r)) for r in self.twaps.unsaved])
             except sqlite3.Error as exc:
-                log.warning("could not save bot alerts (will retry): %s", exc)
-                del self._unsaved[:-2000]
+                log.warning("could not save TWAP records (will retry): %s", exc)
                 return
-        self._unsaved.clear()
+        self.twaps.unsaved.clear()
 
     def _notify(self, msg: tuple[str, tuple[str, ...]], coin: str) -> None:
         if self.rt.mode != "live" or not getattr(self.rt, "alerts", None):
@@ -363,20 +236,9 @@ class BotService:
         title, lines = msg
         self.rt.alerts.notify(Alert(f"bot-{time.time_ns()}", coin, "bot", int(time.time() * 1000), "neutral", title, lines))
 
-    # ── state ──────────────────────────────────────────────────────────────
-    def status(self) -> str:
-        if not self.cfg["on"]:
-            return "off"
-        if self.list_state in ("loading", "building") and not self.wallets:
-            return "warming"
-        if len(self.wallets) < self.cfg["min_list"]:
-            return "warming"
-        if self.paused:
-            return "paused"
-        return "live"
-
-    def _fresh_shadow(self, start: float | None = None) -> dict:
-        start = float(start if start is not None else self.cfg["balance"])
+    # ── settings ───────────────────────────────────────────────────────────
+    def _fresh_shadow(self) -> dict:
+        start = float(self.cfg["balance"])
         return {"start": start, "balance": start, "low": start, "trades": 0, "wins": 0, "busts": 0, "free_ms": 0,
                 "busted": False, "since_ms": int(time.time() * 1000)}
 
@@ -388,60 +250,40 @@ class BotService:
         except (ValueError, OSError):
             log.warning("could not read %s; using defaults", self.path)
             return
-        if "rules" in saved or "auto" in saved:            # the old rule-based bot: keep a copy, start fresh
-            try:
-                self.path.with_name(self.path.stem + ".old.json").write_text(json.dumps(saved), encoding="utf-8")
-            except OSError:
-                pass
-            return
-        self.cfg.update({k: v for k, v in (saved.get("settings") or {}).items() if k in DEFAULTS})
-        if saved.get("since_ms"):
-            self.since_ms = int(saved["since_ms"])
-        else:                                          # saved before this was kept: the new bot's first start
-            old = self.path.with_name(self.path.stem + ".old.json")
-            if old.exists():
-                self.since_ms = min(self.since_ms, int(old.stat().st_mtime * 1000))
-        if saved.get("shadow"):
-            self.shadow.update(saved["shadow"])
+        current = saved.get("v") == VERSION
+        keep = DEFAULTS if current else ("telegram", "coins", "balance", "leverage", "margin_pct")
+        self.cfg.update({k: v for k, v in (saved.get("settings") or {}).items() if k in keep and k in DEFAULTS})
+        self.shadow = self._fresh_shadow()                 # the big-mover bot's shadow doesn't carry over
+        if current:
+            self.shadow.update(saved.get("shadow") or {})
+            self.since_ms = int(saved.get("since_ms") or self.since_ms)
 
     def _save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"settings": self.cfg, "shadow": self.shadow, "since_ms": self.since_ms}, indent=1), encoding="utf-8")
+            tmp.write_text(json.dumps({"v": VERSION, "settings": self.cfg, "shadow": self.shadow,
+                                       "since_ms": self.since_ms}, indent=1), encoding="utf-8")
             tmp.replace(self.path)
         except OSError as exc:
             log.warning("could not save the bot settings: %s", exc)
-
-    def _load_list(self) -> None:
-        try:
-            info = json.loads(self.list_file.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return
-        except (ValueError, OSError) as exc:
-            self.list_state, self.list_error = "failed", str(exc)[:200]
-            return
-        self.set_list(info)
-
-    def set_list(self, info: dict) -> None:
-        self.list_info = {k: v for k, v in info.items() if k != "wallets"}
-        self.wallets = {w["wallet"].lower(): w for w in info.get("wallets") or []}
-        self.seen = {w: t for w, t in getattr(self, "seen", {}).items() if w in self.wallets}
-        self.list_state = "ready" if self.wallets else "empty"
-        self.list_error = ""
 
     def save_settings(self, patch: dict) -> dict:
         new = dict(self.cfg)
         for k, v in (patch or {}).items():
             if k not in DEFAULTS:
                 raise BotError(f"Unknown setting: {k}.")
-            if k in ("on", "telegram", "auto_pause"):
+            if k in ("alerts", "telegram"):
                 new[k] = bool(v)
             elif k == "coins":
                 coins = [str(c).upper() for c in (v or [])]
                 if not coins or any(c not in KNOWN_COINS for c in coins):
                     raise BotError(f"Coins must be some of {', '.join(KNOWN_COINS)}.")
                 new[k] = coins
+            elif k == "hold":
+                if str(v) not in HOLDS:
+                    raise BotError("Hold must be 5, 15 or 30 minutes, or until the TWAP stops.")
+                new[k] = str(v)
             else:
                 try:
                     x = float(v)
@@ -450,17 +292,12 @@ class BotService:
                 lo, hi = LIMITS[k]
                 if not lo <= x <= hi:
                     raise BotError(f"{k.replace('_', ' ')} must be between {lo:g} and {hi:g}.")
-                new[k] = int(round(x)) if k in INTS else x
-        rebuild = any(new[k] != self.cfg[k] for k in LIST_KEYS)
+                new[k] = x
         restart = any(new[k] != self.cfg[k] for k in MONEY_KEYS)
         self.cfg = new
         if restart:
             self.shadow = self._fresh_shadow()
-        if not new["auto_pause"]:
-            self.paused, self.pause_reason = False, ""
         self._save()
-        if rebuild and self.rt.mode == "live":
-            asyncio.get_running_loop().create_task(self.refresh())
         return self.public()
 
     def reset_shadow(self) -> dict:
@@ -468,91 +305,81 @@ class BotService:
         self._save()
         return self.public()
 
-    def start_refresh(self) -> dict:
-        if self.rt.mode != "live":
-            raise BotError("The list is built from live recordings, so only in live mode.")
-        asyncio.get_running_loop().create_task(self.refresh())
-        self.list_state = "building"
-        return self.public()
-
     # ── what the dashboard reads ───────────────────────────────────────────
+    def status(self) -> str:
+        return "live" if self.cfg["alerts"] else "silent"
+
     def live(self) -> dict:
         """The small piece every snapshot carries, so an alert reaches every open tab within half a second."""
-        st = self.status()
-        a = self.alerts[-1] if self.alerts else None
+        now = max(self.now_ms.values(), default=0)
         active = None
-        if a and a["announced"]:
-            now = max(self.now_ms.values(), default=0)
-            if now - a["t_ms"] <= (a["fill_s"] + a["hold_s"]) * 1000:
-                active = {"id": a["id"], "coin": a["coin"], "side": a["side"], "t_ms": a["t_ms"], "fill_s": a["fill_s"],
-                          "hold_s": a["hold_s"], "wallets": len(a["wallets"]), "usd": round(a["usd"]), "mid": a["mid"]}
-        return {"status": st, "alert": active}
+        for rec in reversed(list(self._queue)[-10:]):
+            if not rec["announced"]:
+                continue
+            k = rec.get("hold", "end")
+            if k == "end":
+                gone = rec["end_ms"] is not None and now > rec["end_ms"] + END_AFTER_MS + STOPPED_SHOW_S * 1000
+            else:
+                gone = now > rec["t_ms"] + (FILL_S + int(k)) * 1000
+            if gone or now - rec["t_ms"] > (END_CAP_S + FILL_S) * 1000:
+                continue
+            active = {"id": rec["id"], "coin": rec["coin"], "side": rec["side"], "t_ms": rec["t_ms"], "fill_s": FILL_S,
+                      "hold_s": None if k == "end" else int(k), "running": rec["end_ms"] is None,
+                      "slices": rec["slices"], "usd": round(rec["usd"]), "slice_usd": round(rec["usd"] / rec["slices"]),
+                      "mid": rec.get("mid")}
+            break
+        return {"status": self.status(), "alert": active}
 
-    def _row(self, a: dict) -> dict:
-        lag = str(self.cfg["fill_s"])
-        r = (a.get("results") or {}).get(lag) if a.get("results") else None
-        return {"id": a["id"], "coin": a["coin"], "side": a["side"], "t_ms": a["t_ms"], "wallets": len(a["wallets"]),
-                "usd": round(a["usd"]), "announced": a["announced"], "why": a.get("why", ""),
-                "settled": a.get("results") is not None, "bps": None if r is None else round(r["bps"], 2),
-                "pt": None if r is None else pt_of(r, self.cfg["leverage"], a["coin"]),
-                "shadow": a.get("shadow")}
+    def _move_now(self, rec: dict) -> float | None:
+        """bps the mid has moved the TWAP's way since the fill (FILL_S after it was spotted), live."""
+        rows = self.ring.get(rec["coin"], {})
+        e = rows.get(rec["t_ms"] // 1000 + FILL_S)
+        mid = self._mid.get(rec["coin"])
+        if not e or not mid:
+            return None
+        return rec["side"] * (mid / e[2] - 1) * 1e4
 
-    def record(self, since_ms: int | None = None, announced_only: bool = False) -> dict:
-        """How the alerts did: per fill delay, the average move, win rate and Papertrade result at your leverage."""
+    def _row(self, rec: dict) -> dict:
+        k = self.cfg["hold"]
+        r = (rec.get("results") or {}).get(k)
+        return {"id": rec["id"], "coin": rec["coin"], "side": rec["side"], "t_ms": rec["t_ms"],
+                "wallet": rec["wallet"], "slices": rec["slices"], "usd": round(rec["usd"]),
+                "slice_usd": round(rec["usd"] / max(rec["slices"], 1)), "running": rec["end_ms"] is None,
+                "end_ms": rec["end_ms"], "settled": r is not None, "bps": None if r is None else round(r["bps"], 2),
+                "pt": None if r is None else pt_of(r, self.cfg["leverage"], rec["coin"]),
+                "move_now": None if r is not None else self._move_now(rec), "shadow": rec.get("shadow"),
+                "announced": rec.get("announced", False)}
+
+    def record(self, since_ms: int | None = None) -> dict:
+        """Per hold: how riding every spotted TWAP did, at your leverage."""
         lev = self.cfg["leverage"]
         out = {}
-        for lag in sorted({*LAGS, int(self.cfg["fill_s"])}):
-            k = str(lag)
-            rs = [(a["results"][k], a["coin"]) for a in self.alerts
-                  if a.get("results") and a["results"].get(k) and (since_ms is None or a["t_ms"] >= since_ms)
-                  and (a["announced"] or not announced_only)]
+        for k in HOLDS:
+            rs = [(r["results"][k], r["coin"]) for r in self.twaps.records
+                  if (r.get("results") or {}).get(k) and (since_ms is None or r["t_ms"] >= since_ms)]
             if not rs:
                 out[k] = {"n": 0}
                 continue
-            bps = [r["bps"] for r, _ in rs]
-            pts = [pt_of(r, lev, c) for r, c in rs]
-            out[k] = {"n": len(rs), "bps": sum(bps) / len(bps), "win": sum(b > 0 for b in bps) / len(bps),
+            b = [x["bps"] for x, _ in rs]
+            pts = [pt_of(x, lev, c) for x, c in rs]
+            out[k] = {"n": len(rs), "bps": sum(b) / len(b), "win": sum(v > 0 for v in b) / len(b),
                       "pt": sum(pts) / len(pts), "busts": sum(p <= -1.0 for p in pts) / len(pts)}
-        return out
-
-    def twap_record(self, now: int) -> dict:
-        """The silent big-TWAP test: per hold, how riding them did, at your leverage."""
-        lev = self.cfg["leverage"]
-        out = {"spotted_24h": sum(1 for r in self.twaps.records if r["t_ms"] >= now - DAY_MS), "periods": {}}
-        for name, since in (("day", now - DAY_MS), ("week", now - 7 * DAY_MS), ("all", None)):
-            per = {}
-            for k in [*map(str, TWAP_HOLDS), "end"]:
-                rs = [(r["results"][k], r["coin"]) for r in self.twaps.records
-                      if (r.get("results") or {}).get(k) and (since is None or r["t_ms"] >= since)]
-                if not rs:
-                    per[k] = {"n": 0}
-                    continue
-                b = [x["bps"] for x, _ in rs]
-                pts = [pt_of(x, lev, c) for x, c in rs]
-                per[k] = {"n": len(rs), "bps": sum(b) / len(b), "win": sum(v > 0 for v in b) / len(b),
-                          "pt": sum(pts) / len(pts), "busts": sum(p <= -1.0 for p in pts) / len(pts)}
-            out["periods"][name] = per
         return out
 
     def public(self) -> dict:
         now = max(self.now_ms.values(), default=0) or int(time.time() * 1000)
-        settled = [a for a in self.alerts if a.get("results")]
-        lag = str(self.cfg["fill_s"])
-        last = [a["results"][lag]["bps"] for a in settled if (a["results"].get(lag) or {}).get("bps") is not None][-LAST_N:]
-        day = [a for a in self.alerts if a["t_ms"] >= now - DAY_MS]
-        span_h = max((now - max(now - DAY_MS, self.since_ms)) / 3.6e6, 0.25)     # under 24 h if it's newer than that
+        recs = list(self.twaps.records)
+        day = [r for r in recs if r["t_ms"] >= now - DAY_MS]
+        span_h = max((now - max(now - DAY_MS, self.since_ms)) / 3.6e6, 0.25)
+        running = self.twaps.running()
         return {
-            "status": self.status(), "pause_reason": self.pause_reason, "settings": self.cfg, "limits": LIMITS,
-            "known_coins": list(KNOWN_COINS), "live": self.live(),
-            "list": {"state": self.list_state, "error": self.list_error, "count": len(self.wallets), **self.list_info,
-                     "wallets": [{**w, "seen_ms": max(self.seen.get(k, 0), w.get("last_ms") or 0)} for k, w in
-                                 sorted(self.wallets.items(), key=lambda kw: -kw[1].get("mean_bps", 0))[:40]]},
+            "status": self.status(), "settings": self.cfg, "limits": LIMITS, "known_coins": list(KNOWN_COINS),
+            "holds": HOLDS, "fill_s": FILL_S, "live": self.live(),
             "shadow": {**self.shadow, "margin": self.cfg["margin_pct"] / 100 * self.shadow["start"]},
-            "last50": {"n": len(last), "bps": sum(last) / len(last) if last else None},
-            "today": {"alerts": len(day), "per_hour": len(day) / span_h, "hours": round(span_h, 1)},
-            "twaps": self.twap_record(now),
+            "today": {"spotted": len(day), "per_day": len(day) / span_h * 24, "hours": round(span_h, 1)},
+            "running": [self._row(r) for r in running][::-1],
+            "recent": [self._row(r) for r in recs if r["end_ms"] is not None][-30:][::-1],
             "record": {"day": self.record(now - DAY_MS), "week": self.record(now - 7 * DAY_MS), "all": self.record()},
-            "alerts": [self._row(a) for a in list(self.alerts)[-30:]][::-1],
             "now_ms": now,
         }
 
@@ -561,18 +388,22 @@ def _usd(x: float) -> str:
     return f"${x / 1000:.1f}k" if x >= 1000 else f"${x:.0f}"
 
 
-def _px(x: float | None) -> str:
-    if x is None:
-        return "-"
-    return f"{x:,.2f}" if x < 10_000 else f"{x:,.1f}"
+def _hold_words(k: str) -> str:
+    return "when it stops (you'll get a message)" if k == "end" else f"after {int(k) // 60} min"
 
 
-def alert_message(a: dict, cfg: dict) -> tuple[str, tuple[str, ...]]:
-    side = "LONG" if a["side"] > 0 else "SHORT"
-    did = "bought" if a["side"] > 0 else "sold"
+def spotted_message(rec: dict, cfg: dict) -> tuple[str, tuple[str, ...]]:
+    side = "LONG" if rec["side"] > 0 else "SHORT"
+    did = "buying" if rec["side"] > 0 else "selling"
     margin = cfg["margin_pct"] / 100 * cfg["balance"]
-    close = time.strftime("%H:%M:%S", time.gmtime((a["t_ms"] + (a["fill_s"] + a["hold_s"]) * 1000) / 1000))
-    return (f"{a['coin']} {side} now",
-            (f"A big mover {did} {_usd(a['usd'])} at {_px(a['mid'])}.",
-             f"Get in within {a['fill_s']}s, close after {a['hold_s']}s (about {close} UTC).",
-             f"{cfg['leverage']:g}x, ${margin:g} margin."))
+    px = rec.get("mid")
+    return (f"Big TWAP: {rec['coin']} {side}",
+            (f"A wallet is {did} about {_usd(rec['usd'] / rec['slices'])} every 30s ({_usd(rec['usd'])} so far).",
+             f"Get in within {FILL_S}s{f' near {px:,.2f}' if px else ''}, close {_hold_words(rec.get('hold', cfg['hold']))}.",
+             f"{cfg['leverage']:g}x, ${margin:,.2f} margin. Still a test."))
+
+
+def stopped_message(rec: dict) -> tuple[str, tuple[str, ...]]:
+    side = "long" if rec["side"] > 0 else "short"
+    return (f"{rec['coin']} TWAP stopped: close your {side}",
+            (f"No slice for 35s after {rec['slices']} slices ({_usd(rec['usd'])} in all).",))

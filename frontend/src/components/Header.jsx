@@ -108,7 +108,7 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
       </>}
 
       <div className="header-right">
-        <button className="alerts-open" onClick={onBot} title="Big-mover alerts: the moment a wallet whose trades are followed by big moves buys or sells">
+        <button className="alerts-open" onClick={onBot} title="Big TWAPs: wallets buying or selling $20k+ every 30s, live, scored, with optional alerts">
           Bot
         </button>
         <button className="alerts-open" onClick={onHold} title="Very high leverage: how long a position like yours survives, measured on the real best bid and ask">

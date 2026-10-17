@@ -269,7 +269,7 @@ async def hold(request: Request, coin: str | None = None, side: str = "long",
     return await rt.hold.read(coin, 1 if side == "long" else -1, leverage, target_pct, entry, bust, buffer_bps)
 
 
-# ── the bot: big-mover alerts ───────────────────────────────────────────────
+# ── the bot: big TWAPs ─────────────────────────────────────────────────────
 def _bot_call(fn, *args):
     from api.bot import BotError
     try:
@@ -280,24 +280,17 @@ def _bot_call(fn, *args):
 
 @router.get("/bot")
 async def bot(request: Request):
-    """The bot: its status, the big-mover list, the latest alerts with how each did, the record and the shadow
-    balance."""
+    """The bot: big TWAPs running now, the latest ones with how each did, the record and the shadow balance."""
     return _rt(request).bot.public()
 
 
 @router.put("/bot/settings")
 async def bot_settings(request: Request, patch: dict):
-    """Change settings. Balance, leverage or margin restart the shadow balance; the list settings rebuild the list."""
+    """Change settings. Balance, leverage, margin or hold restart the shadow balance."""
     return _bot_call(_rt(request).bot.save_settings, patch)
 
 
 @router.post("/bot/reset")
 async def bot_reset(request: Request):
-    """Start the shadow balance again from the set balance. The alert record is kept."""
+    """Start the shadow balance again from the set balance. The TWAP record is kept."""
     return _bot_call(_rt(request).bot.reset_shadow)
-
-
-@router.post("/bot/refresh")
-async def bot_refresh(request: Request):
-    """Rebuild the big-mover list from the recordings now."""
-    return _bot_call(_rt(request).bot.start_refresh)

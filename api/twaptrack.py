@@ -33,7 +33,8 @@ class TwapTracker:
         self._pending: list[dict] = []
         self.unsaved: list[dict] = []
 
-    def on_fill(self, wallet: str, coin: str, side: int, t_ms: int, usd: float) -> None:
+    def on_fill(self, wallet: str, coin: str, side: int, t_ms: int, usd: float) -> dict | None:
+        """One taker fill. Returns the record when this fill makes a run count as a big TWAP (spotted)."""
         st = self.keys.setdefault((wallet, coin, side), {"last": None, "run": [], "rec": None})
         last = st["last"]
         if last is not None and 0 <= t_ms - last[0] <= SLICE_MS:
@@ -49,13 +50,16 @@ class TwapTracker:
         rec = st["rec"]
         if rec is None and len(st["run"]) == SPOT_AT and median(s[1] for s in st["run"]) >= self.min_slice_usd:
             rec = st["rec"] = {"id": f"twap-{coin}-{t_ms}-{side}", "coin": coin, "side": side, "wallet": wallet,
-                               "t_ms": t_ms, "slices": SPOT_AT, "usd": sum(s[1] for s in st["run"]), "end_ms": None,
-                               "results": {}}
+                               "t_ms": t_ms, "start_ms": st["run"][0][0], "last_ms": t_ms, "slices": SPOT_AT,
+                               "usd": sum(s[1] for s in st["run"]), "end_ms": None, "results": {}}
             self.records.append(rec)
             self._pending.append(rec)
-        elif rec is not None:
+            return rec
+        if rec is not None:
             rec["slices"] = len(st["run"])
             rec["usd"] = sum(s[1] for s in st["run"])
+            rec["last_ms"] = st["run"][-1][0]
+        return None
 
     def _end(self, st: dict) -> None:
         rec = st.get("rec")
@@ -92,6 +96,11 @@ class TwapTracker:
             else:
                 still.append(rec)
         self._pending = still
+
+    def running(self) -> list[dict]:
+        """Spotted TWAPs whose beat hasn't stopped yet, oldest first."""
+        return sorted((st["rec"] for st in self.keys.values() if st["rec"] is not None and st["rec"]["end_ms"] is None),
+                      key=lambda r: r["t_ms"])
 
     def load(self, recs: list[dict]) -> None:
         for r in recs:
