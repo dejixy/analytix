@@ -138,8 +138,9 @@ function Hero({ d }) {
       <p className="bm-say">{headline(d)}</p>
       <p className="bm-sub">
         A wallet is {a.side > 0 ? "buying" : "selling"} about {usdk(a.slice_usd)} every 30s ({usdk(a.usd)} so far)
-        {a.mid ? `, spotted at ${a.mid.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ""}. {d.settings.leverage}×,{" "}
-        {usd(d.shadow.margin)} margin.
+        {a.mid ? `, spotted at ${a.mid.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ""}.
+        {a.plan ? ` Its plan: ${usdk(a.plan.total_usd)} over ${a.plan.minutes} min, ${usdk(a.plan.left_usd)} still to come, ending ${clock(a.plan.ends_ms)}.` : ""}{" "}
+        {d.settings.leverage}×, {usd(d.shadow.margin)} margin.
       </p>
     </div>
   );
@@ -188,6 +189,11 @@ function Running({ d }) {
             <span><b>{r.coin}</b> <span className={r.side > 0 ? "up" : "down"}>{sideWord(r.side).toLowerCase()}</span></span>
             <span className="muted">{usdk(r.slice_usd)} × {r.slices}</span>
             <span className={tone(r.move_now)} title="How far price has moved its way since 6s after it was spotted">{bps(r.move_now)}</span>
+            {r.plan && (
+              <span className="muted bm-plan">
+                plan {usdk(r.plan.total_usd)} over {r.plan.minutes} min · {usdk(r.plan.left_usd)} to come · ends {clock(r.plan.ends_ms)}
+              </span>
+            )}
           </div>
         ))}
       </div>

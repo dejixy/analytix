@@ -22,7 +22,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from config import BOT_FILE
+from config import BOT_FILE, HL_INFO_URL
 from api.twaptrack import END_AFTER_MS, END_CAP_S, HOLDS_S, LAG_S as FILL_S, TwapTracker
 from engine.bigmovers import pt_of
 from storage.sqlite import connect, transaction
@@ -33,6 +33,7 @@ TICK_S = 1.0
 RING_KEEP_S = END_CAP_S + 5 * 60        # the longest hold is an hour
 KEEP = 2000
 DAY_MS = 86_400_000
+LOOKUP_S = 3.0                          # the TWAP plan lookup gives up after this
 STOPPED_SHOW_S = 60                     # how long "it stopped: close now" stays up
 HOLDS = [*map(str, HOLDS_S), "end"]     # "300", "900", "1800", "end"
 VERSION = 2                             # bot.json from the big-mover bot (no version) keeps settings, not its shadow
@@ -71,6 +72,7 @@ class BotService:
         self._told_end: set[str] = set()
         self._db: sqlite3.Connection | None = None
         self._tasks: list[asyncio.Task] = []
+        self.info_url = HL_INFO_URL
         self._load()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -157,6 +159,28 @@ class BotService:
         rec["announced"] = bool(self.cfg["alerts"])
         rec["hold"] = self.cfg["hold"]
         self._queue.append(rec)
+        task = None
+        if self.rt.mode == "live":
+            try:
+                task = asyncio.get_running_loop().create_task(self._look_up(rec))
+            except RuntimeError:
+                task = None
+        if task is None and rec["announced"] and self.cfg["telegram"]:
+            self._notify(spotted_message(rec, self.cfg), rec["coin"])
+
+    async def _look_up(self, rec: dict) -> None:
+        """Ask Hyperliquid for the wallet's TWAP orders: the one on this coin and side is the full plan (total size,
+        minutes, how much is done). Telegram waits for it (at most LOOKUP_S) so the message can say how big it is."""
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=LOOKUP_S) as client:
+                r = await client.post(self.info_url, json={"type": "twapHistory", "user": rec["wallet"]})
+                r.raise_for_status()
+                plan = parse_plan(r.json(), rec["coin"], rec["side"], rec.get("start_ms", rec["t_ms"]), rec.get("mid"))
+            if plan:
+                rec["plan"] = plan
+        except Exception as exc:                                   # the record still works without it
+            log.info("TWAP lookup for %s failed: %s", rec["wallet"], exc)
         if rec["announced"] and self.cfg["telegram"]:
             self._notify(spotted_message(rec, self.cfg), rec["coin"])
 
@@ -326,7 +350,7 @@ class BotService:
             active = {"id": rec["id"], "coin": rec["coin"], "side": rec["side"], "t_ms": rec["t_ms"], "fill_s": FILL_S,
                       "hold_s": None if k == "end" else int(k), "running": rec["end_ms"] is None,
                       "slices": rec["slices"], "usd": round(rec["usd"]), "slice_usd": round(rec["usd"] / rec["slices"]),
-                      "mid": rec.get("mid")}
+                      "mid": rec.get("mid"), "plan": plan_now(rec)}
             break
         return {"status": self.status(), "alert": active}
 
@@ -348,7 +372,7 @@ class BotService:
                 "end_ms": rec["end_ms"], "settled": r is not None, "bps": None if r is None else round(r["bps"], 2),
                 "pt": None if r is None else pt_of(r, self.cfg["leverage"], rec["coin"]),
                 "move_now": None if r is not None else self._move_now(rec), "shadow": rec.get("shadow"),
-                "announced": rec.get("announced", False)}
+                "announced": rec.get("announced", False), "plan": plan_now(rec)}
 
     def record(self, since_ms: int | None = None) -> dict:
         """Per hold: how riding every spotted TWAP did, at your leverage."""
@@ -384,6 +408,45 @@ class BotService:
         }
 
 
+def parse_plan(history, coin: str, side: int, start_ms: int, mid: float | None) -> dict | None:
+    """From a wallet's twapHistory, the TWAP on this coin and side that started closest before start_ms (within
+    two minutes after it, for clock differences). → {total and done size, minutes, start, end, total $}."""
+    want = "B" if side > 0 else "A"
+    best = None
+    for h in history or []:
+        st = (h or {}).get("state") or {}
+        if st.get("coin") != coin or st.get("side") != want:
+            continue
+        try:
+            t = int(st.get("timestamp") or h.get("time") or 0)
+            t = t * 1000 if t < 1e12 else t
+            sz, minutes = float(st["sz"]), float(st["minutes"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if t > start_ms + 120_000 or t + minutes * 60_000 < start_ms:
+            continue
+        if best is None or t > best[0]:
+            best = (t, st, (h.get("status") or {}).get("status"))
+    if best is None:
+        return None
+    t, st, status = best
+    sz, minutes = float(st["sz"]), float(st["minutes"])
+    done_sz = float(st.get("executedSz") or 0)
+    done_usd = float(st.get("executedNtl") or 0)
+    px = mid or (done_usd / done_sz if done_sz else None)
+    return {"sz": sz, "minutes": minutes, "start_ms": t, "ends_ms": int(t + minutes * 60_000), "done_sz": done_sz,
+            "done_usd": done_usd, "total_usd": sz * px if px else None, "status": status}
+
+
+def plan_now(rec: dict) -> dict | None:
+    """The plan as it stands: total $, how much is still to come (total minus what the bot has seen), when it ends."""
+    p = rec.get("plan")
+    if not p or not p.get("total_usd"):
+        return None
+    return {"total_usd": round(p["total_usd"]), "left_usd": round(max(p["total_usd"] - rec["usd"], 0)),
+            "minutes": p["minutes"], "ends_ms": p["ends_ms"]}
+
+
 def _usd(x: float) -> str:
     return f"${x / 1000:.1f}k" if x >= 1000 else f"${x:.0f}"
 
@@ -397,8 +460,11 @@ def spotted_message(rec: dict, cfg: dict) -> tuple[str, tuple[str, ...]]:
     did = "buying" if rec["side"] > 0 else "selling"
     margin = cfg["margin_pct"] / 100 * cfg["balance"]
     px = rec.get("mid")
+    p = plan_now(rec)
+    plan = (f" Its plan: {_usd(p['total_usd'])} over {p['minutes']:g} min, about {_usd(p['left_usd'])} still to come, "
+            f"ending {time.strftime('%H:%M', time.gmtime(p['ends_ms'] / 1000))} UTC." if p else "")
     return (f"Big TWAP: {rec['coin']} {side}",
-            (f"A wallet is {did} about {_usd(rec['usd'] / rec['slices'])} every 30s ({_usd(rec['usd'])} so far).",
+            (f"A wallet is {did} about {_usd(rec['usd'] / rec['slices'])} every 30s ({_usd(rec['usd'])} so far).{plan}",
              f"Get in within {FILL_S}s{f' near {px:,.2f}' if px else ''}, close {_hold_words(rec.get('hold', cfg['hold']))}.",
              f"{cfg['leverage']:g}x, ${margin:,.2f} margin. Still a test."))
 

@@ -55,7 +55,9 @@ export default function BotBanner({ bot, nowMs, onOpen }) {
     <div className={`bm-banner ${long ? "long" : "short"}`} role="alert" onClick={onOpen}>
       <b className="bm-banner-call">{a.coin} {long ? "LONG" : "SHORT"}</b>
       <span className="bm-banner-time">{when}</span>
-      <span className="bm-banner-why">Big TWAP {long ? "buying" : "selling"} {usdk(a.slice_usd)} every 30s</span>
+      <span className="bm-banner-why">
+        Big TWAP {long ? "buying" : "selling"} {usdk(a.slice_usd)} every 30s{a.plan ? ` · ${usdk(a.plan.left_usd)} to come` : ""}
+      </span>
       <button className="plan-close" onClick={(e) => { e.stopPropagation(); setHidden(a.id); }} aria-label="Hide">✕</button>
     </div>
   );

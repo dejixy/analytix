@@ -152,3 +152,64 @@ def test_messages_are_plain():
     assert "buying about $30.0k every 30s ($120.0k so far)" in lines[0]
     assert "within 6s near 2,500.00, close when it stops" in lines[1] and "$10.00 margin" in lines[2]
     assert stopped_message({**rec, "slices": 10, "usd": 300_000})[0] == "ETH TWAP stopped: close your long"
+
+
+def test_parse_plan_picks_the_twap_on_this_coin_and_side():
+    from api.bot import parse_plan
+    t = T0 * 1000
+    hist = [
+        {"time": T0, "state": {"coin": "ETH", "side": "B", "sz": "100", "minutes": 30, "timestamp": t,
+                               "executedSz": "10", "executedNtl": "25000"}, "status": {"status": "activated"}},
+        {"time": T0, "state": {"coin": "ETH", "side": "A", "sz": "999", "minutes": 30, "timestamp": t}},
+        {"time": T0, "state": {"coin": "BTC", "side": "B", "sz": "999", "minutes": 30, "timestamp": t}},
+        {"time": T0 - 86_400, "state": {"coin": "ETH", "side": "B", "sz": "5", "minutes": 10,
+                                        "timestamp": t - 86_400_000}},          # an old one, long finished
+    ]
+    p = parse_plan(hist, "ETH", 1, t + 90_000, 2500.0)
+    assert p["sz"] == 100 and p["minutes"] == 30 and p["ends_ms"] == t + 30 * 60_000
+    assert p["total_usd"] == 250_000 and p["done_usd"] == 25_000 and p["status"] == "activated"
+    assert parse_plan(hist, "ETH", -1, t + 90_000, 2500.0)["sz"] == 999
+    assert parse_plan(hist, "SOL", 1, t, 1.0) is None and parse_plan([], "ETH", 1, t, 1.0) is None
+
+
+def test_the_live_bot_looks_up_the_plan_and_shows_whats_left(tmp_path, monkeypatch):
+    import httpx
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{"time": T0 + 100, "status": {"status": "activated"},
+                     "state": {"coin": "ETH", "side": "B", "sz": "240", "minutes": 10, "timestamp": (T0 + 100) * 1000,
+                               "executedSz": "36", "executedNtl": "90000"}}]
+
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json):
+            assert json == {"type": "twapHistory", "user": TW}
+            return Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    s = BotService(SimpleNamespace(mode="live", alerts=None), tmp_path / "bot.json", None)
+
+    async def go():
+        run(s, 100 + 30 * 3 + 10, slices=10)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(go())
+    p = s.public()["running"][0]["plan"]
+    assert p["minutes"] == 10 and p["ends_ms"] == (T0 + 100 + 600) * 1000
+    assert p["total_usd"] == pytest.approx(240 * 2501.9, rel=1e-3)          # at the mid when spotted
+    assert p["left_usd"] == pytest.approx(p["total_usd"] - 120_000, abs=1)   # minus the 4 slices seen
+    assert s.live()["alert"]["plan"]["minutes"] == 10
+    title, lines = spotted_message(s.twaps.records[0], s.cfg)
+    assert "Its plan: $600.5k over 10 min" in lines[0]
