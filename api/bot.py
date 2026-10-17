@@ -23,7 +23,7 @@ from collections import deque
 from pathlib import Path
 
 from config import BOT_FILE, HL_INFO_URL
-from api.twaptrack import END_AFTER_MS, END_CAP_S, HOLDS_S, LAG_S as FILL_S, TwapTracker
+from api.twaptrack import END_AFTER_MS, END_CAP_S, HOLDS_S, LAG_S as FILL_S, MIN_SLICE_USD, TwapTracker
 from engine.bigmovers import pt_of
 from storage.sqlite import connect, transaction
 
@@ -36,10 +36,15 @@ DAY_MS = 86_400_000
 LOOKUP_S = 3.0                          # the TWAP plan lookup gives up after this
 STOPPED_SHOW_S = 60                     # how long "it stopped: close now" stays up
 HOLDS = [*map(str, HOLDS_S), "end"]     # "300", "900", "1800", "end"
-VERSION = 2                             # bot.json from the big-mover bot (no version) keeps settings, not its shadow
+VERSION = 3                             # 3: strong TWAPs and a 15-minute hold (an older bot.json keeps its other settings)
+STRONG_LEFT_USD = 250_000               # a strong TWAP still has this much to come...
+STRONG_SHARE = 0.02                     # ...and that's at least this share of the coin's usual trading while it runs
+LOOKUPS_PER_MIN = 20                    # early (slice 2) plan lookups, at most; well inside Hyperliquid's limits
+PLAN_CACHE_S = 120
 
-DEFAULTS = {"alerts": True, "telegram": False, "coins": ["BTC", "ETH"], "balance": 50.0, "leverage": 200.0,
-            "margin_pct": 20.0, "hold": "end"}
+DEFAULTS = {"alerts": True, "alert_on": "strong", "telegram": False, "coins": ["BTC", "ETH"], "balance": 50.0,
+            "leverage": 200.0, "margin_pct": 20.0, "hold": "900"}
+ALERT_ON = ("strong", "all")
 LIMITS = {"balance": (1, 1e7), "leverage": (1, 1000), "margin_pct": (1, 100)}
 MONEY_KEYS = ("balance", "leverage", "margin_pct", "hold")          # change these and the shadow restarts
 KNOWN_COINS = ("BTC", "ETH", "SOL", "HYPE")
@@ -73,6 +78,11 @@ class BotService:
         self._db: sqlite3.Connection | None = None
         self._tasks: list[asyncio.Task] = []
         self.info_url = HL_INFO_URL
+        self.lookup = getattr(runtime, "mode", "") == "live"       # ask Hyperliquid for TWAP plans (live only)
+        self._plans: dict[tuple, tuple] = {}                         # (wallet, coin, side) → (asked at, plan or None)
+        self._asked: deque = deque()                                 # times of early lookups, for the rate cap
+        self.plan_stats = {"asked": 0, "found": 0}
+        self._vol: dict[str, dict[int, float]] = {}                  # coin → hour → $ traded
         self._load()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -150,37 +160,107 @@ class BotService:
         except (KeyError, TypeError, ValueError):
             return
         self.now_ms[coin] = max(self.now_ms.get(coin, 0), ms)
+        vol = self._vol.setdefault(coin, {})
+        h = ms // 3_600_000
+        vol[h] = vol.get(h, 0.0) + usd
+        if len(vol) > 30:
+            for old in [x for x in vol if x < h - 25]:
+                del vol[old]
         rec = self.twaps.on_fill(wallet.lower(), coin, sd, ms, usd)
         if rec is not None:
             self._spotted(rec)
+        while self.twaps.candidates:
+            self._candidate(self.twaps.candidates.pop())
 
-    def _spotted(self, rec: dict) -> None:
+    def rate(self, coin: str, now_ms: int) -> float | None:
+        """The coin's usual trading, $ a second: the average of the last 24 full hours (or this hour so far)."""
+        vol = self._vol.get(coin) or {}
+        h = now_ms // 3_600_000
+        past = [v for k, v in vol.items() if h - 24 <= k < h]
+        if past:
+            return sum(past) / (len(past) * 3600)
+        cur = vol.get(h)
+        return cur / max((now_ms % 3_600_000) / 1000, 600) if cur else None
+
+    # ── TWAP plans from Hyperliquid ────────────────────────────────────────
+    async def _fetch(self, wallet: str):
+        import httpx
+        async with httpx.AsyncClient(timeout=LOOKUP_S) as client:
+            r = await client.post(self.info_url, json={"type": "twapHistory", "user": wallet})
+            r.raise_for_status()
+            return r.json()
+
+    async def _plan_of(self, wallet: str, coin: str, side: int, start_ms: int | None) -> dict | None:
+        key = (wallet, coin, side)
+        got = self._plans.get(key)
+        if got and time.time() - got[0] < PLAN_CACHE_S and (got[1] is not None or start_ms is None):
+            return got[1]
+        self.plan_stats["asked"] += 1
+        try:
+            plan = parse_plan(await self._fetch(wallet), coin, side, start_ms or 0, self._mid.get(coin))
+        except Exception as exc:                                   # everything still works without it
+            log.info("TWAP plan lookup for %s failed: %s", wallet, exc)
+            plan = None
+        self._plans[key] = (time.time(), plan)
+        if len(self._plans) > 5000:
+            cut = time.time() - PLAN_CACHE_S
+            self._plans = {k: v for k, v in self._plans.items() if v[0] >= cut}
+        if plan:
+            self.plan_stats["found"] += 1
+        return plan
+
+    def _candidate(self, key: tuple) -> None:
+        """Two $10k+ slices 30s apart: ask Hyperliquid now, so a big TWAP is caught at slice 2, not 4."""
+        if not self.lookup:
+            return
+        now = time.time()
+        while self._asked and now - self._asked[0] > 60:
+            self._asked.popleft()
+        if len(self._asked) >= LOOKUPS_PER_MIN:
+            return
+        self._asked.append(now)
+        try:
+            asyncio.get_running_loop().create_task(self._confirm(key))
+        except RuntimeError:
+            pass
+
+    async def _confirm(self, key: tuple) -> None:
+        wallet, coin, side = key
+        plan = await self._plan_of(wallet, coin, side, self.twaps.run_start(key))
+        if not plan or plan.get("status") not in (None, "activated") or planned_slice(plan) < MIN_SLICE_USD:
+            return
+        now = max(self.now_ms.values(), default=0) or int(time.time() * 1000)
+        rec = self.twaps.spot(key, now)
+        if rec is not None:
+            rec["plan"] = plan
+            self._spotted(rec, have_plan=True)
+
+    def _spotted(self, rec: dict, have_plan: bool = False) -> None:
         rec["mid"] = self._mid.get(rec["coin"])
-        rec["announced"] = bool(self.cfg["alerts"])
         rec["hold"] = self.cfg["hold"]
+        rec["announced"] = False
         self._queue.append(rec)
-        task = None
-        if self.rt.mode == "live":
-            try:
-                task = asyncio.get_running_loop().create_task(self._look_up(rec))
-            except RuntimeError:
-                task = None
-        if task is None and rec["announced"] and self.cfg["telegram"]:
-            self._notify(spotted_message(rec, self.cfg), rec["coin"])
+        if have_plan or not self.lookup:
+            self._decide(rec)
+            return
+        try:
+            asyncio.get_running_loop().create_task(self._look_up(rec))
+        except RuntimeError:
+            self._decide(rec)
 
     async def _look_up(self, rec: dict) -> None:
-        """Ask Hyperliquid for the wallet's TWAP orders: the one on this coin and side is the full plan (total size,
-        minutes, how much is done). Telegram waits for it (at most LOOKUP_S) so the message can say how big it is."""
-        import httpx
-        try:
-            async with httpx.AsyncClient(timeout=LOOKUP_S) as client:
-                r = await client.post(self.info_url, json={"type": "twapHistory", "user": rec["wallet"]})
-                r.raise_for_status()
-                plan = parse_plan(r.json(), rec["coin"], rec["side"], rec.get("start_ms", rec["t_ms"]), rec.get("mid"))
-            if plan:
-                rec["plan"] = plan
-        except Exception as exc:                                   # the record still works without it
-            log.info("TWAP lookup for %s failed: %s", rec["wallet"], exc)
+        """Spotted at slice 4 without a plan yet: ask Hyperliquid (at most LOOKUP_S), then decide."""
+        plan = await self._plan_of(rec["wallet"], rec["coin"], rec["side"], rec.get("start_ms", rec["t_ms"]))
+        if plan:
+            rec["plan"] = plan
+        self._decide(rec)
+
+    def _decide(self, rec: dict) -> None:
+        """Strong or not, from the plan: what's still to come and its share of the coin's usual trading. Alerts
+        (banner, Telegram, the shadow balance) follow your setting; every TWAP is scored either way."""
+        now = max(self.now_ms.values(), default=0) or rec["t_ms"]
+        rec["strength"] = strength(rec, now, self.rate(rec["coin"], now))
+        rec["announced"] = bool(self.cfg["alerts"]) and (self.cfg["alert_on"] == "all" or rec["strength"]["strong"])
         if rec["announced"] and self.cfg["telegram"]:
             self._notify(spotted_message(rec, self.cfg), rec["coin"])
 
@@ -274,12 +354,14 @@ class BotService:
         except (ValueError, OSError):
             log.warning("could not read %s; using defaults", self.path)
             return
-        current = saved.get("v") == VERSION
-        keep = DEFAULTS if current else ("telegram", "coins", "balance", "leverage", "margin_pct")
-        self.cfg.update({k: v for k, v in (saved.get("settings") or {}).items() if k in keep and k in DEFAULTS})
-        self.shadow = self._fresh_shadow()                 # the big-mover bot's shadow doesn't carry over
-        if current:
+        v = saved.get("v")
+        keep = {VERSION: DEFAULTS, 2: ("alerts", "telegram", "coins", "balance", "leverage", "margin_pct")}.get(
+            v, ("telegram", "coins", "balance", "leverage", "margin_pct"))
+        self.cfg.update({k: x for k, x in (saved.get("settings") or {}).items() if k in keep and k in DEFAULTS})
+        self.shadow = self._fresh_shadow()                 # a new strategy starts a new shadow balance
+        if v == VERSION:
             self.shadow.update(saved.get("shadow") or {})
+        if v in (2, VERSION):
             self.since_ms = int(saved.get("since_ms") or self.since_ms)
 
     def _save(self) -> None:
@@ -299,6 +381,10 @@ class BotService:
                 raise BotError(f"Unknown setting: {k}.")
             if k in ("alerts", "telegram"):
                 new[k] = bool(v)
+            elif k == "alert_on":
+                if v not in ALERT_ON:
+                    raise BotError("Alert on must be strong or all.")
+                new[k] = v
             elif k == "coins":
                 coins = [str(c).upper() for c in (v or [])]
                 if not coins or any(c not in KNOWN_COINS for c in coins):
@@ -372,15 +458,18 @@ class BotService:
                 "end_ms": rec["end_ms"], "settled": r is not None, "bps": None if r is None else round(r["bps"], 2),
                 "pt": None if r is None else pt_of(r, self.cfg["leverage"], rec["coin"]),
                 "move_now": None if r is not None else self._move_now(rec), "shadow": rec.get("shadow"),
-                "announced": rec.get("announced", False), "plan": plan_now(rec)}
+                "announced": rec.get("announced", False), "plan": plan_now(rec),
+                "strong": (rec.get("strength") or {}).get("strong"), "known": (rec.get("strength") or {}).get("known"),
+                "share": (rec.get("strength") or {}).get("share"), "spot_slice": rec.get("spot_slice", 4)}
 
-    def record(self, since_ms: int | None = None) -> dict:
-        """Per hold: how riding every spotted TWAP did, at your leverage."""
+    def record(self, since_ms: int | None = None, strong_only: bool = False) -> dict:
+        """Per hold: how riding every spotted TWAP (or only the strong ones) did, at your leverage."""
         lev = self.cfg["leverage"]
         out = {}
         for k in HOLDS:
             rs = [(r["results"][k], r["coin"]) for r in self.twaps.records
-                  if (r.get("results") or {}).get(k) and (since_ms is None or r["t_ms"] >= since_ms)]
+                  if (r.get("results") or {}).get(k) and (since_ms is None or r["t_ms"] >= since_ms)
+                  and (not strong_only or (r.get("strength") or {}).get("strong"))]
             if not rs:
                 out[k] = {"n": 0}
                 continue
@@ -396,14 +485,18 @@ class BotService:
         day = [r for r in recs if r["t_ms"] >= now - DAY_MS]
         span_h = max((now - max(now - DAY_MS, self.since_ms)) / 3.6e6, 0.25)
         running = self.twaps.running()
+        rec_of = lambda since: {"all": self.record(since), "strong": self.record(since, strong_only=True)}
         return {
             "status": self.status(), "settings": self.cfg, "limits": LIMITS, "known_coins": list(KNOWN_COINS),
             "holds": HOLDS, "fill_s": FILL_S, "live": self.live(),
             "shadow": {**self.shadow, "margin": self.cfg["margin_pct"] / 100 * self.shadow["start"]},
-            "today": {"spotted": len(day), "per_day": len(day) / span_h * 24, "hours": round(span_h, 1)},
+            "today": {"spotted": len(day), "per_day": len(day) / span_h * 24, "hours": round(span_h, 1),
+                      "strong": sum(1 for r in day if (r.get("strength") or {}).get("strong")),
+                      "known": sum(1 for r in day if (r.get("strength") or {}).get("known"))},
+            "plans": dict(self.plan_stats),
             "running": [self._row(r) for r in running][::-1],
             "recent": [self._row(r) for r in recs if r["end_ms"] is not None][-30:][::-1],
-            "record": {"day": self.record(now - DAY_MS), "week": self.record(now - 7 * DAY_MS), "all": self.record()},
+            "record": {"day": rec_of(now - DAY_MS), "week": rec_of(now - 7 * DAY_MS), "all": rec_of(None)},
             "now_ms": now,
         }
 
@@ -436,6 +529,24 @@ def parse_plan(history, coin: str, side: int, start_ms: int, mid: float | None) 
     px = mid or (done_usd / done_sz if done_sz else None)
     return {"sz": sz, "minutes": minutes, "start_ms": t, "ends_ms": int(t + minutes * 60_000), "done_sz": done_sz,
             "done_usd": done_usd, "total_usd": sz * px if px else None, "status": status}
+
+
+def planned_slice(plan: dict) -> float:
+    """$ per slice the plan works out to (Hyperliquid sends one every 30 seconds)."""
+    return (plan.get("total_usd") or 0) / max(plan.get("minutes", 0) * 2, 1)
+
+
+def strength(rec: dict, now_ms: int, rate: float | None) -> dict:
+    """Strong = $250k+ still to come and that's 2%+ of the coin's usual trading over the time left (the TWAP size
+    study: weaker ones didn't move price their way)."""
+    p = rec.get("plan")
+    if not p or not p.get("total_usd"):
+        return {"known": False, "strong": False}
+    left = max(p["total_usd"] - rec["usd"], 0.0)
+    left_s = max((p["ends_ms"] - now_ms) / 1000, 30.0)
+    share = left / (rate * left_s) if rate else None
+    return {"known": True, "strong": bool(left >= STRONG_LEFT_USD and share is not None and share >= STRONG_SHARE),
+            "left_usd": round(left), "left_s": round(left_s), "share": share}
 
 
 def plan_now(rec: dict) -> dict | None:

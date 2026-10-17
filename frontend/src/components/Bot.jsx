@@ -150,7 +150,7 @@ function Numbers({ d }) {
   const sh = d.shadow;
   const change = sh.start ? sh.balance / sh.start - 1 : null;
   const k = d.settings.hold;
-  const wk = d.record.week[k] || {};
+  const wk = (d.record.week[d.settings.alert_on] || {})[k] || {};
   return (
     <div className="tiles bm-tiles">
       <div className="tile">
@@ -159,7 +159,7 @@ function Numbers({ d }) {
         <div className="tile-sub">{sh.busted ? "Out of margin: reset in Settings" : `${pct(change)} from ${usd(sh.start)} · ${sh.trades} trades`}</div>
       </div>
       <div className="tile">
-        <div className="tile-label">Average, 7 days</div>
+        <div className="tile-label">Average, 7 days{d.settings.alert_on === "strong" ? ", strong" : ""}</div>
         <div className={`tile-value ${tone(wk.bps)}`}>{wk.n ? bps(wk.bps) : "-"}</div>
         <div className="tile-sub">{wk.n ? `${wk.n} TWAPs · ${pct(wk.win, false)} went its way` : "none finished yet"}</div>
       </div>
@@ -171,7 +171,7 @@ function Numbers({ d }) {
       <div className="tile">
         <div className="tile-label">Spotted, last {d.today.hours >= 23.9 ? "24" : Math.max(1, Math.round(d.today.hours))} h</div>
         <div className="tile-value">{d.today.spotted}</div>
-        <div className="tile-sub">about {d.today.per_day.toFixed(0)} a day · {d.running.length} running</div>
+        <div className="tile-sub">{d.today.strong} strong · about {d.today.per_day.toFixed(0)} a day · {d.running.length} running</div>
       </div>
     </div>
   );
@@ -189,11 +189,10 @@ function Running({ d }) {
             <span><b>{r.coin}</b> <span className={r.side > 0 ? "up" : "down"}>{sideWord(r.side).toLowerCase()}</span></span>
             <span className="muted">{usdk(r.slice_usd)} × {r.slices}</span>
             <span className={tone(r.move_now)} title="How far price has moved its way since 6s after it was spotted">{bps(r.move_now)}</span>
-            {r.plan && (
-              <span className="muted bm-plan">
-                plan {usdk(r.plan.total_usd)} over {r.plan.minutes} min · {usdk(r.plan.left_usd)} to come · ends {clock(r.plan.ends_ms)}
-              </span>
-            )}
+            <span className="muted bm-plan">
+              <Strength r={r} />
+              {r.plan ? ` · plan ${usdk(r.plan.total_usd)} over ${r.plan.minutes} min · ${usdk(r.plan.left_usd)} to come · ends ${clock(r.plan.ends_ms)}` : ""}
+            </span>
           </div>
         ))}
       </div>
@@ -214,7 +213,7 @@ function Latest({ d }) {
           {rows.map((r) => (
             <div key={r.id} className={`bm-row ${r.announced ? "" : "quiet"}`}>
               <span className="muted">{clock(r.t_ms)}</span>
-              <span><b>{r.coin}</b> <span className={r.side > 0 ? "up" : "down"}>{sideWord(r.side).toLowerCase()}</span> <span className="muted">{usdk(r.usd)}</span></span>
+              <span><b>{r.coin}</b> <span className={r.side > 0 ? "up" : "down"}>{sideWord(r.side).toLowerCase()}</span> <span className="muted">{usdk(r.usd)}</span> <Strength r={r} /></span>
               {!r.settled ? (
                 <span className="muted bm-span">{r.move_now == null ? "feed gap, not scored" : "settling"}</span>
               ) : (
@@ -232,6 +231,12 @@ function Latest({ d }) {
       )}
     </section>
   );
+}
+
+function Strength({ r }) {
+  if (r.strong) return <span className="up">strong</span>;
+  if (r.known) return <span className="muted">small</span>;
+  return <span className="muted">no plan</span>;
 }
 
 const MONEY = [["balance", "Balance", "$"], ["margin_pct", "Margin per trade", "%"]];
@@ -274,6 +279,14 @@ function Settings({ d, call }) {
           Sound {sound ? "on" : "off"}
         </button>
       </div>
+      <label className="plan-field">
+        Alert on
+        <span className="bm-lev">
+          {[["strong", "Strong ones"], ["all", "All"]].map(([k, label]) => (
+            <button key={k} className={`plan-chip ${draft.alert_on === k ? "on" : ""}`} onClick={() => set("alert_on", k)}>{label}</button>
+          ))}
+        </span>
+      </label>
       <div className="plan-holds" role="group" aria-label="Coins">
         {d.known_coins.map((k) => {
           const on = draft.coins.includes(k);
@@ -312,12 +325,17 @@ function Settings({ d, call }) {
 
 function Record({ d }) {
   const [per, setPer] = useState("week");
-  const rec = d.record[per] || {};
+  const [group, setGroup] = useState(d.settings.alert_on);
+  const rec = (d.record[per] || {})[group] || {};
   return (
     <section className="plan-sec">
       <div className="plan-holds">
         {[["day", "24 h"], ["week", "7 days"], ["all", "All"]].map(([k, label]) => (
           <button key={k} className={`plan-chip ${per === k ? "on" : ""}`} onClick={() => setPer(k)}>{label}</button>
+        ))}
+        <span className="bm-gap" />
+        {[["strong", "Strong"], ["all", "Every TWAP"]].map(([k, label]) => (
+          <button key={k} className={`plan-chip ${group === k ? "on" : ""}`} onClick={() => setGroup(k)}>{label}</button>
         ))}
       </div>
       <table className="plan-table">
@@ -343,8 +361,9 @@ function Record({ d }) {
       </table>
       <p className="plan-note muted">
         Every big TWAP, settled from the live book: in at the mid {d.fill_s}s after it was spotted, out after the hold.
-        Papertrade's cut on wins included. In the test week: about +4 bps until it stops, +6 over 15 to 30 min, a little
-        over half going its way. Judge it on 100 or more.
+        Papertrade's cut on wins included. Strong = $250k+ still to come and 2%+ of the coin's usual trading while it
+        runs. In the test week, strong ones made about +9 bps at 15 min and the rest about nothing. Judge it on 100 or
+        more strong ones. Plans read from Hyperliquid: {d.plans.found} of {d.plans.asked} asked.
       </p>
     </section>
   );
@@ -355,7 +374,8 @@ function How({ d }) {
     <section className="plan-sec">
       <ol className="bm-how">
         <li>Hyperliquid's TWAP orders buy or sell in slices every 30 seconds. When one wallet does that with $20k+ slices, price has tended to drift its way while the rest comes in.</li>
-        <li>The bot spots one at its 4th slice (about 90 seconds in) on {d.settings.coins.join(" or ")}. With alerts on you get the call: coin, side, a sound, and Telegram if it's on.</li>
+        <li>The bot asks Hyperliquid for the wallet's TWAP order as soon as two slices land (about 30 seconds in), so it knows the full size and when it ends. Without an answer, it still spots it at the 4th slice.</li>
+        <li>Strong ones still have $250k+ to come and are 2%+ of the coin's usual trading while they run. In the test, only those moved price their way. With alerts on you get the call for {d.settings.alert_on === "strong" ? "strong ones" : "every one"} on {d.settings.coins.join(" or ")}: coin, side, a sound, and Telegram if it's on.</li>
         <li>Go the same way within {d.fill_s}s and hold {holdWords(d.settings.hold)}. Being a little late matters less here than for most signals.</li>
         <li>Every TWAP is scored from the live book, alerts on or off. It's still a test: one week of history found it, a week of live results decides it.</li>
       </ol>
