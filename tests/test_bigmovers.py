@@ -77,3 +77,12 @@ def test_scores_only_use_values_known_before_the_day():
     ready = np.array([10, 20, 30, -1])        # the third isn't known until 30; the last is never usable
     sc = score_by_wallet(w, v, ready, 25, 2)
     assert sc["n"].tolist() == [2, 0] and sc["mean"][0] == 3.0
+
+
+def test_mid_near_tolerates_a_skipped_second():
+    from engine.bigmovers import mid_near
+    rows = {10: [1, 1, 1.0], 13: [3, 3, 3.0]}
+    assert mid_near(rows, 10) == 1.0
+    assert mid_near(rows, 12) == 1.0                             # the last one before, as settle() enters
+    assert mid_near(rows, 8) == 1.0                              # nothing before: the first one after
+    assert mid_near(rows, 30) is None

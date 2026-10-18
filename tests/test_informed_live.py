@@ -129,3 +129,23 @@ def test_the_message_is_plain():
     assert title == "Fade: SOL SHORT"
     assert "usually wrong is buying in pieces ($80.0k so far; score -9.0 over 30 orders)" in lines[0]
     assert "close after 15 min" in lines[1]
+
+
+def test_the_live_move_shows_even_when_the_feed_skips_the_entry_second(tmp_path):
+    b = basket(tmp_path)
+    for k in range(300):
+        if k != 76:                                              # the entry second (spotted at +70, in 6s later) is missing
+            book(b, "SOL", T0 + k, 100.0 - 0.002 * k)
+        if 10 <= k <= 130 and (k - 10) % 20 == 0:
+            buy(b, "SOL", (T0 + k) * 1000, WRONG, 20_000)
+    row = b.public()["open"][0]
+    assert row["move_now"] == pytest.approx(-1 * ((100.0 - 0.002 * 299) / (100.0 - 0.002 * 75) - 1) * 1e4)
+    assert row["move_now"] > 0                                   # price fell: the short is up
+
+
+def test_the_record_shows_how_far_fades_dipped_before_closing(tmp_path):
+    b = basket(tmp_path)
+    run(b, "SOL")
+    rec = b.public()["record"]["day"]["fade"]
+    assert rec["dip"] == rec["dip_max"] == b.records[0]["result"]["adv"] >= 0
+    assert b.public()["recent"][0]["dip"] == round(rec["dip"], 2)

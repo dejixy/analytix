@@ -25,7 +25,7 @@ from collections import deque
 from pathlib import Path
 
 from config import ROOT
-from engine.bigmovers import pt_of, settle
+from engine.bigmovers import mid_near, pt_of, settle
 from engine.informed import HiddenOrders
 from storage.sqlite import connect, transaction
 
@@ -374,21 +374,23 @@ class InformedBasket:
         return {"n": len(rs), "bps": sum(b) / len(b), "win": sum(x > 0 for x in b) / len(b),
                 "taker": sum(b) / len(b) - TAKER_RT_BPS, "maker": sum(b) / len(b) - MAKER_RT_BPS,
                 "pt": sum(pt) / len(pt) if pt else None, "pt_n": len(pt), "hl": sum(hl) / len(hl),
-                "busts": sum(x <= -1.0 for x in hl) / len(hl)}
+                "busts": sum(x <= -1.0 for x in hl) / len(hl), **dips(rs)}
 
     def _row(self, r: dict) -> dict:
         res = r.get("result")
         return {"id": r["id"], "coin": r["coin"], "side": r["side"], "t_ms": r["t_ms"], "wallet": r["wallet"],
                 "usd": r["usd"], "score": r["score"], "n": r["n"], "settled": r.get("settled", False),
-                "bps": None if not res else round(res["bps"], 2),
+                "bps": None if not res else round(res["bps"], 2), "dip": None if not res else round(res["adv"], 2),
                 "pt": pt_of(res, self.cfg["leverage"], r["coin"]) if res and r["coin"] in PAPERTRADE_COINS else None,
                 "hl": hl_result(res, self.cfg["leverage"], r["coin"]) if res else None,
                 "move_now": self._move_now(r) if not r.get("settled") else None, "announced": r.get("announced", False)}
 
     def _move_now(self, r: dict) -> float | None:
-        e = self.ring.get(r["coin"], {}).get(r["t_ms"] // 1000 + FILL_S)
+        """bps the mid has moved the fade's way since the entry (FILL_S after spotting), live. The feed can skip a
+        second, so the entry is the nearest one (as settle() does), else the mid when it was spotted."""
+        entry = mid_near(self.ring.get(r["coin"], {}), r["t_ms"] // 1000 + FILL_S) or r.get("mid")
         mid = self._mid.get(r["coin"])
-        return r["side"] * (mid / e[2] - 1) * 1e4 if e and mid else None
+        return r["side"] * (mid / entry - 1) * 1e4 if entry and mid else None
 
     def public(self) -> dict:
         now = max(self.now_ms.values(), default=0) or int(time.time() * 1000)
@@ -414,6 +416,16 @@ class InformedBasket:
             "costs": {"taker": TAKER_RT_BPS, "maker": MAKER_RT_BPS},
             "now_ms": now,
         }
+
+
+def dips(rs: list[dict]) -> dict:
+    """How far trades went against you before closing (the worst bid for a long, ask for a short), in bps:
+    the usual one (median) and the deepest."""
+    adv = sorted(r["result"]["adv"] for r in rs)
+    if not adv:
+        return {"dip": None, "dip_max": None}
+    m = len(adv) // 2
+    return {"dip": adv[m] if len(adv) % 2 else (adv[m - 1] + adv[m]) / 2, "dip_max": adv[-1]}
 
 
 def hl_result(r: dict, leverage: float, coin: str) -> float:
