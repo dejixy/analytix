@@ -484,14 +484,16 @@ function InfNumbers({ d }) {
   return (
     <div className="tiles bm-tiles">
       <div className="tile">
-        <div className="tile-label">Papertrade shadow</div>
-        <div className={`tile-value ${tone(ch(pt))}`}>{usd(pt.balance)}</div>
-        <div className="tile-sub">{pt.busted ? "Out of margin: reset in Settings" : `${pct(ch(pt))} · ${pt.trades} trades · BTC, ETH, ${d.settings.leverage}×`}</div>
-      </div>
-      <div className="tile">
         <div className="tile-label">Hyperliquid shadow</div>
         <div className={`tile-value ${tone(ch(hl))}`}>{usd(hl.balance)}</div>
-        <div className="tile-sub">{hl.busted ? "Out of margin: reset in Settings" : `${pct(ch(hl))} · ${hl.trades} trades · all coins, limit orders`}</div>
+        <div className="tile-sub">{hl.busted ? "Out of margin: reset in Settings" : `${pct(ch(hl))} · ${hl.trades} trades · ${d.settings.coins.join(", ")}, limit orders`}</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">Papertrade shadow</div>
+        <div className={`tile-value ${tone(ch(pt))}`}>{usd(pt.balance)}</div>
+        <div className="tile-sub">{pt.busted ? "Out of margin: reset in Settings"
+          : d.settings.coins.some((c) => c === "BTC" || c === "ETH") ? `${pct(ch(pt))} · ${pt.trades} trades · BTC, ETH, ${d.settings.leverage}×`
+          : "not used: SOL and HYPE aren't on Papertrade"}</div>
       </div>
       <div className="tile">
         <div className="tile-label">Fades, 7 days</div>
@@ -670,7 +672,8 @@ function InfHow({ d }) {
         <li>The bot spots hidden orders: a wallet buying or selling one way in pieces, $50k+ over a minute or more.</li>
         <li>Every few hours it scores every wallet from the recordings: on average, what did price do 15 minutes after its hidden orders? Some wallets' pushes reliably reverse. Last built {sc.built_ms ? ago(sc.built_ms, Date.now()) : "-"}: {sc.wallets} wallets, {sc.faded_wallets} at {d.settings.threshold} or worse.</li>
         <li>When one of those starts a new hidden order, the fade is the other side, within {d.fill_s}s, held {d.hold_s / 60} min. Being a little late barely mattered in the test.</li>
-        <li>Most of the edge was in SOL and HYPE, which only Hyperliquid has. There, +7.5 bps only beats fees with limit orders, so the main shadow uses limit-order fees.</li>
+        <li>It fades SOL and HYPE: the fade check found the edge there, while BTC and ETH fades lost money at Hyperliquid's leverage. BTC and ETH are still watched, so the record's control covers all four.</li>
+        <li>Fades come in bunches, and the later ones did better, so each coin can hold its own open fade. Only Hyperliquid lists SOL and HYPE, and there the edge only beats fees with limit orders, so the shadow uses limit-order fees.</li>
       </ol>
     </section>
   );
