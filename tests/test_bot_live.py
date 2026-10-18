@@ -304,3 +304,12 @@ def test_twaps_with_no_plan_have_their_own_record(tmp_path):
     assert rec["noplan"]["900"]["n"] == 1 == rec["all"]["900"]["n"] and rec["strong"]["900"]["n"] == 0
     s.twaps.records[0]["strength"] = {"known": True, "strong": False}
     assert s.public()["record"]["day"]["noplan"]["900"]["n"] == 0
+
+
+def test_a_new_balance_keeps_the_twap_shadows_result(tmp_path):
+    s = svc(tmp_path)
+    s.shadow.update(balance=54.04, low=50.0, trades=2)
+    s.save_settings({"balance": 200})
+    assert s.shadow["start"] == 200.0 and s.shadow["balance"] == pytest.approx(204.04) and s.shadow["trades"] == 2
+    s.save_settings({"hold": "300"})
+    assert s.shadow["balance"] == 200.0 and s.shadow["trades"] == 0
