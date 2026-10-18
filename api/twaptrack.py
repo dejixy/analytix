@@ -94,8 +94,10 @@ class TwapTracker:
         if rec is not None and rec["end_ms"] is None and st["run"]:
             rec["end_ms"] = st["run"][-1][0]
 
-    def tick(self, now_ms: int, rows_of) -> None:
-        """End runs whose beat stopped, score what's due, forget idle wallets. rows_of(coin) → per-second rows."""
+    def tick(self, now_ms: int, rows_of, stale_of=None) -> None:
+        """End runs whose beat stopped, score what's due, forget idle wallets. rows_of(coin) → per-second rows;
+        stale_of(rows, s_from, s_to) → settle()'s gap limit (longer across a restart; default 5s)."""
+        lim = (lambda rows, a, b: stale_of(rows, a, b)) if stale_of else (lambda rows, a, b: 5)
         for k, st in list(self.keys.items()):
             if st["last"] is None or now_ms - st["last"][0] <= END_AFTER_MS:
                 continue
@@ -107,7 +109,8 @@ class TwapTracker:
             rows = rows_of(rec["coin"])
             for h in HOLDS_S:
                 if str(h) not in rec["results"] and now_ms >= (s0 + LAG_S + h + 2) * 1000:
-                    rec["results"][str(h)] = settle(rows, s0, LAG_S, h, rec["side"])
+                    rec["results"][str(h)] = settle(rows, s0, LAG_S, h, rec["side"],
+                                                    stale_s=lim(rows, s0 + LAG_S, s0 + LAG_S + h))
             if "end" not in rec["results"]:
                 end_s = None
                 if rec["end_ms"] is not None:
@@ -117,7 +120,8 @@ class TwapTracker:
                 if end_s is not None:
                     hold = min(max(end_s - (s0 + LAG_S), 1), END_CAP_S)
                     if now_ms >= (s0 + LAG_S + hold + 2) * 1000:
-                        rec["results"]["end"] = settle(rows, s0, LAG_S, hold, rec["side"])
+                        rec["results"]["end"] = settle(rows, s0, LAG_S, hold, rec["side"],
+                                                       stale_s=lim(rows, s0 + LAG_S, s0 + LAG_S + hold))
                         rec["hold_end_s"] = hold
             if all(str(h) in rec["results"] for h in HOLDS_S) and "end" in rec["results"]:
                 self.unsaved.append(rec)
@@ -133,3 +137,30 @@ class TwapTracker:
     def load(self, recs: list[dict]) -> None:
         for r in recs:
             self.records.append(r)
+
+    # ── surviving a restart (api/livestate) ────────────────────────────────
+    def dump(self) -> dict:
+        """The runs being followed and the spotted TWAPs not scored yet (records by id, so links survive)."""
+        return {"pending": list(self._pending),
+                "keys": [[w, c, sd, {"last": st["last"], "run": st["run"], "asked": st.get("asked", False),
+                                     "rec": st["rec"]["id"] if st["rec"] is not None else None}]
+                         for (w, c, sd), st in self.keys.items()]}
+
+    def restore(self, d: dict) -> list[dict]:
+        """→ the open records it picked back up."""
+        by_id = {r["id"]: r for r in self.records}
+        back = []
+        for r in sorted(d.get("pending") or [], key=lambda r: r["t_ms"]):
+            if r.get("id") in by_id:
+                continue
+            self.records.append(r)
+            self._pending.append(r)
+            by_id[r["id"]] = r
+            back.append(r)
+        for w, c, sd, st in d.get("keys") or []:
+            run, last = st.get("run") or [], st.get("last")
+            if run and last == run[-1]:
+                last = run[-1]                        # the same slice object, so a fill merged into it counts in both
+            self.keys[(w, c, int(sd))] = {"last": last, "run": run, "asked": st.get("asked", False),
+                                          "rec": by_id.get(st.get("rec"))}
+        return back

@@ -22,6 +22,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from api import livestate
 from config import BOT_FILE, HL_INFO_URL
 from api.twaptrack import END_AFTER_MS, END_CAP_S, HOLDS_S, LAG_S as FILL_S, MIN_SLICE_USD, TwapTracker
 from engine.bigmovers import mid_near, pt_of
@@ -83,6 +84,9 @@ class BotService:
         self._asked: deque = deque()                                 # times of early lookups, for the rate cap
         self.plan_stats = {"asked": 0, "found": 0}
         self._vol: dict[str, dict[int, float]] = {}                  # coin → hour → $ traded
+        self.live_path = self.path.with_name(self.path.stem + "_live.json")
+        self._pauses: list[int] = []                                 # restarts (see api/livestate)
+        self._saved_at = 0.0
         self._load()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -98,6 +102,7 @@ class BotService:
             except Exception:
                 log.exception("could not open the bot's TWAP history; it starts empty")
                 self._db = None
+        self._restore()
         if self.rt.mode == "live":
             self._save()
         self._tasks = [asyncio.create_task(self._loop(), name="bot")]
@@ -107,6 +112,7 @@ class BotService:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._flush()
+        self._keep()
         if self._db:
             self._db.close()
 
@@ -115,8 +121,39 @@ class BotService:
             await asyncio.sleep(TICK_S)
             try:
                 self.tick()
+                if time.time() - self._saved_at >= livestate.SAVE_S:
+                    self._keep()
             except Exception:
                 log.exception("bot tick failed")
+
+    # ── surviving a restart (api/livestate) ────────────────────────────────
+    def _keep(self) -> None:
+        """Save what's in flight: running and unscored TWAPs, the shadow queue, recent prices, the hourly volume."""
+        if self.rt.mode != "live":
+            return
+        self._saved_at = time.time()
+        livestate.save(self.live_path, {
+            "saved_ms": max(self.now_ms.values(), default=0) or int(time.time() * 1000), "pauses": self._pauses,
+            "ring": livestate.ring_dump(self.ring),
+            "mid": self._mid, "vol": self._vol, "queue": [r["id"] for r in self._queue], **self.twaps.dump()})
+
+    def _restore(self) -> None:
+        saved = livestate.load(self.live_path) if self.rt.mode == "live" else None
+        if not saved:
+            return
+        self._pauses = livestate.pauses_after(saved)
+        for coin, rows in livestate.ring_load(saved.get("ring")).items():
+            self.ring.setdefault(coin, {}).update(rows)
+        self._mid.update({k: float(v) for k, v in (saved.get("mid") or {}).items()})
+        for coin, hours in (saved.get("vol") or {}).items():
+            self._vol.setdefault(coin, {}).update({int(h): float(v) for h, v in hours.items()})
+        back = self.twaps.restore(saved)
+        by_id = {r["id"]: r for r in self.twaps.records}
+        for i in saved.get("queue") or []:
+            if i in by_id:
+                self._queue.append(by_id[i])
+        if back:
+            log.info("TWAP basket: picked up %d open TWAPs after the restart", len(back))
 
     # ── the live feed ──────────────────────────────────────────────────────
     def on_message(self, msg: dict) -> None:
@@ -268,7 +305,8 @@ class BotService:
     def tick(self) -> None:
         now = max(self.now_ms.values(), default=0)
         if now:
-            self.twaps.tick(now, lambda c: self.ring.get(c, {}))
+            self.twaps.tick(now, lambda c: self.ring.get(c, {}),
+                            lambda rows, a, b: livestate.stale_for(rows, self._pauses, a, b))
         for rec in list(self._queue)[:50]:
             if (rec["announced"] and rec.get("hold") == "end" and rec["end_ms"] is not None
                     and rec["id"] not in self._told_end):
