@@ -129,16 +129,18 @@ def rank_corr(a: np.ndarray, b: np.ndarray) -> float | None:
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
-def follow(g, t_ms: np.ndarray, side: np.ndarray, lag: int, hold: int, lev: float, coin: str):
+def follow(g, t_ms: np.ndarray, side: np.ndarray, lag: int, hold: int, lev: float, coin: str, with_adv: bool = False):
     """Go the order's way `lag` seconds after t_ms, out `hold` seconds later, on one coin's one-second grid.
-    → (move at the mid in bps, Papertrade result at `lev` as a share of margin), nan where the feed had a gap.
-    Works order by order, so long holds don't need a window over every second."""
+    → (move at the mid in bps, Papertrade result at `lev` as a share of margin), nan where the feed had a gap;
+    with_adv adds the furthest the best bid/ask went against it (bps). Works order by order, so long holds don't
+    need a window over every second."""
     from engine.walletstudy import kept
     n = len(g)
     mid = np.full(len(t_ms), np.nan)
     pt = np.full(len(t_ms), np.nan)
+    adv = np.full(len(t_ms), np.nan)
     if not n:
-        return mid, pt
+        return (mid, pt, adv) if with_adv else (mid, pt)
     t0 = int(g.t[0])
     bad = np.concatenate([[0], np.cumsum(~g.ok)])
     e = t_ms // 1000 - t0 + lag
@@ -150,8 +152,9 @@ def follow(g, t_ms: np.ndarray, side: np.ndarray, lag: int, hold: int, lev: floa
         move = s * (g.mid[b] / g.mid[a] - 1)
         worst = (g.mid[a] - g.bid[a + 1:b + 1].min()) / g.mid[a] if s > 0 else (g.ask[a + 1:b + 1].max() - g.mid[a]) / g.mid[a]
         mid[i] = move * 1e4
+        adv[i] = max(worst, 0.0) * 1e4
         if worst >= 1 / lev:
             pt[i] = -1.0
         else:
             pt[i] = float(kept(np.array([move]), coin)[0] * lev) if move > 0 else max(move * lev, -1.0)
-    return mid, pt
+    return (mid, pt, adv) if with_adv else (mid, pt)
