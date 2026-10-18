@@ -465,14 +465,14 @@ function InfNumbers({ d }) {
   return (
     <div className="tiles bm-tiles">
       <div className="tile">
-        <div className="tile-label">Hyperliquid shadow</div>
-        <div className={`tile-value ${tone(ch(hl))}`}>{usd(hl.balance)}</div>
-        <div className="tile-sub">{hl.busted ? "Out of margin: reset in Settings" : `${pct(ch(hl))} · ${hl.trades} trades · all coins, limit orders`}</div>
-      </div>
-      <div className="tile">
         <div className="tile-label">Papertrade shadow</div>
         <div className={`tile-value ${tone(ch(pt))}`}>{usd(pt.balance)}</div>
         <div className="tile-sub">{pt.busted ? "Out of margin: reset in Settings" : `${pct(ch(pt))} · ${pt.trades} trades · BTC, ETH, ${d.settings.leverage}×`}</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">Hyperliquid shadow</div>
+        <div className={`tile-value ${tone(ch(hl))}`}>{usd(hl.balance)}</div>
+        <div className="tile-sub">{hl.busted ? "Out of margin: reset in Settings" : `${pct(ch(hl))} · ${hl.trades} trades · all coins, limit orders`}</div>
       </div>
       <div className="tile">
         <div className="tile-label">Fades, 7 days</div>

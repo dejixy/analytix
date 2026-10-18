@@ -343,8 +343,8 @@ class InformedBasket:
     # ── what the dashboard reads ───────────────────────────────────────────
     @property
     def shadow(self) -> dict:
-        """The balance shown on the basket tab: Hyperliquid's (all coins)."""
-        return self.shadows["hl"]
+        """The balance shown on the basket tab: Papertrade's (BTC and ETH fades only)."""
+        return self.shadows["pt"]
 
     def status(self) -> str:
         if not self.scores:
@@ -403,7 +403,7 @@ class InformedBasket:
         return {
             "status": self.status(), "settings": self.cfg, "limits": LIMITS, "known_coins": list(KNOWN_COINS),
             "fill_s": FILL_S, "hold_s": HOLD_S, "live": self.live(),
-            "shadow": {**self.shadows["hl"], "margin": self.cfg["margin_pct"] / 100 * self.shadows["hl"]["start"]},
+            "shadow": {**self.shadow, "margin": self.cfg["margin_pct"] / 100 * self.shadow["start"]},
             "shadows": {k: {**v, "margin": self.cfg["margin_pct"] / 100 * v["start"]} for k, v in self.shadows.items()},
             "hl_lev": {c: min(lev, HL_MAX_LEV.get(c, 10)) for c in KNOWN_COINS},
             "scores": {"state": self.scores_state, "error": self.scores_error, **self.scores_info,
