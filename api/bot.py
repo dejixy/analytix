@@ -49,6 +49,13 @@ ALERT_ON = ("strong", "all")
 LIMITS = {"balance": (1, 1e7), "leverage": (1, 1000), "margin_pct": (1, 100)}
 MONEY_KEYS = ("balance", "leverage", "margin_pct", "hold")          # change these and the shadow restarts
 KNOWN_COINS = ("BTC", "ETH", "SOL", "HYPE")
+# The degen shadow (scripts/degenSim.py): every strong TWAP, 75% of the pot as margin at 100x on Papertrade, held 15
+# min. A week ends at 2x or -50% of the start (or after 7 days); each week starts again from the start balance.
+DEGEN_LEV = 100
+DEGEN_FRAC = 0.75
+DEGEN_UP, DEGEN_DOWN = 2.0, 0.5
+DEGEN_HOLD = "900"
+DEGEN_WEEK_MS = 7 * 86_400_000
 
 
 class BotError(ValueError):
@@ -75,6 +82,8 @@ class BotService:
         self.now_ms: dict[str, int] = {}
         self._mid: dict[str, float] = {}
         self._queue: deque = deque()              # spotted TWAPs waiting for their shadow trade, in time order
+        self.degen = self._fresh_degen()
+        self._dq: deque = deque()                 # strong TWAPs waiting for the degen shadow
         self._told_end: set[str] = set()
         self._db: sqlite3.Connection | None = None
         self._tasks: list[asyncio.Task] = []
@@ -135,7 +144,8 @@ class BotService:
         livestate.save(self.live_path, {
             "saved_ms": max(self.now_ms.values(), default=0) or int(time.time() * 1000), "pauses": self._pauses,
             "ring": livestate.ring_dump(self.ring),
-            "mid": self._mid, "vol": self._vol, "queue": [r["id"] for r in self._queue], **self.twaps.dump()})
+            "mid": self._mid, "vol": self._vol, "queue": [r["id"] for r in self._queue],
+            "degen_q": [r["id"] for r in self._dq], **self.twaps.dump()})
 
     def _restore(self) -> None:
         saved = livestate.load(self.live_path) if self.rt.mode == "live" else None
@@ -152,6 +162,9 @@ class BotService:
         for i in saved.get("queue") or []:
             if i in by_id:
                 self._queue.append(by_id[i])
+        for i in saved.get("degen_q") or []:
+            if i in by_id:
+                self._dq.append(by_id[i])
         if back:
             log.info("TWAP basket: picked up %d open TWAPs after the restart", len(back))
 
@@ -298,6 +311,8 @@ class BotService:
         now = max(self.now_ms.values(), default=0) or rec["t_ms"]
         rec["strength"] = strength(rec, now, self.rate(rec["coin"], now))
         rec["announced"] = bool(self.cfg["alerts"]) and (self.cfg["alert_on"] == "all" or rec["strength"]["strong"])
+        if rec["strength"].get("strong"):
+            self._dq.append(rec)
         if rec["announced"] and self.cfg["telegram"]:
             self._notify(spotted_message(rec, self.cfg), rec["coin"])
 
@@ -324,6 +339,16 @@ class BotService:
             self._told_end.discard(rec["id"])
             if done:
                 self._shadow_trade(rec, k)
+        while self._dq:
+            rec = self._dq[0]
+            done = DEGEN_HOLD in rec["results"]
+            if not done and now - rec["t_ms"] <= (END_CAP_S + 300) * 1000:
+                break
+            self._dq.popleft()
+            if done:
+                self._degen_trade(rec)
+        if now:
+            self._degen_week(now)
         cutoff = now // 1000 - RING_KEEP_S
         for ring in self.ring.values():
             for s in [s for s in ring if s < cutoff]:
@@ -357,6 +382,55 @@ class BotService:
         if rec not in self.twaps.unsaved:
             self.twaps.unsaved.append(rec)                 # save it again with its shadow result
         self._save()
+
+    # ── the degen shadow ───────────────────────────────────────────────────
+    def _fresh_degen(self) -> dict:
+        start, now = float(self.cfg["balance"]), int(time.time() * 1000)
+        return {"start": start, "pot": start, "week_ms": 0, "week_trades": 0, "trades": 0, "wins": 0, "busts": 0,
+                "free_ms": 0, "weeks": [], "banked": 0.0, "since_ms": now}          # week_ms 0: starts at the first trade
+
+    def _degen_week(self, t_ms: int) -> None:
+        """A week that ran its 7 days without hitting 2x or -50% ends where it is."""
+        if self.degen["week_ms"] and t_ms - self.degen["week_ms"] >= DEGEN_WEEK_MS:
+            self._degen_close("neither", self.degen["week_ms"] + DEGEN_WEEK_MS)
+
+    def _degen_close(self, result: str, t_ms: int) -> None:
+        dg = self.degen
+        dg["weeks"] = (dg["weeks"] + [{"since": dg["week_ms"], "end": t_ms, "result": result,
+                                       "pot": round(dg["pot"], 4), "trades": dg["week_trades"]}])[-52:]
+        dg["banked"] += dg["pot"] - dg["start"]
+        dg["pot"], dg["week_ms"], dg["week_trades"] = dg["start"], t_ms, 0
+        self._save()
+
+    def _degen_trade(self, rec: dict) -> None:
+        dg = self.degen
+        r = rec["results"].get(DEGEN_HOLD)
+        start = rec["t_ms"] + FILL_S * 1000
+        if r is None:
+            return
+        self._degen_week(start)
+        if not dg["week_ms"]:
+            dg["week_ms"] = start
+        if start < dg["free_ms"] or start < dg["week_ms"]:
+            return                                         # still in the last trade, or before this week began
+        margin = DEGEN_FRAC * dg["pot"]
+        pt = pt_of(r, DEGEN_LEV, rec["coin"])
+        pnl = margin * pt
+        dg["pot"] += pnl
+        dg["trades"] += 1
+        dg["week_trades"] += 1
+        dg["wins"] += pnl > 0
+        dg["busts"] += pt <= -1.0
+        dg["free_ms"] = start + int(DEGEN_HOLD) * 1000
+        rec["degen"] = {"pnl": round(pnl, 4), "pot": round(dg["pot"], 4)}
+        if rec not in self.twaps.unsaved:
+            self.twaps.unsaved.append(rec)
+        if dg["pot"] >= DEGEN_UP * dg["start"]:
+            self._degen_close("2x", dg["free_ms"])
+        elif dg["pot"] <= DEGEN_DOWN * dg["start"]:
+            self._degen_close("-50%", dg["free_ms"])
+        else:
+            self._save()
 
     def _flush(self) -> None:
         if not self.twaps.unsaved:
@@ -401,12 +475,15 @@ class BotService:
             self.shadow.update(saved.get("shadow") or {})
         if v in (2, VERSION):
             self.since_ms = int(saved.get("since_ms") or self.since_ms)
+        self.degen = self._fresh_degen()
+        if v == VERSION and saved.get("degen"):
+            self.degen.update(saved["degen"])
 
     def _save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"v": VERSION, "settings": self.cfg, "shadow": self.shadow,
+            tmp.write_text(json.dumps({"v": VERSION, "settings": self.cfg, "shadow": self.shadow, "degen": self.degen,
                                        "since_ms": self.since_ms}, indent=1), encoding="utf-8")
             tmp.replace(self.path)
         except OSError as exc:
@@ -445,11 +522,14 @@ class BotService:
         self.cfg = new
         if restart:
             self.shadow = self._fresh_shadow()
+            if new["balance"] != self.degen["start"]:
+                self.degen = self._fresh_degen()
         self._save()
         return self.public()
 
     def reset_shadow(self) -> dict:
         self.shadow = self._fresh_shadow()
+        self.degen = self._fresh_degen()
         self._save()
         return self.public()
 
@@ -516,6 +596,12 @@ class BotService:
                       "pt": sum(pts) / len(pts), "busts": sum(p <= -1.0 for p in pts) / len(pts)}
         return out
 
+    def _degen_public(self, now: int) -> dict:
+        dg = self.degen
+        return {**{k: v for k, v in dg.items() if k != "weeks"}, "weeks": dg["weeks"][-8:][::-1],
+                "count": _count(dg["weeks"]), "lev": DEGEN_LEV, "frac": DEGEN_FRAC, "up": DEGEN_UP, "down": DEGEN_DOWN,
+                "week_left_s": max(0, (dg["week_ms"] + DEGEN_WEEK_MS - now) / 1000) if dg["week_ms"] else None}
+
     def public(self) -> dict:
         now = max(self.now_ms.values(), default=0) or int(time.time() * 1000)
         recs = list(self.twaps.records)
@@ -531,11 +617,19 @@ class BotService:
                       "strong": sum(1 for r in day if (r.get("strength") or {}).get("strong")),
                       "known": sum(1 for r in day if (r.get("strength") or {}).get("known"))},
             "plans": dict(self.plan_stats),
+            "degen": self._degen_public(now),
             "running": [self._row(r) for r in running][::-1],
             "recent": [self._row(r) for r in recs if r["end_ms"] is not None][-30:][::-1],
             "record": {"day": rec_of(now - DAY_MS), "week": rec_of(now - 7 * DAY_MS), "all": rec_of(None)},
             "now_ms": now,
         }
+
+
+def _count(weeks: list[dict]) -> dict:
+    out = {"2x": 0, "-50%": 0, "neither": 0}
+    for w in weeks:
+        out[w["result"]] = out.get(w["result"], 0) + 1
+    return out
 
 
 def parse_plan(history, coin: str, side: int, start_ms: int, mid: float | None) -> dict | None:

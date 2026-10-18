@@ -192,6 +192,25 @@ function Numbers({ d }) {
         <div className="tile-value">{d.today.spotted}</div>
         <div className="tile-sub">{d.today.strong} strong · about {d.today.per_day.toFixed(0)} a day · {d.running.length} running</div>
       </div>
+      <Degen dg={d.degen} />
+    </div>
+  );
+}
+
+/* A paper test of the degen idea: the same strong TWAPs, most of the pot on each, a week ending at 2x or -50%. */
+function Degen({ dg }) {
+  if (!dg) return null;
+  const c = dg.count || {};
+  const ch = dg.start ? dg.pot / dg.start - 1 : null;
+  const left = dg.week_left_s == null ? "starts at the next strong TWAP" : `${Math.ceil(dg.week_left_s / 86400)}d left`;
+  return (
+    <div className="tile tile-wide" title={`Every strong TWAP, ${Math.round(dg.frac * 100)}% of the pot as margin at ${dg.lev}x, out after 15 min. A week ends at ${dg.up}x or ${Math.round((dg.down - 1) * 100)}% of ${usd(dg.start)} (or after 7 days), then starts again from ${usd(dg.start)}. Paper only.`}>
+      <div className="tile-label">Degen shadow · {dg.lev}× with {Math.round(dg.frac * 100)}% of the pot · a week ends at 2× or −50%</div>
+      <div className={`tile-value ${tone(ch)}`}>{usd(dg.pot)} <span className="tile-sub">this week {pct(ch)} · {dg.week_trades} trades · {left}</span></div>
+      <div className="tile-sub">
+        Weeks: {c["2x"] || 0} doubled · {c["-50%"] || 0} halved · {c.neither || 0} neither · banked{" "}
+        <span className={tone(dg.banked)}>{usd(dg.banked, true)}</span>
+      </div>
     </div>
   );
 }
