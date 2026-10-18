@@ -24,9 +24,12 @@ import time
 from collections import deque
 from pathlib import Path
 
+from dataclasses import asdict
+
+from api import livestate
 from config import ROOT
 from engine.bigmovers import mid_near, pt_of, settle
-from engine.informed import HiddenOrders
+from engine.informed import Hidden, HiddenOrders
 from storage.sqlite import connect, transaction
 
 log = logging.getLogger("analytix.bot")
@@ -75,6 +78,9 @@ class InformedBasket:
         self._db: sqlite3.Connection | None = None
         self._tasks: list[asyncio.Task] = []
         self._building: asyncio.Task | None = None
+        self.live_path = self.path.with_name(self.path.stem + "_live.json")
+        self._pauses: list[int] = []                 # restarts: the last second saved before each (see api/livestate)
+        self._saved_at = 0.0
         self._load()
         self._load_scores()
 
@@ -92,6 +98,7 @@ class InformedBasket:
             except Exception:
                 log.exception("could not open the informed basket's history; it starts empty")
                 self._db = None
+        self._restore()
         self._tasks = [asyncio.create_task(self._loop(), name="bot-informed")]
         if self.rt.mode == "live":
             self._tasks.append(asyncio.create_task(self._refresh_loop(), name="bot-informed-scores"))
@@ -101,6 +108,7 @@ class InformedBasket:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._flush()
+        self._keep()
         if self._db:
             self._db.close()
 
@@ -109,8 +117,43 @@ class InformedBasket:
             await asyncio.sleep(TICK_S)
             try:
                 self.tick()
+                if time.time() - self._saved_at >= livestate.SAVE_S:
+                    self._keep()
             except Exception:
                 log.exception("informed basket tick failed")
+
+    # ── surviving a restart (api/livestate) ────────────────────────────────
+    def _keep(self) -> None:
+        """Save what's in flight: open trades, recent prices, orders being spotted."""
+        if self.rt.mode != "live":
+            return
+        self._saved_at = time.time()
+        livestate.save(self.live_path, {
+            "saved_ms": max(self.now_ms.values(), default=0) or int(time.time() * 1000), "pauses": self._pauses,
+            "ring": livestate.ring_dump(self.ring),
+            "mid": self._mid, "pending": list(self._pending), "orders": [asdict(h) for h in self.ho.open.values()]})
+
+    def _restore(self) -> None:
+        saved = livestate.load(self.live_path) if self.rt.mode == "live" else None
+        if not saved:
+            return
+        self._pauses = livestate.pauses_after(saved)
+        for coin, rows in livestate.ring_load(saved.get("ring")).items():
+            self.ring.setdefault(coin, {}).update(rows)
+        self._mid.update({k: float(v) for k, v in (saved.get("mid") or {}).items()})
+        have = {r["id"] for r in self.records}
+        back = sorted((r for r in saved.get("pending") or [] if r.get("id") not in have), key=lambda r: r["t_ms"])
+        for r in back:
+            self.records.append(r)
+            self._pending.append(r)
+        for d in saved.get("orders") or []:
+            try:
+                h = Hidden(**d)
+            except TypeError:
+                continue
+            self.ho.open[(h.wallet, h.coin)] = h
+        if back:
+            log.info("informed basket: picked up %d open trades after the restart", len(back))
 
     async def _refresh_loop(self) -> None:
         while True:
@@ -221,7 +264,9 @@ class InformedBasket:
             if self.now_ms.get(rec["coin"], 0) < due and now - due < 120_000:
                 break
             self._pending.popleft()
-            rec["result"] = settle(self.ring.get(rec["coin"], {}), rec["t_ms"] // 1000, FILL_S, HOLD_S, rec["side"])
+            rows, s0 = self.ring.get(rec["coin"], {}), rec["t_ms"] // 1000
+            stale = livestate.stale_for(rows, self._pauses, s0 + FILL_S, s0 + FILL_S + HOLD_S)
+            rec["result"] = settle(rows, s0, FILL_S, HOLD_S, rec["side"], stale_s=stale)
             rec["settled"] = True
             if rec["fade"] and rec["result"]:
                 self._shadow(rec)
