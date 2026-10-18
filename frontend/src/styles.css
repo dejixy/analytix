@@ -646,6 +646,7 @@ tr.wall td { color: var(--ink); }
 .bm-call.short .bm-call-top b { color: var(--down); }
 .bm-call-top span { font-size: 13px; font-weight: 600; }
 .bm-tiles { padding: 12px; border-bottom: 1px solid var(--border); }
+.tile-wide { grid-column: 1 / -1; }
 .bm-list { display: grid; gap: 0; font-size: 11.5px; }
 .bm-row { display: grid; grid-template-columns: 64px 1fr 76px 54px; gap: 8px; padding: 3px 0; border-top: 1px solid var(--grid); align-items: baseline; }
 .bm-row:first-child { border-top: 0; }

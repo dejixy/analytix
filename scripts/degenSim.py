@@ -200,8 +200,9 @@ def fade_trades(g, orders, history_h: float) -> tuple[list[dict], int]:
         today = np.nonzero((TD >= day) & (TD < day + DAY_MS))[0]
         score[today] = np.where(sc["n"][W[today]] > 0, sc["score"][W[today]], np.nan)
     pick = np.nonzero((score <= FADE_AT) & np.isfinite(fb) & np.isfinite(fa))[0]
-    return [{"t": int(TD[i]) + LAG_S * 1000, "coin": str(coin[i]), "bps": float(fb[i]), "adv": float(fa[i])}
-            for i in pick], d0 // DAY_MS
+    wallets = list(wl)
+    return [{"t": int(TD[i]) + LAG_S * 1000, "coin": str(coin[i]), "bps": float(fb[i]), "adv": float(fa[i]),
+             "wallet": wallets[W[i]], "score": float(score[i])} for i in pick], d0 // DAY_MS
 
 
 # ── the report ───────────────────────────────────────────────────────────────
