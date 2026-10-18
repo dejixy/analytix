@@ -295,3 +295,12 @@ def test_settings_from_the_first_twap_bot_move_to_a_15_minute_hold(tmp_path):
     s = BotService(rt(), tmp_path / "bot.json", None)
     assert s.cfg["hold"] == "900" and s.cfg["alert_on"] == "strong"
     assert s.cfg["telegram"] is True and s.cfg["leverage"] == 500 and s.shadow["balance"] == 50.0 and s.since_ms == 5
+
+
+def test_twaps_with_no_plan_have_their_own_record(tmp_path):
+    s = svc(tmp_path, hold="900")
+    run(s, 4000, slices=10)                                     # a replay has no plans: every TWAP is "no plan"
+    rec = s.public()["record"]["day"]
+    assert rec["noplan"]["900"]["n"] == 1 == rec["all"]["900"]["n"] and rec["strong"]["900"]["n"] == 0
+    s.twaps.records[0]["strength"] = {"known": True, "strong": False}
+    assert s.public()["record"]["day"]["noplan"]["900"]["n"] == 0

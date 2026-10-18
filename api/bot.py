@@ -499,14 +499,18 @@ class BotService:
                 "strong": (rec.get("strength") or {}).get("strong"), "known": (rec.get("strength") or {}).get("known"),
                 "share": (rec.get("strength") or {}).get("share"), "spot_slice": rec.get("spot_slice", 4)}
 
-    def record(self, since_ms: int | None = None, strong_only: bool = False) -> dict:
-        """Per hold: how riding every spotted TWAP (or only the strong ones) did, at your leverage."""
+    def record(self, since_ms: int | None = None, group: str = "all") -> dict:
+        """Per hold: how riding the spotted TWAPs did, at your leverage. group: "all", "strong", or "noplan" (no
+        TWAP order on Hyperliquid for the wallet, so how much was left couldn't be known: often a trader's own
+        slicing bot on the same 30s beat)."""
         lev = self.cfg["leverage"]
+        keep = {"all": lambda st: True, "strong": lambda st: st.get("strong"),
+                "noplan": lambda st: bool(st) and not st.get("known")}[group]
         out = {}
         for k in HOLDS:
             rs = [(r["results"][k], r["coin"]) for r in self.twaps.records
                   if (r.get("results") or {}).get(k) and (since_ms is None or r["t_ms"] >= since_ms)
-                  and (not strong_only or (r.get("strength") or {}).get("strong"))]
+                  and keep(r.get("strength") or {})]
             if not rs:
                 out[k] = {"n": 0}
                 continue
@@ -522,7 +526,7 @@ class BotService:
         day = [r for r in recs if r["t_ms"] >= now - DAY_MS]
         span_h = max((now - max(now - DAY_MS, self.since_ms)) / 3.6e6, 0.25)
         running = self.twaps.running()
-        rec_of = lambda since: {"all": self.record(since), "strong": self.record(since, strong_only=True)}
+        rec_of = lambda since: {g: self.record(since, g) for g in ("all", "strong", "noplan")}
         return {
             "status": self.status(), "settings": self.cfg, "limits": LIMITS, "known_coins": list(KNOWN_COINS),
             "holds": HOLDS, "fill_s": FILL_S, "live": self.live(),

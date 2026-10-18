@@ -355,7 +355,7 @@ function Record({ d }) {
           <button key={k} className={`plan-chip ${per === k ? "on" : ""}`} onClick={() => setPer(k)}>{label}</button>
         ))}
         <span className="bm-gap" />
-        {[["strong", "Strong"], ["all", "Every TWAP"]].map(([k, label]) => (
+        {[["strong", "Strong"], ["noplan", "No plan"], ["all", "Every TWAP"]].map(([k, label]) => (
           <button key={k} className={`plan-chip ${group === k ? "on" : ""}`} onClick={() => setGroup(k)}>{label}</button>
         ))}
       </div>
@@ -384,7 +384,9 @@ function Record({ d }) {
         Every big TWAP, settled from the live book: in at the mid {d.fill_s}s after it was spotted, out after the hold.
         Papertrade's cut on wins included. Strong = $250k+ still to come and 2%+ of the coin's usual trading while it
         runs. In the test week, strong ones made about +9 bps at 15 min and the rest about nothing. Judge it on 100 or
-        more strong ones. Plans read from Hyperliquid: {d.plans.found} of {d.plans.asked} asked.
+        more strong ones. No plan = Hyperliquid had no TWAP order for the wallet (often a trader's own slicing bot on the
+        same beat), so how much was left couldn't be known; not traded, scored to see if it should be. Plans read from
+        Hyperliquid: {d.plans.found} of {d.plans.asked} asked.
       </p>
     </section>
   );
