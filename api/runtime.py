@@ -42,6 +42,7 @@ from config import (
 from api.alerts import AlertService
 from api.baskets import Bot
 from api.holdclock import HoldClock
+from api.hlp import HLPRecorder
 from api.liqmap import LiqMapCollector
 from api.outcomes import OutcomeService
 from api.planner import PlannerService
@@ -115,6 +116,7 @@ class Runtime:
         self.hold = HoldClock(self, self.bars_db)       # how long very high leverage survives, from the live book
         self.bot = Bot(self, bot_file, self.bars_db)          # baskets of strategies: big TWAPs, informed flow
         self.liqmap = LiqMapCollector(self, positions_db if mode == "live" else None)   # big traders' liquidation prices
+        self.hlp = HLPRecorder(self, positions_db if mode == "live" else None)           # HLP's positions, for a study
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -134,6 +136,7 @@ class Runtime:
             if msg.get("channel") == "trades":
                 try:
                     self.liqmap.on_message(msg)           # who trades most, for the liquidation map
+                    self.hlp.on_message(msg)              # HLP's and the Liquidator's fills
                 except Exception:
                     log.exception("liquidation map feed check failed")
 
@@ -180,6 +183,7 @@ class Runtime:
         await self.hold.start()
         await self.bot.start()
         await self.liqmap.start()
+        await self.hlp.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
@@ -190,6 +194,7 @@ class Runtime:
         await self.hold.stop()
         await self.bot.stop()
         await self.liqmap.stop()
+        await self.hlp.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
@@ -374,6 +379,9 @@ class Runtime:
             if self.liqmap.enabled and self.liqmap.rounds:
                 lm = self.liqmap.last
                 line += f" · liquidation map: {lm['positions']} positions from {lm['wallets']} wallets last round"
+            if self.hlp.enabled and self.hlp.rounds:
+                h = self.hlp.last
+                line += f" · HLP: {h['positions']} positions in {h['vaults']} vaults, {h['liquidator_fills']} Liquidator fills"
             if isinstance(self._recorder, HourlyRecorder):
                 line += (f" · recording this hour {self._recorder.hour_bytes / 1e6:.0f} MB"
                          + (" · PAUSED: disk nearly full" if self._recorder.paused else ""))
