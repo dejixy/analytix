@@ -58,7 +58,7 @@ def test_follow_prices_long_holds_and_busts():
     assert p[0] == -1.0                                        # 1.8% against a 200x short: bust
 
 
-def test_the_study_runs_end_to_end(tmp_path, monkeypatch, capsys):
+def write_recording(tmp_path):
     rng = np.random.default_rng(1)
     lines, mid = [], 2500.0
     smart, noise = "0x" + "a" * 40, ["0x" + f"{k:040x}" for k in range(1, 6)]
@@ -83,6 +83,10 @@ def test_the_study_runs_end_to_end(tmp_path, monkeypatch, capsys):
             lines.append({"recv_ms": ms + 1, "msg": {"channel": "trades", "data": [
                 {"coin": "ETH", "side": side, "px": f"{mid:.2f}", "sz": str(usd / mid), "time": ms, "users": users}]}})
     (tmp_path / "a.jsonl").write_text("\n".join(json.dumps(x, separators=(",", ":")) for x in lines) + "\n")
+
+
+def test_the_study_runs_end_to_end(tmp_path, monkeypatch, capsys):
+    write_recording(tmp_path)
     monkeypatch.setattr(sys, "argv", ["informedStudy", str(tmp_path), "--days", "0", "--coins", "ETH",
                                       "--history-h", "4"])
     from scripts import informedStudy
@@ -91,3 +95,12 @@ def test_the_study_runs_end_to_end(tmp_path, monkeypatch, capsys):
     for sec in ("1. THE HIDDEN ORDERS", "2. WHAT PRICE DOES", "3. DOES BEING RIGHT REPEAT", "4. FOLLOWING THE BEST",
                 "5. THE SHAPE OF THE MOVE"):
         assert sec in out
+
+
+def test_the_fade_study_runs_end_to_end(tmp_path, monkeypatch, capsys):
+    write_recording(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["fadeStudy", str(tmp_path), "--days", "0", "--coins", "ETH", "--history-h", "4"])
+    from scripts import fadeStudy
+    fadeStudy.main()
+    out = capsys.readouterr().out
+    assert "1. FADE FOR 15 MIN" in out and "control: every order" in out and "2. WALLETS SCORING -5" in out
