@@ -24,7 +24,7 @@ from pathlib import Path
 
 from config import BOT_FILE, HL_INFO_URL
 from api.twaptrack import END_AFTER_MS, END_CAP_S, HOLDS_S, LAG_S as FILL_S, MIN_SLICE_USD, TwapTracker
-from engine.bigmovers import pt_of
+from engine.bigmovers import mid_near, pt_of
 from storage.sqlite import connect, transaction
 
 log = logging.getLogger("analytix.bot")
@@ -442,12 +442,11 @@ class BotService:
 
     def _move_now(self, rec: dict) -> float | None:
         """bps the mid has moved the TWAP's way since the fill (FILL_S after it was spotted), live."""
-        rows = self.ring.get(rec["coin"], {})
-        e = rows.get(rec["t_ms"] // 1000 + FILL_S)
+        entry = mid_near(self.ring.get(rec["coin"], {}), rec["t_ms"] // 1000 + FILL_S) or rec.get("mid")
         mid = self._mid.get(rec["coin"])
-        if not e or not mid:
+        if not entry or not mid:
             return None
-        return rec["side"] * (mid / e[2] - 1) * 1e4
+        return rec["side"] * (mid / entry - 1) * 1e4
 
     def _row(self, rec: dict) -> dict:
         k = self.cfg["hold"]

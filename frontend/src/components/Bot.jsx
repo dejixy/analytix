@@ -465,14 +465,14 @@ function InfNumbers({ d }) {
   return (
     <div className="tiles bm-tiles">
       <div className="tile">
-        <div className="tile-label">Hyperliquid shadow</div>
-        <div className={`tile-value ${tone(ch(hl))}`}>{usd(hl.balance)}</div>
-        <div className="tile-sub">{hl.busted ? "Out of margin: reset in Settings" : `${pct(ch(hl))} · ${hl.trades} trades · all coins, limit orders`}</div>
-      </div>
-      <div className="tile">
         <div className="tile-label">Papertrade shadow</div>
         <div className={`tile-value ${tone(ch(pt))}`}>{usd(pt.balance)}</div>
         <div className="tile-sub">{pt.busted ? "Out of margin: reset in Settings" : `${pct(ch(pt))} · ${pt.trades} trades · BTC, ETH, ${d.settings.leverage}×`}</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">Hyperliquid shadow</div>
+        <div className={`tile-value ${tone(ch(hl))}`}>{usd(hl.balance)}</div>
+        <div className="tile-sub">{hl.busted ? "Out of margin: reset in Settings" : `${pct(ch(hl))} · ${hl.trades} trades · all coins, limit orders`}</div>
       </div>
       <div className="tile">
         <div className="tile-label">Fades, 7 days</div>
@@ -525,7 +525,7 @@ function InfLatest({ d }) {
                 <span className="muted bm-span">feed gap, not scored</span>
               ) : (
                 <>
-                  <span className={tone(r.bps)}>{bps(r.bps)}</span>
+                  <span className={tone(r.bps)} title={r.dip != null ? `Went ${bps(-r.dip)} against you at worst` : undefined}>{bps(r.bps)}</span>
                   <span className={tone(r.hl)} title="On Hyperliquid, limit orders, capped leverage">{r.hl <= -1 ? "bust" : pct(r.hl)}</span>
                 </>
               )}
@@ -627,6 +627,12 @@ function InfRecord({ d }) {
           </tbody>
         </table>
       </div>
+      {rec.fade?.dip != null && (
+        <p className="plan-note">
+          Dip before closing (how far a fade went against you first): usually <b className="down">{bps(-rec.fade.dip)}</b>,
+          at worst <b className="down">{bps(-rec.fade.dip_max)}</b>.
+        </p>
+      )}
       <p className="plan-note muted">
         Every hidden order is settled as if faded: in at the mid {d.fill_s}s after it's spotted, out {d.hold_s / 60} min later.
         HL taker / limit = the move after Hyperliquid fees ({d.costs.taker} / {d.costs.maker} bps a round trip). HL × = per trade on margin at

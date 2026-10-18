@@ -180,6 +180,18 @@ def bootstrap(returns: np.ndarray, start: float, size: float, compound: bool, tr
             "up": float((ends > start).mean()), "bust": busts / runs}
 
 
+def mid_near(rows: dict[int, list], s: int, stale_s: int = 5) -> float | None:
+    """The mid at second s from a coin's per-second rows, tolerating feed gaps: the last row in the stale_s seconds
+    up to s (what settle() enters at), else the first one in the stale_s seconds after. None if neither."""
+    for t in range(s, s - stale_s - 1, -1):
+        if t in rows:
+            return rows[t][2]
+    for t in range(s + 1, s + stale_s + 1):
+        if t in rows:
+            return rows[t][2]
+    return None
+
+
 def settle(rows: dict[int, list], s0: int, lag: int, hold: int, side: int, stale_s: int = 5) -> dict | None:
     """One alert's result from a coin's per-second rows {second: [lowest best bid, highest best ask, last mid]}:
     in at the mid `lag` seconds after second s0, out at the mid `hold` seconds later.
