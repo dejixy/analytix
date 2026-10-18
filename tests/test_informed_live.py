@@ -11,6 +11,7 @@ from api.informed import FILL_S, HOLD_S, InformedBasket, fade_message, hl_result
 T0 = 1_790_000_000
 WRONG = "0x" + "e" * 40
 NEW = "0x" + "f" * 40
+NEW2 = "0x" + "d" * 40
 OTHER = "0x" + "c" * 40
 
 
@@ -20,7 +21,8 @@ def rt(mode="replay"):
 
 def basket(tmp_path, **cfg):
     b = InformedBasket(rt(), tmp_path / "bot_informed.json", None, scores_file=tmp_path / "scores.json")
-    b.set_scores({"built_ms": 1, "k": 10, "wallets": {WRONG: {"n": 30, "mean": -12.0, "score": -9.0}}})
+    b.set_scores({"built_ms": 1, "k": 10, "wallets": {WRONG: {"n": 30, "mean": -12.0, "score": -9.0},
+                                                      NEW2: {"n": 30, "mean": -12.0, "score": -9.0}}})
     b.cfg.update(cfg)
     return b
 
@@ -71,7 +73,7 @@ def test_unscored_wallets_are_scored_as_the_control_but_not_faded(tmp_path):
 
 
 def test_btc_fades_go_to_the_papertrade_shadow_too(tmp_path):
-    b = basket(tmp_path)
+    b = basket(tmp_path, coins=["BTC", "ETH", "SOL", "HYPE"])
     run(b, "BTC")
     assert b.shadows["pt"]["trades"] == 1 and b.shadows["hl"]["trades"] == 1
 
@@ -80,7 +82,7 @@ def test_alerts_are_off_until_turned_on(tmp_path):
     b = basket(tmp_path)
     run(b, "ETH", secs=200)
     assert b.live()["alert"] is None
-    c = basket(tmp_path / "c", alerts=True)
+    c = basket(tmp_path / "c", alerts=True, coins=["ETH"])
     run(c, "ETH", secs=200)
     a = c.live()["alert"]
     assert a["kind"] == "fade" and a["side"] == -1 and a["hold_s"] == HOLD_S and a["fill_s"] == FILL_S
@@ -149,3 +151,44 @@ def test_the_record_shows_how_far_fades_dipped_before_closing(tmp_path):
     rec = b.public()["record"]["day"]["fade"]
     assert rec["dip"] == rec["dip_max"] == b.records[0]["result"]["adv"] >= 0
     assert b.public()["recent"][0]["dip"] == round(rec["dip"], 2)
+
+
+def test_btc_and_eth_are_watched_but_not_faded_by_default(tmp_path):
+    b = basket(tmp_path)
+    assert b.cfg["coins"] == ["SOL", "HYPE"] and b.shadow is b.shadows["hl"]
+    run(b, "BTC")
+    rec = b.records[0]
+    assert not rec["fade"] and rec["score"] == -9.0 and rec["settled"]       # in the record (the control), not traded
+    assert b.shadows["hl"]["trades"] == 0 and b.public()["record"]["day"]["all"]["n"] == 1
+
+
+def test_one_open_fade_per_coin(tmp_path):
+    b = basket(tmp_path)
+    for k in range(1200):                                   # SOL and HYPE fades at the same time, and a 2nd on SOL
+        for coin in ("SOL", "HYPE"):
+            book(b, coin, T0 + k, 100.0 - 0.002 * k)
+        if 10 <= k <= 130 and (k - 10) % 20 == 0:
+            for coin in ("SOL", "HYPE"):
+                buy(b, coin, (T0 + k) * 1000, WRONG, 20_000)
+        if 200 <= k <= 320 and (k - 200) % 20 == 0:
+            buy(b, "SOL", (T0 + k) * 1000, NEW2, 20_000)
+        if k % 5 == 0:
+            b.tick()
+    fades = [r for r in b.records if r["fade"]]
+    assert len(fades) == 3 and all(r["settled"] for r in fades)
+    assert b.shadows["hl"]["trades"] == 2                    # SOL and HYPE together; the 2nd SOL one waits its turn
+
+
+def test_older_settings_start_again_with_the_new_rules(tmp_path):
+    import json as _json
+    path = tmp_path / "bot_informed.json"
+    path.write_text(_json.dumps({"settings": {"coins": ["BTC", "ETH", "SOL", "HYPE"], "threshold": -6.0},
+                                 "shadows": {"hl": {"balance": 41.0, "trades": 9}}}))
+    b = InformedBasket(rt(), path, None, scores_file=tmp_path / "s.json")
+    assert b.cfg["coins"] == ["SOL", "HYPE"] and b.cfg["threshold"] == -6.0
+    assert b.shadows["hl"]["balance"] == 50.0 and b.shadows["hl"]["trades"] == 0
+    b._save()
+    again = InformedBasket(rt(), path, None, scores_file=tmp_path / "s.json")
+    assert again.shadows["hl"]["balance"] == 50.0
+    b.save_settings({"coins": ["SOL"]})
+    assert InformedBasket(rt(), path, None, scores_file=tmp_path / "s.json").cfg["coins"] == ["SOL"]

@@ -6,12 +6,15 @@ and hold 15 minutes.
     scores      data/informed_scores.json, rebuilt from the recordings every SCORE_REFRESH_S in a low-priority
                 process (scripts/informedScores.py): each wallet's shrunk average of what price did 15 minutes after
                 its hidden orders. Only the past goes in, so the live test is out of sample
-    a fade      a hidden order (engine/informed.py) from a wallet scoring at or below your threshold (-5): the other
-                side, in FILL_S after it's spotted, out HOLD_S later
-    the record  every hidden order is settled from the live book as if faded, so the fades can be compared with
-                fading everything (the control). Two shadow balances, one trade at a time each:
-                  Papertrade   BTC and ETH only, your leverage, Papertrade's cut on wins
-                  Hyperliquid  all coins, leverage capped at each coin's maximum, limit-order fees (3 bps a round trip)
+    a fade      a hidden order (engine/informed.py) on one of your coins (SOL and HYPE by default) from a wallet scoring
+                at or below your threshold (-5): the other side, in FILL_S after it's spotted, out HOLD_S later. The
+                fade check (scripts/fadeCheck.py) found the edge in SOL and HYPE; BTC and ETH fades lost money at
+                Hyperliquid's leverage
+    the record  every hidden order on all four coins is settled from the live book as if faded, so the fades can be
+                compared with fading everything (the control). Two shadow balances, one open trade per coin each
+                (fades come in bunches, and the later ones were the better ones):
+                  Hyperliquid  the lead: leverage capped at each coin's maximum, limit-order fees (3 bps a round trip)
+                  Papertrade   BTC and ETH only (when they're in your coins), your leverage, Papertrade's cut on wins
                 Hyperliquid at taker fees (9 bps) is shown in the record too
     storage     settings and shadows in data/bot_informed.json; every settled order in the bars SQLite (bot_fades)
 """
@@ -48,7 +51,8 @@ HL_MAX_LEV = {"BTC": 40, "ETH": 25, "SOL": 20, "HYPE": 10}
 PAPERTRADE_COINS = ("BTC", "ETH")
 KNOWN_COINS = ("BTC", "ETH", "SOL", "HYPE")
 
-DEFAULTS = {"alerts": False, "telegram": False, "threshold": -5.0, "coins": list(KNOWN_COINS), "balance": 50.0,
+VERSION = 2                     # 2: SOL and HYPE by default, one open fade per coin (older settings start again)
+DEFAULTS = {"alerts": False, "telegram": False, "threshold": -5.0, "coins": ["SOL", "HYPE"], "balance": 50.0,
             "leverage": 200.0, "margin_pct": 20.0}
 LIMITS = {"balance": (1, 1e7), "leverage": (1, 1000), "margin_pct": (1, 100), "threshold": (-100, 0)}
 MONEY_KEYS = ("balance", "leverage", "margin_pct", "threshold")
@@ -206,7 +210,7 @@ class InformedBasket:
         if ch == "l2Book":
             d = msg.get("data") or {}
             coin = d.get("coin")
-            if coin not in self.cfg["coins"]:
+            if coin not in KNOWN_COINS:                    # all four are watched; your coins are the ones faded
                 return
             try:
                 bids, asks = d["levels"]
@@ -227,7 +231,7 @@ class InformedBasket:
 
     def _on_trade(self, tr: dict) -> None:
         coin = tr.get("coin")
-        if coin not in self.cfg["coins"]:
+        if coin not in KNOWN_COINS:
             return
         users, side = tr.get("users") or [], tr.get("side")
         if len(users) != 2 or side not in ("B", "A"):
@@ -245,7 +249,7 @@ class InformedBasket:
     def _spotted(self, h) -> None:
         sc = self.scores.get(h.wallet) or {}
         score = sc.get("score")
-        fade = score is not None and score <= self.cfg["threshold"]
+        fade = score is not None and score <= self.cfg["threshold"] and h.coin in self.cfg["coins"]
         rec = {"id": f"fade-{h.coin}-{h.t_detect}-{h.wallet[-6:]}", "coin": h.coin, "side": -h.side, "order_side": h.side,
                "wallet": h.wallet, "t_ms": h.t_detect, "usd": round(h.usd_detect), "pieces": h.pieces_detect,
                "twap": h.regular_detect, "score": score, "n": sc.get("n", 0), "fade": fade, "mid": self._mid.get(h.coin),
@@ -285,7 +289,8 @@ class InformedBasket:
         rec["shadow"] = {}
         for key in ("pt", "hl"):
             sh = self.shadows[key]
-            if sh["busted"] or start < sh["free_ms"] or (key == "pt" and coin not in PAPERTRADE_COINS):
+            free = sh.setdefault("free", {})
+            if sh["busted"] or start < free.get(coin, 0) or (key == "pt" and coin not in PAPERTRADE_COINS):
                 continue
             margin = self.cfg["margin_pct"] / 100 * sh["start"]
             if margin > sh["balance"]:
@@ -297,7 +302,7 @@ class InformedBasket:
             sh["trades"] += 1
             sh["wins"] += pnl > 0
             sh["busts"] += res <= -1.0
-            sh["free_ms"] = start + HOLD_S * 1000
+            free[coin] = start + HOLD_S * 1000             # one open fade per coin
             sh["low"] = min(sh["low"], sh["balance"])
             sh["busted"] = sh["balance"] < margin
             rec["shadow"][key] = {"pnl": round(pnl, 4), "res": round(res, 4)}
@@ -326,7 +331,7 @@ class InformedBasket:
     # ── settings ───────────────────────────────────────────────────────────
     def _fresh(self) -> dict:
         start = float(self.cfg["balance"])
-        return {"start": start, "balance": start, "low": start, "trades": 0, "wins": 0, "busts": 0, "free_ms": 0,
+        return {"start": start, "balance": start, "low": start, "trades": 0, "wins": 0, "busts": 0, "free": {},
                 "busted": False, "since_ms": int(time.time() * 1000)}
 
     def _load(self) -> None:
@@ -337,16 +342,20 @@ class InformedBasket:
         except (ValueError, OSError):
             log.warning("could not read %s; using defaults", self.path)
             return
-        self.cfg.update({k: v for k, v in (saved.get("settings") or {}).items() if k in DEFAULTS})
+        same = saved.get("v") == VERSION
+        self.cfg.update({k: v for k, v in (saved.get("settings") or {}).items()
+                         if k in DEFAULTS and (same or k != "coins")})
         for key in ("pt", "hl"):
             self.shadows[key] = self._fresh()
-            self.shadows[key].update((saved.get("shadows") or {}).get(key) or {})
+            if same:                                       # new rules start both shadows again
+                self.shadows[key].update((saved.get("shadows") or {}).get(key) or {})
 
     def _save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"settings": self.cfg, "shadows": self.shadows}, indent=1), encoding="utf-8")
+            tmp.write_text(json.dumps({"v": VERSION, "settings": self.cfg, "shadows": self.shadows}, indent=1),
+                           encoding="utf-8")
             tmp.replace(self.path)
         except OSError as exc:
             log.warning("could not save %s: %s", self.path, exc)
@@ -388,8 +397,8 @@ class InformedBasket:
     # ── what the dashboard reads ───────────────────────────────────────────
     @property
     def shadow(self) -> dict:
-        """The balance shown on the basket tab: Papertrade's (BTC and ETH fades only)."""
-        return self.shadows["pt"]
+        """The balance shown on the basket tab: Hyperliquid's (SOL and HYPE aren't on Papertrade)."""
+        return self.shadows["hl"]
 
     def status(self) -> str:
         if not self.scores:
