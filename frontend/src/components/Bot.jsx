@@ -103,7 +103,7 @@ export default function Bot({ onClose }) {
           </span>
         </div>
         <div className="bm-baskets" role="tablist" aria-label="Baskets">
-          {(d?.baskets || [{ key: "twap", name: "TWAPs" }, { key: "informed", name: "Informed flow", status: "research" }]).map((b) => (
+          {(d?.baskets || [{ key: "twap", name: "TWAPs" }, { key: "informed", name: "Informed flow" }, { key: "degen", name: "Degen" }]).map((b) => (
             <button key={b.key} role="tab" aria-selected={basket === b.key} className={`bm-basket ${basket === b.key ? "on" : ""}`}
               onClick={() => setBasket(b.key)}>
               <b>{b.name}</b>
@@ -118,6 +118,8 @@ export default function Bot({ onClose }) {
           <p className="plan-note muted" style={{ padding: 12 }}>{error ? "" : "Loading…"}</p>
         ) : d.basket === "informed" ? (
           <Informed d={d} call={call} />
+        ) : d.basket === "degen" ? (
+          <DegenBasket d={d} call={call} />
         ) : (
           <>
             <Hero d={d} />
@@ -191,25 +193,6 @@ function Numbers({ d }) {
         <div className="tile-label">Spotted, last {d.today.hours >= 23.9 ? "24" : Math.max(1, Math.round(d.today.hours))} h</div>
         <div className="tile-value">{d.today.spotted}</div>
         <div className="tile-sub">{d.today.strong} strong · about {d.today.per_day.toFixed(0)} a day · {d.running.length} running</div>
-      </div>
-      <Degen dg={d.degen} />
-    </div>
-  );
-}
-
-/* A paper test of the degen idea: the same strong TWAPs, most of the pot on each, a week ending at 2x or -50%. */
-function Degen({ dg }) {
-  if (!dg) return null;
-  const c = dg.count || {};
-  const ch = dg.start ? dg.pot / dg.start - 1 : null;
-  const left = dg.week_left_s == null ? "starts at the next strong TWAP" : `${Math.ceil(dg.week_left_s / 86400)}d left`;
-  return (
-    <div className="tile tile-wide" title={`Every strong TWAP, ${Math.round(dg.frac * 100)}% of the pot as margin at ${dg.lev}x, out after 15 min. A week ends at ${dg.up}x or ${Math.round((dg.down - 1) * 100)}% of ${usd(dg.start)} (or after 7 days), then starts again from ${usd(dg.start)}. Paper only.`}>
-      <div className="tile-label">Degen shadow · {dg.lev}× with {Math.round(dg.frac * 100)}% of the pot · a week ends at 2× or −50%</div>
-      <div className={`tile-value ${tone(ch)}`}>{usd(dg.pot)} <span className="tile-sub">this week {pct(ch)} · {dg.week_trades} trades · {left}</span></div>
-      <div className="tile-sub">
-        Weeks: {c["2x"] || 0} doubled · {c["-50%"] || 0} halved · {c.neither || 0} neither · banked{" "}
-        <span className={tone(dg.banked)}>{usd(dg.banked, true)}</span>
       </div>
     </div>
   );
@@ -674,6 +657,191 @@ function InfHow({ d }) {
         <li>When one of those starts a new hidden order, the fade is the other side, within {d.fill_s}s, held {d.hold_s / 60} min. Being a little late barely mattered in the test.</li>
         <li>It fades SOL and HYPE: the fade check found the edge there, while BTC and ETH fades lost money at Hyperliquid's leverage. BTC and ETH are still watched, so the record's control covers all four.</li>
         <li>Fades come in bunches, and the later ones did better, so each coin can hold its own open fade. Only Hyperliquid lists SOL and HYPE, and there the edge only beats fees with limit orders, so the shadow uses limit-order fees.</li>
+      </ol>
+    </section>
+  );
+}
+
+/* ── Basket 3, degen: the informed basket's SOL and HYPE fades, a big share of the pot each, weeks of 2x or -50% ── */
+
+function DegenBasket({ d, call }) {
+  const [tab, setTab] = useState(null);
+  return (
+    <>
+      <div className="bm-hero"><p className="bm-say">{dgHeadline(d)}</p></div>
+      <DgNumbers d={d} />
+      <DgOpen d={d} />
+      <DgLatest d={d} />
+      <div className="bm-tabs" role="tablist">
+        {TABS.map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} className={`plan-chip ${tab === k ? "on" : ""}`}
+            onClick={() => setTab(tab === k ? null : k)}>{label}</button>
+        ))}
+      </div>
+      {tab === "settings" && <DgSettings d={d} call={call} />}
+      {tab === "record" && <DgRecord d={d} />}
+      {tab === "how" && <DgHow d={d} />}
+    </>
+  );
+}
+
+function dgHeadline(d) {
+  if (d.status === "warming") return "Waiting for the informed basket's wallet scores…";
+  return `Trading the informed basket's fades on ${d.settings.coins.join(", ")} with ${d.settings.pot_pct}% of the pot on each, at Hyperliquid's max leverage. A week ends at ${d.up}× or −${Math.round((1 - d.down) * 100)}%. Paper only: it's a test.`;
+}
+
+function DgNumbers({ d }) {
+  const ch = d.start ? d.pot / d.start - 1 : null;
+  const left = d.week_left_s == null ? "starts at the next fade" : `${Math.ceil(d.week_left_s / 86400)}d left`;
+  const c = d.count;
+  return (
+    <div className="tiles bm-tiles">
+      <div className="tile">
+        <div className="tile-label">This week's pot</div>
+        <div className={`tile-value ${tone(ch)}`}>{usd(d.pot)}</div>
+        <div className="tile-sub">{pct(ch)} · {d.week_trades} trades · {left}</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">The week ends at</div>
+        <div className="tile-value">{usd(d.start * d.up)}</div>
+        <div className="tile-sub">or down at {usd(d.start * d.down)}, or after 7 days</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">Weeks</div>
+        <div className="tile-value">{c["2x"]} · {c["-50%"]} · {c.neither}</div>
+        <div className="tile-sub">doubled · halved · neither</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">Banked</div>
+        <div className={`tile-value ${tone(d.banked)}`}>{usd(d.banked, true)}</div>
+        <div className="tile-sub">{d.trades} trades · {d.trades ? pct(d.wins / d.trades, false) : "-"} won{d.busts ? ` · ${d.busts} liquidated` : ""}</div>
+      </div>
+    </div>
+  );
+}
+
+function DgOpen({ d }) {
+  if (!d.open.length) return null;
+  return (
+    <section className="plan-sec">
+      <h3>Open now</h3>
+      <div className="bm-list">
+        {d.open.map((o) => (
+          <div key={o.id} className="bm-row bm-row-run">
+            <span className="muted">{mins((d.now_ms - o.t_ms) / 1000)}</span>
+            <span><b>{o.coin}</b> <span className={o.side > 0 ? "up" : "down"}>{sideWord(o.side).toLowerCase()}</span> <span className="muted">{usd(o.margin)} · {o.lev}×</span></span>
+            <span className={tone(o.pnl_now)}>{o.pnl_now == null ? "-" : usd(o.pnl_now, true)}</span>
+            <span className={tone(o.move_now)}>{bps(o.move_now)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DgLatest({ d }) {
+  const [all, setAll] = useState(false);
+  const rows = all ? d.recent : d.recent.slice(0, 5);
+  return (
+    <section className="plan-sec">
+      <h3>Latest trades, held {d.hold_s / 60} min</h3>
+      {!rows.length ? (
+        <p className="plan-note muted" style={{ margin: 0 }}>None yet. In the test, about 26 a day on SOL and HYPE.</p>
+      ) : (
+        <div className="bm-list">
+          {rows.map((t) => (
+            <div key={t.id} className="bm-row">
+              <span className="muted">{clock(t.t_ms)}</span>
+              <span><b>{t.coin}</b> <span className={t.side > 0 ? "up" : "down"}>{sideWord(t.side).toLowerCase()}</span> <span className="muted">{usd(t.margin)}</span></span>
+              <span className={tone(t.pnl)}>{t.bust ? "liquidated" : usd(t.pnl, true)}</span>
+              <span className="muted" title="The pot after it">{usd(t.pot)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {d.recent.length > 5 && (
+        <button className="plan-chip bm-more" onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${d.recent.length}`}</button>
+      )}
+    </section>
+  );
+}
+
+function DgRecord({ d }) {
+  return (
+    <section className="plan-sec">
+      {!d.weeks.length ? (
+        <p className="plan-note muted" style={{ margin: 0 }}>No week has ended yet.</p>
+      ) : (
+        <div className="bm-list">
+          {d.weeks.map((w) => (
+            <div key={w.since} className="bm-row">
+              <span className="muted">{new Date(w.since).toLocaleDateString([], { month: "short", day: "numeric" })}</span>
+              <span>{w.result === "2x" ? "doubled" : w.result === "-50%" ? "halved" : "neither"} <span className="muted">· {w.trades} trades</span></span>
+              <span className={tone(w.pot - d.start)}>{usd(w.pot - d.start, true)}</span>
+              <span className="muted">{usd(w.pot)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="plan-note muted">
+        Each week starts again from {usd(d.start)}. Banked = what every finished week ended at, minus {usd(d.start)}, added up.
+        A trade still open when a week ends lands in the next one.
+      </p>
+    </section>
+  );
+}
+
+function DgSettings({ d, call }) {
+  const c = d.settings;
+  const [draft, setDraft] = useState(() => ({ ...c }));
+  const saved = JSON.stringify(c);
+  useEffect(() => setDraft(JSON.parse(saved)), [saved]);
+  const set = (k, v) => setDraft((x) => ({ ...x, [k]: v }));
+  const changed = Object.keys(draft).filter((k) => JSON.stringify(draft[k]) !== JSON.stringify(c[k]));
+  const field = (k, label, unit) => (
+    <label key={k} className="plan-field">
+      {label}
+      <span className="plan-input">
+        {unit === "$" && "$"}
+        <input value={draft[k]} onChange={(e) => set(k, e.target.value)} inputMode="decimal" aria-label={label} />
+        {unit !== "$" && unit}
+      </span>
+    </label>
+  );
+  return (
+    <section className="plan-sec bm-settings">
+      <div className="plan-holds" role="group" aria-label="Coins">
+        {d.known_coins.map((k) => {
+          const on = draft.coins.includes(k);
+          return (
+            <button key={k} className={`plan-chip ${on ? "on" : ""}`}
+              onClick={() => set("coins", on ? draft.coins.filter((x) => x !== k) : [...draft.coins, k])}>{k}</button>
+          );
+        })}
+      </div>
+      {field("pot_pct", "Share of the pot per trade", "%")}
+      {field("balance", "Balance each week starts from", "$")}
+      <div className="plan-holds">
+        <button className="plan-open" disabled={!changed.length} onClick={() => call("PUT", "/api/bot/settings", Object.fromEntries(changed.map((k) => [k, draft[k]])))}>Save</button>
+        <button className="plan-chip" onClick={() => call("POST", "/api/bot/reset")}>Start again</button>
+      </div>
+      <p className="plan-note muted">
+        Leverage is each coin's max on Hyperliquid: {Object.entries(d.hl_lev).map(([k, v]) => `${k} ${v}×`).join(", ")}. It fades wallets scoring {d.threshold} or worse (set in Informed flow).
+        {["pot_pct", "balance"].some((k) => changed.includes(k)) ? " Changing these starts the pot again." : ""}
+      </p>
+    </section>
+  );
+}
+
+function DgHow({ d }) {
+  return (
+    <section className="plan-sec">
+      <ol className="bm-how">
+        <li>It takes the informed basket's fades: a wallet whose pushes reliably reverse starts a hidden order, and the trade is the other side, {d.fill_s}s later, held {d.hold_s / 60} min.</li>
+        <li>Only {d.settings.coins.join(" and ")}: the fade check found the edge there (about +1% of the margin a trade, 26 a day in the test). One open trade per coin.</li>
+        <li>Each trade puts {d.settings.pot_pct}% of the pot, as it stands when the trade opens, up as margin at Hyperliquid's max leverage, with limit-order fees. If price reaches the liquidation point, that margin is lost.</li>
+        <li>A week ends at {usd(d.start * d.up)} (doubled) or {usd(d.start * d.down)} (halved), or after 7 days. The next week starts again from {usd(d.start)}, and what each week ended at is banked.</li>
+        <li>Paper only, no alerts: it tests whether the fades can double a pot. With no edge, betting this big loses more often than it wins.</li>
       </ol>
     </section>
   );

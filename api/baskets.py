@@ -5,11 +5,13 @@ can never drag down another's numbers.
     twap       big TWAPs (api/bot.py)
     informed   informed flow: fading hidden orders from wallets whose pushes reliably reverse (api/informed.py). A
                live test: shadow-traded and scored, alerts off unless you turn them on
+    degen      the informed basket's SOL and HYPE fades, sized to double a pot in a week or lose half (api/degen.py)
 """
 import logging
 from pathlib import Path
 
 from api.bot import BotError, BotService
+from api.degen import DegenBasket
 from api.informed import InformedBasket
 
 log = logging.getLogger("analytix.bot")
@@ -23,7 +25,8 @@ class Bot:
         self.twap = BotService(runtime, path, db_path)
         self.twap.key, self.twap.name = "twap", "TWAPs"
         self.informed = InformedBasket(runtime, path.with_name(path.stem + "_informed.json"), db_path)
-        self.baskets = {"twap": self.twap, "informed": self.informed}
+        self.degen = DegenBasket(runtime, path.with_name(path.stem + "_degen.json"), self.informed)
+        self.baskets = {"twap": self.twap, "informed": self.informed, "degen": self.degen}
 
     def get(self, key: str | None):
         b = self.baskets.get(key or "twap")
