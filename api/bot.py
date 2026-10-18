@@ -47,7 +47,8 @@ DEFAULTS = {"alerts": True, "alert_on": "strong", "telegram": False, "coins": ["
             "leverage": 200.0, "margin_pct": 20.0, "hold": "900"}
 ALERT_ON = ("strong", "all")
 LIMITS = {"balance": (1, 1e7), "leverage": (1, 1000), "margin_pct": (1, 100)}
-MONEY_KEYS = ("balance", "leverage", "margin_pct", "hold")          # change these and the shadow restarts
+MONEY_KEYS = ("leverage", "hold")       # change these and the shadow restarts (they change the strategy); a new balance
+                                        # or margin keeps its result (rebase) and sizes from the next trade
 KNOWN_COINS = ("BTC", "ETH", "SOL", "HYPE")
 
 
@@ -442,9 +443,12 @@ class BotService:
                     raise BotError(f"{k.replace('_', ' ')} must be between {lo:g} and {hi:g}.")
                 new[k] = x
         restart = any(new[k] != self.cfg[k] for k in MONEY_KEYS)
+        resize = new["balance"] != self.cfg["balance"]
         self.cfg = new
         if restart:
             self.shadow = self._fresh_shadow()
+        elif resize:
+            rebase(self.shadow, new["balance"], new["margin_pct"])
         self._save()
         return self.public()
 
@@ -540,6 +544,14 @@ class BotService:
             "record": {"day": rec_of(now - DAY_MS), "week": rec_of(now - 7 * DAY_MS), "all": rec_of(None)},
             "now_ms": now,
         }
+
+
+def rebase(sh: dict, start: float, margin_pct: float) -> None:
+    """A new balance without losing the result so far: the profit or loss carries over in dollars, and trades are
+    sized from the new balance from the next one on."""
+    shift = float(start) - sh["start"]
+    sh["start"], sh["balance"], sh["low"] = float(start), sh["balance"] + shift, sh["low"] + shift
+    sh["busted"] = sh["balance"] < margin_pct / 100 * sh["start"]
 
 
 def parse_plan(history, coin: str, side: int, start_ms: int, mid: float | None) -> dict | None:

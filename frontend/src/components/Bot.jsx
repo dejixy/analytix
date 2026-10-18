@@ -290,7 +290,8 @@ function Settings({ d, call }) {
       </span>
     </label>
   );
-  const money = ["balance", "leverage", "margin_pct", "hold"].some((k) => changed.includes(k));
+  const money = ["leverage", "hold"].some((k) => changed.includes(k));
+  const resize = ["balance", "margin_pct"].some((k) => changed.includes(k));
   return (
     <section className="plan-sec bm-settings">
       <div className="plan-holds">
@@ -339,7 +340,8 @@ function Settings({ d, call }) {
         <button className="plan-open" disabled={!changed.length || busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
         <button className="plan-chip" onClick={() => call("POST", "/api/bot/reset")}>Reset shadow balance</button>
       </div>
-      {money && <p className="plan-note muted">Changing balance, leverage, margin or hold starts the shadow balance again.</p>}
+      {money && <p className="plan-note muted">Changing leverage or hold starts the shadow balance again.</p>}
+      {!money && resize && <p className="plan-note muted">The shadow keeps its result: a new balance carries the profit or loss over, and trades use the new size from the next one.</p>}
     </section>
   );
 }
@@ -566,7 +568,8 @@ function InfSettings({ d, call }) {
       </span>
     </label>
   );
-  const money = ["balance", "leverage", "margin_pct", "threshold"].some((k) => changed.includes(k));
+  const money = ["leverage", "threshold"].some((k) => changed.includes(k));
+  const resize = ["balance", "margin_pct"].some((k) => changed.includes(k));
   return (
     <section className="plan-sec bm-settings">
       <div className="plan-holds">
@@ -592,7 +595,7 @@ function InfSettings({ d, call }) {
       </div>
       <p className="plan-note muted">
         Hyperliquid caps leverage per coin: {Object.entries(d.hl_lev).map(([k, v]) => `${k} ${v}×`).join(", ")} at your setting.
-        {money ? " Changing balance, leverage, margin or the score starts both shadows again." : ""}
+        {money ? " Changing leverage or the score starts both shadows again." : resize ? " Both shadows keep their result: a new balance carries the profit or loss over, and trades use the new size from the next one." : ""}
       </p>
     </section>
   );
@@ -829,7 +832,8 @@ function DgSettings({ d, call }) {
       </div>
       <p className="plan-note muted">
         Leverage is each coin's max on Hyperliquid: {Object.entries(d.hl_lev).map(([k, v]) => `${k} ${v}×`).join(", ")}. It fades wallets scoring {d.threshold} or worse (set in Informed flow).
-        {["pot_pct", "balance"].some((k) => changed.includes(k)) ? " Changing these starts the pot again." : ""}
+        {changed.includes("pot_pct") ? " A new share applies from the next trade." : ""}
+        {changed.includes("balance") ? " A new balance applies from the next week (or now, if no week is running)." : ""}
       </p>
     </section>
   );

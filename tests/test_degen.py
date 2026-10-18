@@ -100,8 +100,22 @@ def test_settings(tmp_path):
     dg.save_settings({"coins": ["HYPE"]})
     assert dg.state["pot"] == 70.0 and dg.cfg["coins"] == ["HYPE"]
     dg.save_settings({"pot_pct": 25})
-    assert dg.state["pot"] == 50.0
+    assert dg.state["pot"] == 70.0 and dg.cfg["pot_pct"] == 25          # a new share applies from the next trade
     with pytest.raises(BotError):
         dg.save_settings({"pot_pct": 0})
+    dg.state.update(pot=50.0, start=50.0, week_ms=0, open=[])
+    dg.save_settings({"balance": 80})
+    assert dg.state["start"] == dg.state["pot"] == 80.0                  # between weeks: from now
     assert result({"bps": 10.0, "adv": 260.0}, "SOL") == -1.0          # 20x: maintenance margin 250 bps away
     assert result({"bps": 10.0, "adv": 5.0}, "SOL") == pytest.approx(20 * 7e-4)
+
+
+def test_a_balance_changed_mid_week_starts_next_week(tmp_path):
+    inf, dg = pair(tmp_path)
+    feed(inf, dg)
+    assert dg.state["week_ms"] and dg.state["trades"] == 1
+    pot = dg.state["pot"]
+    dg.save_settings({"balance": 100})
+    assert dg.state["start"] == 50.0 and dg.state["pot"] == pot           # this week runs on as it was
+    dg._end_week("neither", dg.state["week_ms"] + WEEK_MS)
+    assert dg.state["start"] == dg.state["pot"] == 100.0 and dg.state["banked"] == pytest.approx(pot - 50.0)

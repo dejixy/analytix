@@ -55,7 +55,7 @@ VERSION = 2                     # 2: SOL and HYPE by default, one open fade per 
 DEFAULTS = {"alerts": False, "telegram": False, "threshold": -5.0, "coins": ["SOL", "HYPE"], "balance": 50.0,
             "leverage": 200.0, "margin_pct": 20.0}
 LIMITS = {"balance": (1, 1e7), "leverage": (1, 1000), "margin_pct": (1, 100), "threshold": (-100, 0)}
-MONEY_KEYS = ("balance", "leverage", "margin_pct", "threshold")
+MONEY_KEYS = ("leverage", "threshold")            # change these and both shadows restart (they change the strategy)
 
 
 class InformedBasket:
@@ -382,10 +382,15 @@ class InformedBasket:
                 if not lo <= x <= hi:
                     raise BotError(f"{k.replace('_', ' ')} must be between {lo:g} and {hi:g}.")
                 new[k] = x
+        from api.bot import rebase
         restart = any(new[k] != self.cfg[k] for k in MONEY_KEYS)
+        resize = new["balance"] != self.cfg["balance"]
         self.cfg = new
         if restart:
             self.shadows = {"pt": self._fresh(), "hl": self._fresh()}
+        elif resize:                                       # a new balance keeps the result; margin is from the next trade
+            for sh in self.shadows.values():
+                rebase(sh, new["balance"], new["margin_pct"])
         self._save()
         return self.public()
 

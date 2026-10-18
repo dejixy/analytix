@@ -192,3 +192,14 @@ def test_older_settings_start_again_with_the_new_rules(tmp_path):
     assert again.shadows["hl"]["balance"] == 50.0
     b.save_settings({"coins": ["SOL"]})
     assert InformedBasket(rt(), path, None, scores_file=tmp_path / "s.json").cfg["coins"] == ["SOL"]
+
+
+def test_a_new_balance_keeps_the_result_but_leverage_starts_again(tmp_path):
+    b = basket(tmp_path)
+    b.shadows["hl"].update(balance=52.0, low=49.0)
+    b.save_settings({"balance": 100, "margin_pct": 10})
+    hl = b.shadows["hl"]
+    assert hl["start"] == 100.0 and hl["balance"] == 102.0 and hl["low"] == 99.0 and not hl["busted"]
+    assert b.shadows["pt"]["balance"] == 100.0
+    b.save_settings({"leverage": 100})
+    assert b.shadows["hl"]["balance"] == 100.0 and b.shadows["hl"]["trades"] == 0

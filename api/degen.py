@@ -32,7 +32,6 @@ WEEK_MS = 7 * 86_400_000
 DAY_MS = 86_400_000
 DEFAULTS = {"balance": 50.0, "pot_pct": 40.0, "coins": ["SOL", "HYPE"]}
 LIMITS = {"balance": (1, 1e7), "pot_pct": (1, 100)}
-RESTART_KEYS = ("balance", "pot_pct")                # change these and the pot starts again
 
 
 def result(res: dict | None, coin: str) -> float | None:
@@ -149,6 +148,7 @@ class DegenBasket:
         st["weeks"] = (st["weeks"] + [{"since": st["week_ms"], "end": t_ms, "result": how, "pot": round(st["pot"], 4),
                                        "trades": st["week_trades"]}])[-52:]
         st["banked"] += st["pot"] - st["start"]
+        st["start"] = float(self.cfg["balance"])                             # a balance changed mid-week starts here
         st["pot"], st["week_ms"], st["week_trades"] = st["start"], 0, 0      # the next week starts at its first trade
 
     # ── settings ───────────────────────────────────────────────────────────
@@ -199,10 +199,10 @@ class DegenBasket:
             if not lo <= x <= hi:
                 raise BotError(f"{k.replace('_', ' ')} must be between {lo:g} and {hi:g}.")
             new[k] = x
-        restart = any(new[k] != self.cfg[k] for k in RESTART_KEYS)
-        self.cfg = new
-        if restart:
-            self.state = self._fresh()
+        st = self.state
+        self.cfg = new                                     # a new share applies from the next trade
+        if new["balance"] != st["start"] and not st["week_ms"] and not st["open"]:
+            st["start"] = st["pot"] = float(new["balance"])   # between weeks: from now; mid-week: from the next week
         self._save()
         return self.public()
 
