@@ -15,7 +15,7 @@ def test_each_basket_has_its_own_balance_and_settings(tmp_path):
     b = bot(tmp_path)
     p = b.public("informed")
     assert p["basket"] == "informed" and p["status"] == "warming"            # no wallet scores yet
-    assert [x["key"] for x in p["baskets"]] == ["twap", "informed"]
+    assert [x["key"] for x in p["baskets"]] == ["twap", "informed", "degen"]
     b.save_settings("informed", {"balance": 100})
     assert b.public("informed")["shadow"]["balance"] == 100
     assert b.public("twap")["shadow"]["balance"] == 50                # the TWAP basket is untouched
@@ -24,6 +24,10 @@ def test_each_basket_has_its_own_balance_and_settings(tmp_path):
     assert b.twap.shadow["balance"] == 60.0
     again = bot(tmp_path)
     assert again.informed.cfg["balance"] == 100 and (tmp_path / "bot_informed.json").exists()
+    d = b.public("degen")
+    assert d["basket"] == "degen" and d["pot"] == 50 and d["settings"]["coins"] == ["SOL", "HYPE"]
+    b.save_settings("degen", {"balance": 200})
+    assert b.public("degen")["shadow"]["balance"] == 200 and b.public("informed")["shadow"]["balance"] == 100
 
 
 def test_unknown_baskets_and_settings_are_errors(tmp_path):
