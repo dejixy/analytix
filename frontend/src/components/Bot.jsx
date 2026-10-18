@@ -21,7 +21,7 @@ const ago = (ms, now) => {
 const sideWord = (s) => (s > 0 ? "LONG" : "SHORT");
 const HOLD_LABEL = { 300: "5 min", 900: "15 min", 1800: "30 min", end: "Until it stops" };
 const holdWords = (k) => (k === "end" ? "until the TWAP stops" : `for ${HOLD_LABEL[k]}`);
-const STATUS = { live: "Alerts on", silent: "Silent", research: "In research" };
+const STATUS = { live: "Alerts on", silent: "Silent", research: "In research", testing: "Testing", warming: "Warming up" };
 const TABS = [["settings", "Settings"], ["record", "Record"], ["how", "How it works"]];
 
 function headline(d) {
@@ -107,8 +107,8 @@ export default function Bot({ onClose }) {
             <button key={b.key} role="tab" aria-selected={basket === b.key} className={`bm-basket ${basket === b.key ? "on" : ""}`}
               onClick={() => setBasket(b.key)}>
               <b>{b.name}</b>
-              <span className={b.status === "research" ? "muted" : tone(b.balance - b.start)}>
-                {b.status === "research" ? "in research" : b.balance != null ? usd(b.balance) : ""}
+              <span className={b.status === "warming" ? "muted" : tone(b.balance - b.start)}>
+                {b.status === "warming" ? "warming up" : b.balance != null ? `${usd(b.balance)}${b.status === "testing" ? " · test" : ""}` : ""}
               </span>
             </button>
           ))}
@@ -116,8 +116,8 @@ export default function Bot({ onClose }) {
         {error && <div className="plan-error">{error}</div>}
         {!d ? (
           <p className="plan-note muted" style={{ padding: 12 }}>{error ? "" : "Loading…"}</p>
-        ) : d.status === "research" ? (
-          <Research d={d} call={call} />
+        ) : d.basket === "informed" ? (
+          <Informed d={d} call={call} />
         ) : (
           <>
             <Hero d={d} />
@@ -402,53 +402,251 @@ function How({ d }) {
   );
 }
 
-function Research({ d, call }) {
+
+/* Basket 2: fading the reliably wrong. A live test: every hidden order is scored, the fades are shadow-traded on
+   Hyperliquid (all coins, limit orders) and Papertrade (BTC/ETH). */
+
+const shortW = (w) => (w ? `${w.slice(0, 6)}…${w.slice(-4)}` : "");
+
+function Informed({ d, call }) {
+  const [tab, setTab] = useState(null);
+  return (
+    <>
+      <InfHero d={d} />
+      <InfNumbers d={d} />
+      <InfOpen d={d} />
+      <InfLatest d={d} />
+      <div className="bm-tabs" role="tablist">
+        {TABS.map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} className={`plan-chip ${tab === k ? "on" : ""}`}
+            onClick={() => setTab(tab === k ? null : k)}>{label}</button>
+        ))}
+      </div>
+      {tab === "settings" && <InfSettings d={d} call={call} />}
+      {tab === "record" && <InfRecord d={d} />}
+      {tab === "how" && <InfHow d={d} />}
+    </>
+  );
+}
+
+function infHeadline(d) {
+  const sc = d.scores;
+  if (d.status === "warming") {
+    if (sc.state === "failed") return `Couldn't build the wallet scores: ${sc.error || "unknown error"}.`;
+    return "Building wallet scores from the recordings (a few minutes)…";
+  }
+  const off = d.settings.alerts ? "" : " Alerts are off: it's a test, scored in the background.";
+  const w = sc.faded_wallets === 1 ? "1 wallet whose pushes reliably reverse" : `${sc.faded_wallets} wallets whose pushes reliably reverse`;
+  return `Fading ${w}, on ${d.settings.coins.join(", ")}. ${d.today.fades} fade${d.today.fades === 1 ? "" : "s"} out of ${d.today.orders} hidden orders in 24 h.${off}`;
+}
+
+function InfHero({ d }) {
+  const a = d.live?.alert;
+  if (!a) return <div className="bm-hero"><p className="bm-say">{infHeadline(d)}</p></div>;
+  const age = Math.max(0, (d.now_ms - a.t_ms) / 1000);
+  const inLeft = Math.ceil(a.fill_s - age);
+  return (
+    <div className={`bm-hero bm-call ${a.side > 0 ? "long" : "short"}`}>
+      <div className="bm-call-top">
+        <b>{a.coin} {sideWord(a.side)}</b>
+        <span>{inLeft > 0 ? `get in now · ${inLeft}s` : `close in ${mins(a.fill_s + a.hold_s - age)}`}</span>
+      </div>
+      <p className="bm-say">Fade: a wallet that's usually wrong is {a.side > 0 ? "selling" : "buying"} in pieces ({usdk(a.usd)} so far, score {a.score?.toFixed(1)}).</p>
+    </div>
+  );
+}
+
+function InfNumbers({ d }) {
+  const hl = d.shadows.hl;
+  const pt = d.shadows.pt;
+  const wk = d.record.week.fade || {};
+  const all = d.record.week.all || {};
+  const ch = (sh) => (sh.start ? sh.balance / sh.start - 1 : null);
+  return (
+    <div className="tiles bm-tiles">
+      <div className="tile">
+        <div className="tile-label">Hyperliquid shadow</div>
+        <div className={`tile-value ${tone(ch(hl))}`}>{usd(hl.balance)}</div>
+        <div className="tile-sub">{hl.busted ? "Out of margin: reset in Settings" : `${pct(ch(hl))} · ${hl.trades} trades · all coins, limit orders`}</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">Papertrade shadow</div>
+        <div className={`tile-value ${tone(ch(pt))}`}>{usd(pt.balance)}</div>
+        <div className="tile-sub">{pt.busted ? "Out of margin: reset in Settings" : `${pct(ch(pt))} · ${pt.trades} trades · BTC, ETH, ${d.settings.leverage}×`}</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">Fades, 7 days</div>
+        <div className={`tile-value ${tone(wk.bps)}`}>{wk.n ? bps(wk.bps) : "-"}</div>
+        <div className="tile-sub">{wk.n ? `${wk.n} · ${pct(wk.win, false)} wins · every order ${bps(all.bps)}` : "none finished yet"}</div>
+      </div>
+      <div className="tile">
+        <div className="tile-label">Last 24 h</div>
+        <div className="tile-value">{d.today.fades}</div>
+        <div className="tile-sub">fades · {d.today.orders} hidden orders · {d.open.length} open</div>
+      </div>
+    </div>
+  );
+}
+
+function InfOpen({ d }) {
+  if (!d.open.length) return null;
+  return (
+    <section className="plan-sec">
+      <h3>Open now</h3>
+      <div className="bm-list">
+        {d.open.map((r) => (
+          <div key={r.id} className="bm-row bm-row-run">
+            <span className="muted">{mins((d.now_ms - r.t_ms) / 1000)}</span>
+            <span><b>{r.coin}</b> <span className={r.side > 0 ? "up" : "down"}>{sideWord(r.side).toLowerCase()}</span></span>
+            <span className="muted" title={r.wallet}>{shortW(r.wallet)} {r.score?.toFixed(1)}</span>
+            <span className={tone(r.move_now)}>{bps(r.move_now)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function InfLatest({ d }) {
+  const [all, setAll] = useState(false);
+  const rows = all ? d.recent : d.recent.slice(0, 5);
+  return (
+    <section className="plan-sec">
+      <h3>Latest fades, held 15 min</h3>
+      {!rows.length ? (
+        <p className="plan-note muted" style={{ margin: 0 }}>None finished yet. In the test, about 66 a day across the four coins.</p>
+      ) : (
+        <div className="bm-list">
+          {rows.map((r) => (
+            <div key={r.id} className={`bm-row ${r.announced || !d.settings.alerts ? "" : "quiet"}`}>
+              <span className="muted">{clock(r.t_ms)}</span>
+              <span><b>{r.coin}</b> <span className={r.side > 0 ? "up" : "down"}>{sideWord(r.side).toLowerCase()}</span> <span className="muted">{usdk(r.usd)}</span></span>
+              {r.bps == null ? (
+                <span className="muted bm-span">feed gap, not scored</span>
+              ) : (
+                <>
+                  <span className={tone(r.bps)}>{bps(r.bps)}</span>
+                  <span className={tone(r.hl)} title="On Hyperliquid, limit orders, capped leverage">{r.hl <= -1 ? "bust" : pct(r.hl)}</span>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {d.recent.length > 5 && (
+        <button className="plan-chip bm-more" onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${d.recent.length}`}</button>
+      )}
+    </section>
+  );
+}
+
+function InfSettings({ d, call }) {
   const c = d.settings;
-  const [draft, setDraft] = useState(() => ({ balance: c.balance, leverage: c.leverage, margin_pct: c.margin_pct }));
-  const changed = Object.keys(draft).filter((k) => String(draft[k]) !== String(c[k]));
+  const [draft, setDraft] = useState(() => ({ ...c }));
+  const saved = JSON.stringify(c);
+  useEffect(() => setDraft(JSON.parse(saved)), [saved]);
+  const set = (k, v) => setDraft((x) => ({ ...x, [k]: v }));
+  const changed = Object.keys(draft).filter((k) => JSON.stringify(draft[k]) !== JSON.stringify(c[k]));
+  const flag = (k, label) => (
+    <button className={`plan-chip ${draft[k] ? "on" : ""}`} onClick={() => set(k, !draft[k])}>{label} {draft[k] ? "on" : "off"}</button>
+  );
   const field = (k, label, unit) => (
     <label key={k} className="plan-field">
       {label}
       <span className="plan-input">
         {unit === "$" && "$"}
-        <input value={draft[k]} onChange={(e) => setDraft((x) => ({ ...x, [k]: e.target.value }))} inputMode="decimal" aria-label={label} />
+        <input value={draft[k]} onChange={(e) => set(k, e.target.value)} inputMode="decimal" aria-label={label} />
         {unit !== "$" && unit}
       </span>
     </label>
   );
+  const money = ["balance", "leverage", "margin_pct", "threshold"].some((k) => changed.includes(k));
   return (
-    <>
-      <div className="bm-hero">
-        <p className="bm-say">In research. This basket will follow hidden orders from wallets whose trades move price for good. It trades nothing until its model passes the same tests as the TWAPs did.</p>
+    <section className="plan-sec bm-settings">
+      <div className="plan-holds">
+        {flag("alerts", "Alerts")}
+        {flag("telegram", "Telegram")}
       </div>
-      <div className="tiles bm-tiles">
-        <div className="tile">
-          <div className="tile-label">Shadow balance</div>
-          <div className="tile-value">{usd(d.shadow.balance)}</div>
-          <div className="tile-sub">its own money, separate from TWAPs</div>
-        </div>
-        <div className="tile">
-          <div className="tile-label">Status</div>
-          <div className="tile-value">Research</div>
-          <div className="tile-sub">model being built and tested</div>
-        </div>
+      <div className="plan-holds" role="group" aria-label="Coins">
+        {d.known_coins.map((k) => {
+          const on = draft.coins.includes(k);
+          return (
+            <button key={k} className={`plan-chip ${on ? "on" : ""}`}
+              onClick={() => set("coins", on ? draft.coins.filter((x) => x !== k) : [...draft.coins, k])}>{k}</button>
+          );
+        })}
       </div>
-      <section className="plan-sec">
-        <h3>How it will work</h3>
-        <ol className="bm-how">
-          <li>Spot hidden orders: a wallet buying or selling one way, in irregular pieces, over minutes.</li>
-          <li>Score each wallet from its past hidden orders: does price keep going its way over 15 to 60 minutes (informed), or snap back (just pressure)?</li>
-          <li>When a wallet that's been informed before starts a new hidden order, call it, with how sure the model is and for how long to hold.</li>
-        </ol>
-      </section>
-      <section className="plan-sec bm-settings">
-        {field("balance", "Balance", "$")}
-        {field("leverage", "Leverage", "×")}
-        {field("margin_pct", "Margin per trade", "%")}
-        <div className="plan-holds">
-          <button className="plan-open" disabled={!changed.length} onClick={() => call("PUT", "/api/bot/settings", Object.fromEntries(changed.map((k) => [k, draft[k]])))}>Save</button>
-        </div>
-      </section>
-    </>
+      {field("threshold", "Fade wallets scoring at most", "bps")}
+      {field("leverage", "Leverage", "×")}
+      {field("balance", "Balance", "$")}
+      {field("margin_pct", "Margin per trade", "%")}
+      <div className="plan-holds">
+        <button className="plan-open" disabled={!changed.length} onClick={() => call("PUT", "/api/bot/settings", Object.fromEntries(changed.map((k) => [k, draft[k]])))}>Save</button>
+        <button className="plan-chip" onClick={() => call("POST", "/api/bot/reset")}>Reset shadow balances</button>
+      </div>
+      <p className="plan-note muted">
+        Hyperliquid caps leverage per coin: {Object.entries(d.hl_lev).map(([k, v]) => `${k} ${v}×`).join(", ")} at your setting.
+        {money ? " Changing balance, leverage, margin or the score starts both shadows again." : ""}
+      </p>
+    </section>
+  );
+}
+
+function InfRecord({ d }) {
+  const [per, setPer] = useState("week");
+  const rec = d.record[per] || {};
+  const rows = [["fade", `Fades (score ${d.settings.threshold} or worse)`], ["all", "Every hidden order (control)"]];
+  return (
+    <section className="plan-sec">
+      <div className="plan-holds">
+        {[["day", "24 h"], ["week", "7 days"], ["all", "All"]].map(([k, label]) => (
+          <button key={k} className={`plan-chip ${per === k ? "on" : ""}`} onClick={() => setPer(k)}>{label}</button>
+        ))}
+      </div>
+      <div className="bot-scroll">
+        <table className="plan-table">
+          <thead>
+            <tr><th>Faded</th><th>n</th><th>Move</th><th>Wins</th><th>HL taker</th><th>HL limit</th><th>HL ×</th><th>Papertrade</th></tr>
+          </thead>
+          <tbody>
+            {rows.map(([k, label]) => {
+              const r = rec[k] || { n: 0 };
+              return (
+                <tr key={k} className={k === "fade" ? "bm-you" : ""}>
+                  <td>{label}</td>
+                  <td>{r.n}</td>
+                  <td className={tone(r.bps)}>{r.n ? bps(r.bps) : "-"}</td>
+                  <td>{r.n ? pct(r.win, false) : "-"}</td>
+                  <td className={tone(r.taker)}>{r.n ? bps(r.taker) : "-"}</td>
+                  <td className={tone(r.maker)}>{r.n ? bps(r.maker) : "-"}</td>
+                  <td className={tone(r.hl)}>{r.n ? pct(r.hl) : "-"}</td>
+                  <td className={tone(r.pt)}>{r.pt != null ? `${pct(r.pt)} (${r.pt_n})` : "-"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="plan-note muted">
+        Every hidden order is settled as if faded: in at the mid {d.fill_s}s after it's spotted, out {d.hold_s / 60} min later.
+        HL taker / limit = the move after Hyperliquid fees ({d.costs.taker} / {d.costs.maker} bps a round trip). HL × = per trade on margin at
+        each coin's capped leverage, limit-order fees. Papertrade = BTC and ETH only, at {d.settings.leverage}×, its cut on wins. In the test:
+        fades +7.5 bps, every order +1.1.
+      </p>
+    </section>
+  );
+}
+
+function InfHow({ d }) {
+  const sc = d.scores;
+  return (
+    <section className="plan-sec">
+      <ol className="bm-how">
+        <li>The bot spots hidden orders: a wallet buying or selling one way in pieces, $50k+ over a minute or more.</li>
+        <li>Every few hours it scores every wallet from the recordings: on average, what did price do 15 minutes after its hidden orders? Some wallets' pushes reliably reverse. Last built {sc.built_ms ? ago(sc.built_ms, Date.now()) : "-"}: {sc.wallets} wallets, {sc.faded_wallets} at {d.settings.threshold} or worse.</li>
+        <li>When one of those starts a new hidden order, the fade is the other side, within {d.fill_s}s, held {d.hold_s / 60} min. Being a little late barely mattered in the test.</li>
+        <li>Most of the edge was in SOL and HYPE, which only Hyperliquid has. There, +7.5 bps only beats fees with limit orders, so the main shadow uses limit-order fees.</li>
+      </ol>
+    </section>
   );
 }
