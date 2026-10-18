@@ -14,7 +14,7 @@ def bot(tmp_path):
 def test_each_basket_has_its_own_balance_and_settings(tmp_path):
     b = bot(tmp_path)
     p = b.public("informed")
-    assert p["basket"] == "informed" and p["status"] == "research"
+    assert p["basket"] == "informed" and p["status"] == "warming"            # no wallet scores yet
     assert [x["key"] for x in p["baskets"]] == ["twap", "informed"]
     b.save_settings("informed", {"balance": 100})
     assert b.public("informed")["shadow"]["balance"] == 100
@@ -26,10 +26,10 @@ def test_each_basket_has_its_own_balance_and_settings(tmp_path):
     assert again.informed.cfg["balance"] == 100 and (tmp_path / "bot_informed.json").exists()
 
 
-def test_the_research_basket_refuses_trading_settings_and_unknown_baskets_are_errors(tmp_path):
+def test_unknown_baskets_and_settings_are_errors(tmp_path):
     b = bot(tmp_path)
     with pytest.raises(BotError):
-        b.save_settings("informed", {"alerts": True})
+        b.save_settings("informed", {"hold": "900"})
     with pytest.raises(BotError):
         b.public("nope")
     assert b.public()["basket"] == "twap"

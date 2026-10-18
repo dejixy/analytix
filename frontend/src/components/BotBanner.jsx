@@ -31,7 +31,9 @@ export default function BotBanner({ bot, nowMs, onOpen }) {
     if (!seen.current.has(a.id)) {
       seen.current.add(a.id);
       chime(a.side);
-      notify(`${a.coin} ${side} now`, `Big TWAP ${a.side > 0 ? "buying" : "selling"} ${usdk(a.slice_usd)} every 30s. Get in within ${a.fill_s}s.`, a.id);
+      notify(`${a.coin} ${side} now`, a.kind === "fade"
+        ? `Fade: a wallet that's usually wrong is ${a.side > 0 ? "selling" : "buying"}. Get in within ${a.fill_s}s, close after ${Math.round(a.hold_s / 60)} min.`
+        : `Big TWAP ${a.side > 0 ? "buying" : "selling"} ${usdk(a.slice_usd)} every 30s. Get in within ${a.fill_s}s.`, a.id);
     }
     if (stopped && !seen.current.has(`${a.id}-end`)) {
       seen.current.add(`${a.id}-end`);
@@ -56,7 +58,9 @@ export default function BotBanner({ bot, nowMs, onOpen }) {
       <b className="bm-banner-call">{a.coin} {long ? "LONG" : "SHORT"}</b>
       <span className="bm-banner-time">{when}</span>
       <span className="bm-banner-why">
-        Big TWAP {long ? "buying" : "selling"} {usdk(a.slice_usd)} every 30s{a.plan ? ` · ${usdk(a.plan.left_usd)} to come` : ""}
+        {a.kind === "fade"
+          ? `Fade: usually-wrong wallet ${long ? "selling" : "buying"} ${usdk(a.usd)}`
+          : `Big TWAP ${long ? "buying" : "selling"} ${usdk(a.slice_usd)} every 30s${a.plan ? ` · ${usdk(a.plan.left_usd)} to come` : ""}`}
       </span>
       <button className="plan-close" onClick={(e) => { e.stopPropagation(); setHidden(a.id); }} aria-label="Hide">✕</button>
     </div>

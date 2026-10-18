@@ -45,12 +45,14 @@ def regular(gaps: list) -> bool:
 
 class HiddenOrders:
     def __init__(self, min_usd: float = MIN_USD, min_pieces: int = MIN_PIECES, min_span_ms: int = MIN_SPAN_MS,
-                 gap_ms: int = GAP_MS):
+                 gap_ms: int = GAP_MS, keep: bool = True):
         self.min_usd, self.min_pieces, self.min_span_ms, self.gap_ms = min_usd, min_pieces, min_span_ms, gap_ms
+        self.keep = keep                              # False (live): don't keep finished orders, just report spots
         self.open: dict[tuple, Hidden] = {}
         self.done: list[Hidden] = []
 
-    def add(self, wallet: str, coin: str, side: int, t_ms: int, usd: float) -> None:
+    def add(self, wallet: str, coin: str, side: int, t_ms: int, usd: float) -> Hidden | None:
+        """One taker fill. Returns the hidden order when this fill is the one that gets it spotted."""
         key = (wallet, coin)
         h = self.open.get(key)
         if h is not None and (h.side != side or t_ms - h.t_last > self.gap_ms):
@@ -69,9 +71,16 @@ class HiddenOrders:
                 and t_ms - h.t_first >= self.min_span_ms):
             h.t_detect, h.usd_detect, h.pieces_detect = t_ms, h.usd, h.pieces
             h.regular_detect = regular(h.gaps)
+            return h
+        return None
+
+    def prune(self, now_ms: int) -> None:
+        """Forget orders that are over (no fill for gap_ms), so a live run doesn't grow forever."""
+        for key in [k for k, h in self.open.items() if now_ms - h.t_last > self.gap_ms]:
+            self._close(self.open.pop(key))
 
     def _close(self, h: Hidden) -> None:
-        if h.t_detect >= 0:
+        if h.t_detect >= 0 and self.keep:
             self.done.append(h)
 
     def finish(self) -> list[Hidden]:
