@@ -8,6 +8,8 @@ Wire formats (https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api
   trades          {"channel": "trades", "data": [WsTrade, ...]}
   l2Book          {"channel": "l2Book", "data": {coin, time, levels: [bids, asks]}}
   activeAssetCtx  {"channel": "activeAssetCtx", "data": {coin, ctx: {funding, openInterest, ...}}}
+  bbo             {"channel": "bbo", "data": {coin, time, bbo: [bid, ask]}}   best bid and offer, sent whenever the
+                  top changes (~every 0.1 s, vs ~5.4 s for l2Book). Recorded for studies; the engine ignores it.
 Numbers arrive as strings ("3012.5"); float() handles both.
 """
 import sys
@@ -120,4 +122,5 @@ def subscriptions(coin: str) -> list[dict[str, Any]]:
         {"method": "subscribe", "subscription": {"type": "trades", "coin": coin}},
         {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin}},
         {"method": "subscribe", "subscription": {"type": "activeAssetCtx", "coin": coin}},
+        {"method": "subscribe", "subscription": {"type": "bbo", "coin": coin}},
     ]

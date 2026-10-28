@@ -10,6 +10,9 @@ next to Hyperliquid's, so replays and the study see the same thing:
 
     {"channel": "ext", "data": {"venue": "binance", "coin": "ETH", "ts": 1790000000123, "bid": 2650.1, "ask": 2650.2}}
 
+A quote that arrives more than STALE_QUOTE_MS after its own timestamp is dropped (and counted): Bybit delivers about
+3.5% of its messages 5 to 30 s late, which stamped old prices as fresh moves.
+
 Coins are mapped to each exchange's symbol (ETH → ETHUSDT; Hyperliquid's "k" coins, priced per 1,000, to
 1000…USDT). A coin an exchange doesn't list simply never sends anything.
 """
@@ -27,6 +30,7 @@ from config import BINANCE_WS_URL, BYBIT_WS_URL
 log = logging.getLogger("analytix.external")
 
 QUOTE_EVERY_MS = 250
+STALE_QUOTE_MS = 2_000
 BYBIT_PING_S = 20
 
 
@@ -43,6 +47,7 @@ class VenueStatus:
     last_ms: int = 0
     last_error: str | None = None
     reconnects: int = 0
+    stale: int = 0                                  # quotes dropped for arriving > STALE_QUOTE_MS after their time
 
 
 @dataclass(slots=True)
@@ -54,9 +59,12 @@ class Quoter:
     status: VenueStatus = field(default_factory=VenueStatus)
     _last: dict[str, int] = field(default_factory=dict)
 
-    def quote(self, sym: str, ts: int, bid: float, ask: float) -> None:
+    def quote(self, sym: str, ts: int, bid: float, ask: float, recv_ms: float | None = None) -> None:
         coin = self.by_symbol.get(sym)
         if coin is None or not (bid > 0 and ask >= bid):
+            return
+        if recv_ms is not None and recv_ms - ts > STALE_QUOTE_MS:
+            self.status.stale += 1
             return
         if ts - self._last.get(coin, 0) < QUOTE_EVERY_MS:
             return
@@ -66,12 +74,12 @@ class Quoter:
         self.emit({"channel": "ext", "data": {"venue": self.venue, "coin": coin, "ts": ts, "bid": bid, "ask": ask}})
 
 
-def parse_binance(msg: dict, q: Quoter) -> None:
+def parse_binance(msg: dict, q: Quoter, recv_ms: float | None = None) -> None:
     d = msg.get("data", msg)                       # combined streams wrap the payload in {"stream", "data"}
     if d.get("e") != "bookTicker":
         return
     try:
-        q.quote(d["s"], int(d.get("T") or d.get("E")), float(d["b"]), float(d["a"]))
+        q.quote(d["s"], int(d.get("T") or d.get("E")), float(d["b"]), float(d["a"]), recv_ms)
     except (KeyError, TypeError, ValueError):
         pass
 
@@ -82,7 +90,7 @@ class _Top:
     ask: float = 0.0
 
 
-def parse_bybit(msg: dict, q: Quoter, book: dict[str, _Top]) -> None:
+def parse_bybit(msg: dict, q: Quoter, book: dict[str, _Top], recv_ms: float | None = None) -> None:
     topic = msg.get("topic", "")
     if not topic.startswith("orderbook.1."):
         return
@@ -103,7 +111,7 @@ def parse_bybit(msg: dict, q: Quoter, book: dict[str, _Top]) -> None:
     except (TypeError, ValueError):
         return
     if top.bid and top.ask:
-        q.quote(sym, ts, top.bid, top.ask)
+        q.quote(sym, ts, top.bid, top.ask, recv_ms)
 
 
 class ExternalFeed:
@@ -127,7 +135,8 @@ class ExternalFeed:
             log.exception("failed to process an external quote")
 
     def status(self) -> dict:
-        return {v: {"connected": q.status.connected, "quotes": q.status.quotes, "last_error": q.status.last_error}
+        return {v: {"connected": q.status.connected, "quotes": q.status.quotes, "stale": q.status.stale,
+                    "last_error": q.status.last_error}
                 for v, q in self.quoters.items()}
 
     async def run(self) -> None:
@@ -162,7 +171,7 @@ class ExternalFeed:
             q.status.connected, q.status.last_error = True, None
             log.info("connected to Binance for %s", ", ".join(self.coins))
             async for raw in ws:
-                parse_binance(json.loads(raw), q)
+                parse_binance(json.loads(raw), q, time.time() * 1000)
 
     async def _bybit(self) -> None:
         q = self.quoters["bybit"]
@@ -174,7 +183,7 @@ class ExternalFeed:
             pinger = asyncio.create_task(self._bybit_ping(ws))
             try:
                 async for raw in ws:
-                    parse_bybit(json.loads(raw), q, book)
+                    parse_bybit(json.loads(raw), q, book, time.time() * 1000)
             finally:
                 pinger.cancel()
 
