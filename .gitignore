@@ -5,6 +5,7 @@ __pycache__/
 venv/
 data/*.jsonl
 data/recordings/
+data/store/
 frontend/node_modules/
 data/*.sqlite
 data/alerts.json

@@ -5,8 +5,8 @@ next than the mid itself or the size-weighted mid? Fitted on older recordings, j
     python -m scripts.microPrice                                  # BTC, ETH, SOL, HYPE; last 7 days held out
     python -m scripts.microPrice --coins BTC,ETH --test-days 5 --depth 3
 
-On the server, from /opt/analytix:
-    sudo -u analytix nice -n 19 .venv/bin/python -m scripts.microPrice > /tmp/microprice.txt 2>&1
+On the server, from /opt/analytix (reads the fast store when it has been built, the recordings otherwise):
+    ANALYTIX_STORE_DIR=~/analytix-store nice -n 19 .venv/bin/python -m scripts.microPrice > /tmp/microprice.txt
 
 How it works: every book snapshot is a state, (imbalance bin, spread in ticks). Counting how states move into each
 other, and how the mid moves when they do, gives the expected eventual mid change from each state: the micro-price
@@ -32,8 +32,10 @@ from pathlib import Path
 
 import numpy as np
 
-from config import RECORD_DIR
+from config import RECORD_DIR, STORE_DIR
+from engine.ticks import hl_tick
 from ingestion.replay import _first_recv, recording_files
+from storage import tickStore
 
 DAY_MS = 86_400_000
 HOUR_MS = 3_600_000
@@ -94,14 +96,25 @@ def load_books(paths: list[str], coins: list[str], days: float, depth: int) -> d
     return books
 
 
+def load_books_store(coins: list[str], days: float, depth: int, store: Path) -> dict[str, np.ndarray]:
+    """The same rows as load_books, from the fast store (scripts/buildStore.py)."""
+    have = [c for c in coins if tickStore.days(c, store)]
+    if not have:
+        return {}
+    end = max(tickStore.day_end_ms(tickStore.days(c, store)[-1]) for c in have)
+    books = {}
+    for coin in have:
+        z = tickStore.load(coin, ["book"], end - days * DAY_MS, None, store, only=["bid_px", "bid_sz", "ask_px", "ask_sz"])
+        pb, pa = z["bid_px"][:, 0], z["ask_px"][:, 0]
+        qb, qa = z["bid_sz"][:, :depth].sum(axis=1), z["ask_sz"][:, :depth].sum(axis=1)
+        a = np.column_stack([z["book_t"].astype(float), pb, pa, qb, qa])
+        a = a[(pa > pb) & (pb > 0) & (qb > 0) & (qa > 0)]
+        keep = np.r_[True, np.diff(a[:, 0]) > 0] if len(a) else np.zeros(0, bool)
+        books[coin] = a[keep]
+    return books
+
+
 # ----------------------------------------------------------------------------------------------- states
-
-def tick_of(spread: np.ndarray) -> float:
-    """The coin's tick: the smallest spread that shows up at least 0.1% of the time (ignores the odd stray quote)."""
-    vals, counts = np.unique(np.round(spread[spread > 0], 10), return_counts=True)
-    ok = vals[counts >= max(1, 0.001 * counts.sum())]
-    return float(ok.min() if len(ok) else vals.min())
-
 
 def describe(a: np.ndarray, n: int, m: int) -> dict:
     """Per-snapshot quantities: mid, imbalance, spread in ticks and bps, and the (spread, imbalance) state."""
@@ -109,10 +122,11 @@ def describe(a: np.ndarray, n: int, m: int) -> dict:
     mid = (pa + pb) / 2
     spread = pa - pb
     imb = qb / (qb + qa)
-    ticks = np.rint(spread / tick_of(spread)).astype(int)
+    tick = hl_tick(mid)                                   # changes when a price crosses a power of ten
+    ticks = np.rint(spread / tick).astype(int)
     ib = np.minimum((imb * n).astype(int), n - 1)
     sb = np.clip(ticks, 1, m) - 1
-    return {"t": t, "mid": mid, "imb": imb, "ticks": ticks, "spread_bps": spread / mid * 1e4,
+    return {"t": t, "mid": mid, "imb": imb, "ticks": ticks, "tick": tick, "spread_bps": spread / mid * 1e4,
             "ib": ib, "sb": sb, "state": sb * n + ib}
 
 
@@ -202,13 +216,21 @@ def main() -> None:
     ap.add_argument("--spreads", type=int, default=3, help="spread states: 1, 2, ... ticks, the last one and wider")
     ap.add_argument("--depth", type=int, default=1, help="book levels per side in the imbalance (1 = the paper)")
     ap.add_argument("--horizons", default="10,30,60,300", help="seconds ahead to score")
+    ap.add_argument("--json", action="store_true", help="read the recordings even when the fast store exists")
     args = ap.parse_args()
     coins = [c.strip() for c in args.coins.split(",") if c.strip()]
     horizons = [int(h) for h in args.horizons.split(",")]
     n, m = args.bins, args.spreads
 
-    print(f"reading book snapshots ({args.days:g} days, depth {args.depth})...", file=sys.stderr)
-    books = load_books(args.paths, coins, args.days, args.depth)
+    t0 = time.time()
+    books = {} if args.json else load_books_store(coins, args.days, args.depth, STORE_DIR)
+    source = f"store {STORE_DIR}"
+    if not books:
+        print(f"reading book snapshots from the recordings ({args.days:g} days, depth {args.depth})...", file=sys.stderr)
+        books = load_books(args.paths, coins, args.days, args.depth)
+        source = "recordings"
+    print(f"loaded {sum(len(b) for b in books.values()):,} snapshots from the {source} in {time.time() - t0:.1f}s",
+          file=sys.stderr)
     if not books:
         sys.exit("no book snapshots for those coins")
 
@@ -236,8 +258,9 @@ def main() -> None:
     for coin, (d, *_rest) in results.items():
         gaps = np.diff(d["t"]) / 1000
         tk = d["ticks"]
-        tick = tick_of(books[coin][:, 2] - books[coin][:, 1])
-        print(f"{coin:<6}{len(d['t']):>11,}{np.median(gaps):>8.1f}s{np.percentile(gaps, 90):>8.1f}s{tick:>12g}"
+        ticks_seen = np.unique(d["tick"])
+        tick = (f"{ticks_seen.min():g}-{ticks_seen.max():g}" if len(ticks_seen) > 1 else f"{ticks_seen[0]:g}")
+        print(f"{coin:<6}{len(d['t']):>11,}{np.median(gaps):>8.1f}s{np.percentile(gaps, 90):>8.1f}s{tick:>12}"
               f"{(tk == 1).mean() * 100:>7.0f}%{(tk == 2).mean() * 100:>8.0f}%{(tk >= 3).mean() * 100:>6.0f}%"
               f"{np.median(d['spread_bps']):>9.2f}bps")
 

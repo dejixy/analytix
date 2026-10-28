@@ -115,6 +115,8 @@ RECORD_FILE = os.getenv("ANALYTIX_RECORD_FILE")      # live mode: also record ra
 RECORD = os.getenv("ANALYTIX_RECORD", "0") == "1"    # live mode: also record to hourly files in RECORD_DIR
 RECORD_DIR = Path(os.getenv("ANALYTIX_RECORD_DIR", str(ROOT / "data" / "recordings")))
 RECORD_MIN_FREE_GB = float(os.getenv("ANALYTIX_RECORD_MIN_FREE_GB", "2"))   # pause recording below this much free disk
+STORE_DIR = Path(os.path.expanduser(os.getenv("ANALYTIX_STORE_DIR", str(ROOT / "data" / "store"))))  # fast columns
+                                                     # built from the recordings for studies (scripts/buildStore.py)
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 ALERTS_FILE = Path(os.getenv("ANALYTIX_ALERTS_FILE", str(ROOT / "data" / "alerts.json")))   # alert settings + Telegram
 WATCH_FILE = Path(os.getenv("ANALYTIX_WATCH_FILE", str(ROOT / "data" / "watch.json")))      # position watch wallets
