@@ -40,6 +40,8 @@ def test_store_round_trip(tmp_path):
         (day2 + 500, {"channel": "bbo", "data": {"coin": "ETH", "time": day2 + 450,
                                                  "bbo": [{"px": "2651.0", "sz": "3", "n": 2}, None]}}),
         (day2 + 1000, _trade(day2 + 900, 2, "A", "0xcc", "0xaa", engine=True)),
+        (day2 + 1500, {"channel": "ext_trade", "data": {"venue": "lighter", "coin": "ETH", "ts": day2 + 1400,
+                                                        "px": 2651.2, "sz": 0.4, "side": 1, "liq": False, "id": 9}}),
         (day2 + 2000, _book(day2 + 1900, 2651.0, 2651.1)),
     ])
     days = tickStore.hours_by_day([rec])
@@ -48,7 +50,7 @@ def test_store_round_trip(tmp_path):
         tickStore.write_day(store, day, paths)
         assert tickStore.built_sources(store, day) == tickStore.sources_of(paths)
 
-    z = tickStore.load("ETH", ["book", "trades", "bbo", "ext", "ctx"], store=store)
+    z = tickStore.load("ETH", ["book", "trades", "bbo", "ext", "xtrade", "ctx"], store=store)
     assert z["book_t"].tolist() == [day1 + 900, day2 + 1900]
     assert z["bid_px"].shape == (2, tickStore.BOOK_LEVELS) and z["bid_px"][1, 0] == 2651.0
     assert np.isnan(z["bid_px"][0, 1]) and z["bid_sz"][0, 1] == 0
@@ -59,6 +61,7 @@ def test_store_round_trip(tmp_path):
     assert z["ctx_oi"].tolist() == [5.0] and np.isnan(z["ctx_mid"][0])
     assert z["bbo_t"].tolist() == [day2 + 450] and z["bbo_bid"][0] == 2651.0 and z["bbo_bid_n"][0] == 2
     assert np.isnan(z["bbo_ask"][0]) and z["bbo_ask_sz"][0] == 0                     # the empty side
+    assert z["xtrade_venue"].tolist() == [tickStore.VENUES.index("lighter")] and z["xtrade_side"].tolist() == [1]
 
     part = tickStore.load("ETH", ["book"], start_ms=day2, store=store, only=["bid_px"])
     assert part["book_t"].tolist() == [day2 + 1900] and "ask_px" not in part
@@ -84,3 +87,24 @@ def test_late_external_quotes_dropped():
     assert out == [] and q.status.stale == 1
     parse_bybit({**msg, "ts": t + 1000, "cts": t + 1000}, q, book, recv_ms=t + 1100)
     assert len(out) == 1 and out[0]["data"]["ts"] == t + 1000
+
+
+def test_lighter_feed_is_parsed_and_record_only():
+    from ingestion.external import ExternalFeed, lighter_markets, parse_lighter
+    assert lighter_markets({"order_books": [{"symbol": "ETH", "market_id": 0}, {"symbol": "DOGE", "market_id": 3},
+                                            {"symbol": "BTC", "market_id": 1}]}, ["ETH", "BTC"]) == {0: "ETH", 1: "BTC"}
+    recorded, shown = [], []
+    rec = type("Rec", (), {"write": lambda self, msg, recv: recorded.append(msg)})()
+    feed = ExternalFeed(["ETH"], shown.append, recorder=rec, venues=("lighter",))
+    q, t = feed.quoters["lighter"], 1_790_000_000_000
+    parse_lighter({"channel": "ticker:0", "timestamp": t // 1000, "type": "update/ticker",            # seconds
+                   "ticker": {"s": "ETH", "a": {"price": "2650.2", "size": "1"}, "b": {"price": "2650.1", "size": "2"}}},
+                  q, {0: "ETH"}, feed._record)
+    parse_lighter({"channel": "trade:0", "type": "update/trade", "liquidation_trades": [],
+                   "trades": [{"price": "2650.2", "size": "0.5", "timestamp": t, "is_maker_ask": True, "trade_id": 7}]},
+                  q, {0: "ETH"}, feed._record)
+    parse_lighter({"channel": "ticker:5", "ticker": {}}, q, {0: "ETH"}, feed._record)                  # not followed
+    assert shown == []                                                         # never reaches the dashboard
+    assert [m["channel"] for m in recorded] == ["ext", "ext_trade"]
+    assert recorded[0]["data"] == {"venue": "lighter", "coin": "ETH", "ts": t, "bid": 2650.1, "ask": 2650.2}
+    assert recorded[1]["data"]["side"] == 1 and recorded[1]["data"]["ts"] == t

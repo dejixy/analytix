@@ -13,6 +13,8 @@ and loads in seconds. Layout:
     bbo      bbo_t, bbo_recv, bbo_bid, bbo_bid_sz, bbo_bid_n, bbo_ask, bbo_ask_sz, bbo_ask_n: the best bid and offer,
              sent whenever the top changes (~every 0.1 s; recorded from 28 Oct 2026, empty before)
     ext      ext_t (the other exchange's own time), ext_recv, ext_venue (VENUES index), ext_bid, ext_ask
+    xtrade   another exchange's trades (Lighter, from 29 Oct 2026): xtrade_t, xtrade_recv, xtrade_venue, xtrade_px,
+             xtrade_sz, xtrade_side (+1 the taker bought), xtrade_liq
     ctx      ctx_recv, ctx_funding, ctx_oi, ctx_mark, ctx_oracle, ctx_mid, ctx_premium, ctx_volume
     wallets  that day's addresses (lowercase); `sources` the hourly files it was built from (name:size)
 
@@ -32,16 +34,18 @@ import numpy as np
 from config import STORE_DIR
 
 BOOK_LEVELS = 20
-VENUES = ("binance", "bybit")
+VENUES = ("binance", "bybit", "lighter")                     # append only: the index is what's stored
 KINDS = {
     "trades": ("trade_t", "trade_recv", "trade_px", "trade_sz", "trade_side", "trade_tid", "trade_engine",
                "trade_buyer", "trade_seller"),
     "book": ("book_t", "book_recv", "bid_px", "bid_sz", "bid_n", "ask_px", "ask_sz", "ask_n"),
     "bbo": ("bbo_t", "bbo_recv", "bbo_bid", "bbo_bid_sz", "bbo_bid_n", "bbo_ask", "bbo_ask_sz", "bbo_ask_n"),
     "ext": ("ext_t", "ext_recv", "ext_venue", "ext_bid", "ext_ask"),
+    "xtrade": ("xtrade_t", "xtrade_recv", "xtrade_venue", "xtrade_px", "xtrade_sz", "xtrade_side", "xtrade_liq"),
     "ctx": ("ctx_recv", "ctx_funding", "ctx_oi", "ctx_mark", "ctx_oracle", "ctx_mid", "ctx_premium", "ctx_volume"),
 }
-TIME_KEY = {"trades": "trade_t", "book": "book_t", "bbo": "bbo_t", "ext": "ext_t", "ctx": "ctx_recv"}
+TIME_KEY = {"trades": "trade_t", "book": "book_t", "bbo": "bbo_t", "ext": "ext_t", "xtrade": "xtrade_t",
+            "ctx": "ctx_recv"}
 HOUR_RE = re.compile(r"_(\d{8})_(\d{2})00(?:_\d+)?\.jsonl\.gz$")
 
 
@@ -85,6 +89,7 @@ class _Coin:
         self.levels: list[tuple] = []
         self.bbo: list[tuple] = []
         self.ext: list[tuple] = []
+        self.xtrade: list[tuple] = []
         self.ctx: list[tuple] = []
 
 
@@ -143,6 +148,10 @@ def read_day(paths: list[Path]) -> dict[str, dict[str, np.ndarray]]:
                     elif ch == "ext" and d:
                         coins[d["coin"]].ext.append((int(d["ts"]), recv, VENUES.index(d["venue"]),
                                                      _f(d["bid"]), _f(d["ask"])))
+                    elif ch == "ext_trade" and d:
+                        coins[d["coin"]].xtrade.append((int(d["ts"]), recv, VENUES.index(d["venue"]), _f(d["px"]),
+                                                        _f(d["sz"]), 1 if d.get("side", 0) > 0 else -1,
+                                                        bool(d.get("liq"))))
                     elif ch == "activeAssetCtx" and d and "ctx" in d:
                         x = d["ctx"]
                         coins[d["coin"]].ctx.append((recv, _f(x.get("funding")), _f(x.get("openInterest")),
@@ -168,6 +177,9 @@ def read_day(paths: list[Path]) -> dict[str, dict[str, np.ndarray]]:
         e = np.array(c.ext, dtype=object).reshape(-1, 5)
         for i, (k, dt) in enumerate(zip(KINDS["ext"], ("i8", "i8", "i1", "f8", "f8"))):
             cols[k] = e[:, i].astype(dt)
+        xt = np.array(c.xtrade, dtype=object).reshape(-1, 7)
+        for i, (k, dt) in enumerate(zip(KINDS["xtrade"], ("i8", "i8", "i1", "f8", "f8", "i1", "?"))):
+            cols[k] = xt[:, i].astype(dt)
         x = np.array(c.ctx, dtype=float).reshape(-1, 8)
         for i, k in enumerate(KINDS["ctx"]):
             cols[k] = x[:, i].astype("i8") if k == "ctx_recv" else x[:, i]

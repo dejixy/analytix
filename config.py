@@ -19,9 +19,14 @@ if COIN not in COINS:
 HL_WS_URL = os.getenv("ANALYTIX_WS_URL", "wss://api.hyperliquid.xyz/ws")
 HL_INFO_URL = os.getenv("ANALYTIX_INFO_URL", "https://api.hyperliquid.xyz/info")
 # Other exchanges' prices, for "where did the move start?" (live mode; empty ANALYTIX_EXTERNAL turns it off)
-EXTERNAL_VENUES = tuple(v.strip() for v in os.getenv("ANALYTIX_EXTERNAL", "binance,bybit").split(",") if v.strip())
+EXTERNAL_VENUES = tuple(v.strip() for v in os.getenv("ANALYTIX_EXTERNAL", "binance,bybit,lighter").split(",")
+                        if v.strip())
 BINANCE_WS_URL = os.getenv("ANALYTIX_BINANCE_WS", "wss://fstream.binance.com/stream")
 BYBIT_WS_URL = os.getenv("ANALYTIX_BYBIT_WS", "wss://stream.bybit.com/v5/public/linear")
+# Lighter (zero-fee perps) is recorded only, for the study of trading there: it never reaches the dashboard
+LIGHTER_WS_URL = os.getenv("ANALYTIX_LIGHTER_WS", "wss://mainnet.zklighter.elliot.ai/stream?readonly=true")
+LIGHTER_API_URL = os.getenv("ANALYTIX_LIGHTER_API", "https://mainnet.zklighter.elliot.ai")
+LIGHTER_MARKETS = os.getenv("ANALYTIX_LIGHTER_MARKETS", "")     # "ETH:0,BTC:1": skips the lookup if set
 
 # ── Timeframes ──────────────────────────────────────────────────────────────
 WINDOWS: dict[str, int] = {
