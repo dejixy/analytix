@@ -8,8 +8,10 @@ why, and whether a different feed or more sockets fix it.
     python -m scripts.feedProbe                        # 10 minutes, BTC and ETH, 3 sockets
     python -m scripts.feedProbe --minutes 5 --coins BTC,ETH,SOL,HYPE --sockets 4
 
-On the server (no sudo needed; it records nothing):
-    cd /opt/analytix && .venv/bin/python -m scripts.feedProbe > /tmp/probe.txt 2> /tmp/probe.log; cat /tmp/probe.txt
+On the server (no sudo needed; it records nothing). Run it in the background so a dropped SSH session can't stop it,
+then read the result after 10 minutes:
+    cd ~/analytix && nohup /opt/analytix/.venv/bin/python -m scripts.feedProbe > /tmp/probe.txt 2> /tmp/probe.log &
+    cat /tmp/probe.txt
 
 Each Hyperliquid socket subscribes to the same feeds per coin: l2Book (the 20-level book Analytix uses), bbo (best bid
 and offer only, sent whenever the top changes, at most once a block) and trades. The first 5 seconds are skipped
@@ -29,8 +31,11 @@ Reading it:
 import argparse
 import asyncio
 import json
+import os
+import signal
 import sys
 import time
+import traceback
 from collections import defaultdict
 
 import numpy as np
@@ -148,7 +153,7 @@ def secs(x):
 
 
 def report(args, coins: list[str], tally: Tally, bybit: list[tuple], lag: list[float], minutes: float) -> None:
-    print(f"Feed probe · {time.strftime('%d %b %H:%M', time.gmtime(tally.start / 1000))} UTC · {minutes:g} min · "
+    print(f"Feed probe · {time.strftime('%d %b %H:%M', time.gmtime(tally.start / 1000))} UTC · {minutes:.1f} min · "
           f"{', '.join(coins)} · {args.sockets} Hyperliquid sockets")
     for line in tally.drops:
         print(f"  dropped: {line}")
@@ -222,16 +227,31 @@ async def main_async(args) -> None:
         tasks.append(asyncio.create_task(bybit_socket(args.bybit_url, coins, bybit, tally)))
     tasks.append(asyncio.create_task(loop_lag(lag)))
     end = time.time() + args.minutes * 60
-    while time.time() < end:
-        await asyncio.sleep(min(60.0, max(0.0, end - time.time())))
+    stop = asyncio.Event()
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):        # stopped early: still report what came in
+        try:
+            asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
+    while time.time() < end and not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=min(60.0, max(0.0, end - time.time())))
+        except asyncio.TimeoutError:
+            pass
         n = sum(len(r["ex"]) for r in tally.rows.values())
         print(f"  {args.minutes * 60 - max(0, end - time.time()):.0f}s: {n:,} Hyperliquid messages, "
               f"{len(bybit):,} Bybit, {len(tally.drops)} dropped sockets", file=sys.stderr)
+    minutes = max((now_ms() - tally.start - WARMUP_MS) / 60_000, 1e-9)
     for t in tasks:
         t.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    minutes = max((now_ms() - tally.start - WARMUP_MS) / 60_000, 1e-9)
-    report(args, coins, tally, bybit, lag, minutes)
+    await asyncio.wait(tasks, timeout=5)              # closing sockets can stall; the report doesn't wait for them
+    try:
+        report(args, coins, tally, bybit, lag, minutes)
+    except Exception:
+        traceback.print_exc()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)                                       # don't let a stuck socket hold the process open
 
 
 def main() -> None:
