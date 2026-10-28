@@ -10,6 +10,8 @@ and loads in seconds. Layout:
              trade_engine (fills the exchange's engine made itself: all-zero hash), trade_buyer, trade_seller
              (indices into `wallets`, -1 when missing)
     book     book_t, book_recv, bid_px, bid_sz, bid_n, ask_px, ask_sz, ask_n   (rows x BOOK_LEVELS; NaN / 0 padded)
+    bbo      bbo_t, bbo_recv, bbo_bid, bbo_bid_sz, bbo_bid_n, bbo_ask, bbo_ask_sz, bbo_ask_n: the best bid and offer,
+             sent whenever the top changes (~every 0.1 s; recorded from 28 Oct 2026, empty before)
     ext      ext_t (the other exchange's own time), ext_recv, ext_venue (VENUES index), ext_bid, ext_ask
     ctx      ctx_recv, ctx_funding, ctx_oi, ctx_mark, ctx_oracle, ctx_mid, ctx_premium, ctx_volume
     wallets  that day's addresses (lowercase); `sources` the hourly files it was built from (name:size)
@@ -35,10 +37,11 @@ KINDS = {
     "trades": ("trade_t", "trade_recv", "trade_px", "trade_sz", "trade_side", "trade_tid", "trade_engine",
                "trade_buyer", "trade_seller"),
     "book": ("book_t", "book_recv", "bid_px", "bid_sz", "bid_n", "ask_px", "ask_sz", "ask_n"),
+    "bbo": ("bbo_t", "bbo_recv", "bbo_bid", "bbo_bid_sz", "bbo_bid_n", "bbo_ask", "bbo_ask_sz", "bbo_ask_n"),
     "ext": ("ext_t", "ext_recv", "ext_venue", "ext_bid", "ext_ask"),
     "ctx": ("ctx_recv", "ctx_funding", "ctx_oi", "ctx_mark", "ctx_oracle", "ctx_mid", "ctx_premium", "ctx_volume"),
 }
-TIME_KEY = {"trades": "trade_t", "book": "book_t", "ext": "ext_t", "ctx": "ctx_recv"}
+TIME_KEY = {"trades": "trade_t", "book": "book_t", "bbo": "bbo_t", "ext": "ext_t", "ctx": "ctx_recv"}
 HOUR_RE = re.compile(r"_(\d{8})_(\d{2})00(?:_\d+)?\.jsonl\.gz$")
 
 
@@ -80,6 +83,7 @@ class _Coin:
         self.book_t: list[int] = []
         self.book_recv: list[int] = []
         self.levels: list[tuple] = []
+        self.bbo: list[tuple] = []
         self.ext: list[tuple] = []
         self.ctx: list[tuple] = []
 
@@ -130,6 +134,12 @@ def read_day(paths: list[Path]) -> dict[str, dict[str, np.ndarray]]:
                         c.book_t.append(int(d["time"]))
                         c.book_recv.append(recv)
                         c.levels.append((*_side(bids, BOOK_LEVELS), *_side(asks, BOOK_LEVELS)))
+                    elif ch == "bbo" and d:
+                        bid, ask = (d.get("bbo") or [None, None])[:2]
+                        bid, ask = bid or {}, ask or {}                      # a side with no orders is null
+                        coins[d["coin"]].bbo.append((
+                            int(d["time"]), recv, _f(bid.get("px")), _f(bid.get("sz", 0)), int(bid.get("n") or 0),
+                            _f(ask.get("px")), _f(ask.get("sz", 0)), int(ask.get("n") or 0)))
                     elif ch == "ext" and d:
                         coins[d["coin"]].ext.append((int(d["ts"]), recv, VENUES.index(d["venue"]),
                                                      _f(d["bid"]), _f(d["ask"])))
@@ -152,6 +162,9 @@ def read_day(paths: list[Path]) -> dict[str, dict[str, np.ndarray]]:
             dt = "i4" if k.endswith("_n") else "f8"
             cols[k] = (np.stack([lv[i] for lv in c.levels]).astype(dt) if c.levels
                        else np.zeros((0, BOOK_LEVELS), dtype=dt))
+        b = np.array(c.bbo, dtype=object).reshape(-1, 8)
+        for i, (k, dt) in enumerate(zip(KINDS["bbo"], ("i8", "i8", "f8", "f8", "i4", "f8", "f8", "i4"))):
+            cols[k] = b[:, i].astype(dt)
         e = np.array(c.ext, dtype=object).reshape(-1, 5)
         for i, (k, dt) in enumerate(zip(KINDS["ext"], ("i8", "i8", "i1", "f8", "f8"))):
             cols[k] = e[:, i].astype(dt)
