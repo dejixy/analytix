@@ -71,3 +71,20 @@ def test_regime_ideas_trade_with_or_against_the_last_minutes_at_each_half_hour()
     assert [(s.t_ms, s.side) for s in out["trend 5m"]] == [(t30, 1), (t60, -1)]
     assert [(s.t_ms, s.side) for s in out["revert 15m"]] == [(t30, -1), (t60, 1)]
     assert all(s.hold_ms == 30 * 60_000 for s in out["trend 15m"])
+
+
+def test_liquidation_map_near_and_first_touch():
+    from engine.volforecast import Forecast
+    from scripts.liqmapHarness import first_touch, near
+    side = np.array([1, 1, -1, -1, 1])
+    liq = np.array([99.5, 97.0, 100.6, 100.9, 101.0])            # the last long is already past the price: ignored
+    val = np.array([10.0, 20.0, 5.0, 7.0, 99.0])
+    assert near(100.0, side, liq, val, 0.01) == (10.0, 12.0)    # 97 is outside the band
+    m0 = 1_000_000
+    price = np.full(300, 100.0)
+    price[50] = 101.2                                           # up through +1% at minute 50
+    price[80] = 98.5
+    fc = Forecast("ETH", m0, np.zeros(300), (1, 2), {}, price, np.ones(300, bool))
+    assert first_touch(fc, (m0 + 10) * 60_000, 100.0, 0.01) == 1
+    assert first_touch(fc, (m0 + 60) * 60_000, 100.0, 0.01) == -1
+    assert first_touch(fc, (m0 + 100) * 60_000, 100.0, 0.01) == 0
