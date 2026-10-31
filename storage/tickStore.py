@@ -251,7 +251,7 @@ def load(coin: str, kinds: Iterable[str] = ("book",), start_ms: float | None = N
             continue
         with np.load(Path(store) / coin / f"{day}.npz") as z:
             for k in want:
-                parts[k].append(z[k])
+                parts[k].append(z[k] if k in z.files else _empty(k))     # a day built before that column existed
             if "trades" in kinds and "trade_buyer" in want:
                 parts["_wallet_offset"].append(np.array([sum(len(w) for w in wallet_tables)]))
                 wallet_tables.append(z["wallets"])
@@ -286,6 +286,21 @@ def load(coin: str, kinds: Iterable[str] = ("book",), start_ms: float | None = N
             if k in out:
                 out[k] = out[k][keep][order]
     return out
+
+
+def _empty(k: str) -> np.ndarray:
+    """No rows of column k (days built before bbo and Lighter were recorded have none)."""
+    if k[:4] in ("bid_", "ask_"):
+        return np.zeros((0, BOOK_LEVELS), dtype="i4" if k.endswith("_n") else "f8")
+    if k.endswith(("_t", "_recv", "_tid")):
+        return np.zeros(0, dtype="i8")
+    if k.endswith(("_venue", "_side")) and not k.startswith("trade"):
+        return np.zeros(0, dtype="i1")
+    if k.endswith("_n"):
+        return np.zeros(0, dtype="i4")
+    if k.endswith("_liq"):
+        return np.zeros(0, dtype=bool)
+    return np.zeros(0, dtype="f8")
 
 
 def day_end_ms(day: str) -> int:

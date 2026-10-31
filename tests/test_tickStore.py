@@ -108,3 +108,15 @@ def test_lighter_feed_is_parsed_and_record_only():
     assert [m["channel"] for m in recorded] == ["ext", "ext_trade"]
     assert recorded[0]["data"] == {"venue": "lighter", "coin": "ETH", "ts": t, "bid": 2650.1, "ask": 2650.2}
     assert recorded[1]["data"]["side"] == 1 and recorded[1]["data"]["ts"] == t
+
+
+def test_days_built_before_a_column_existed_still_load(tmp_path):
+    store = tmp_path / "store"
+    (store / "ETH").mkdir(parents=True)
+    t = 1_790_000_000_000
+    old = {"book_t": np.array([t]), "book_recv": np.array([t]), "wallets": np.array([], dtype="<U42")}
+    for k in tickStore.KINDS["book"][2:]:
+        old[k] = np.ones((1, tickStore.BOOK_LEVELS), dtype="i4" if k.endswith("_n") else "f8")
+    np.savez_compressed(store / "ETH" / "20260921.npz", sources=np.array(["x"]), **old)   # no bbo, no Lighter
+    z = tickStore.load("ETH", ["book", "bbo", "xtrade"], store=store)
+    assert z["book_t"].tolist() == [t] and len(z["bbo_t"]) == 0 and len(z["xtrade_t"]) == 0
