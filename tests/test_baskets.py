@@ -7,8 +7,8 @@ from api.baskets import Bot
 from api.bot import BotError
 
 
-def bot(tmp_path):
-    return Bot(SimpleNamespace(mode="replay", alerts=None), tmp_path / "bot.json", None)
+def bot(tmp_path, shown=("twap", "informed", "degen")):
+    return Bot(SimpleNamespace(mode="replay", alerts=None), tmp_path / "bot.json", None, shown=shown)
 
 
 def test_each_basket_has_its_own_balance_and_settings(tmp_path):
@@ -44,3 +44,17 @@ def test_live_carries_the_twap_call_with_its_basket(tmp_path):
     b.twap.live = lambda: {"status": "live", "alert": {"id": "x", "coin": "ETH"}}
     lv = b.live()
     assert lv["alert"]["basket"] == "twap" and lv["alert"]["basket_name"] == "TWAPs"
+
+
+def test_hidden_baskets_keep_running_but_stay_off_the_panel_and_banner(tmp_path):
+    b = bot(tmp_path, shown=("degen",))
+    p = b.public()
+    assert p["basket"] == "degen" and [x["key"] for x in p["baskets"]] == ["degen"]
+    assert b.public("twap")["basket"] == "twap"                           # still readable by name
+    assert b.twap.hidden and b.informed.hidden and not b.degen.hidden
+    b.twap.live = lambda: {"status": "live", "alert": {"id": "x", "coin": "ETH"}}
+    assert b.live()["alert"] is None                                      # no call on the banner
+    sent = []
+    b.twap.rt = SimpleNamespace(mode="live", alerts=SimpleNamespace(notify=sent.append))
+    b.twap._notify(("title", ("line",)), "ETH")
+    assert sent == []                                                     # and no Telegram

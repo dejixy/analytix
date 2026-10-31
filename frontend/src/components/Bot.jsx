@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { setSound, soundOn } from "../botSound.js";
 
-/* The bot: big TWAPs. A wallet selling or buying $20k+ every 30 seconds tends to push price its way. The bot spots
-   them live, shows them while they run, scores every one and (with alerts on) calls them. One screen: what it's
-   doing, four numbers, the TWAPs running now and the latest ones. Settings, the record and how it works sit behind
-   the tabs. */
+/* The bot: baskets of strategies, each with its own balance. The panel shows the baskets the server lists (Degen
+   only, by default); the others keep running and recording in the background. With one basket the strip of basket
+   tabs is left out. Each basket: what it's doing, its numbers, its trades, and settings, record and how it works
+   behind the tabs. */
 
 const usd = (x, sign = false) =>
   x == null ? "-" : `${x < 0 ? "−" : sign && x > 0 ? "+" : ""}$${Math.abs(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -45,14 +45,14 @@ export default function Bot({ onClose }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState(null);
-  const [basket, setBasket] = useState("twap");
+  const [basket, setBasket] = useState(null);            // null: the server's first basket
   const alive = useRef(true);
-  const current = useRef("twap");
+  const current = useRef(null);
 
   const load = async () => {
     const want = current.current;
     try {
-      const r = await fetch(`/api/bot?basket=${want}`);
+      const r = await fetch(want ? `/api/bot?basket=${want}` : "/api/bot");
       const j = await r.json();
       if (!alive.current || want !== current.current) return;
       if (r.ok) {
@@ -79,7 +79,7 @@ export default function Bot({ onClose }) {
 
   const call = async (method, path, body) => {
     try {
-      const r = await fetch(`${path}?basket=${basket}`, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      const r = await fetch(`${path}?basket=${basket ?? d?.basket ?? ""}`, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
       const j = await r.json();
       if (!r.ok) throw new Error(j.detail || "That didn't work.");
       setD(j);
@@ -92,19 +92,21 @@ export default function Bot({ onClose }) {
   };
 
   const status = d?.status;
+  const shown = d?.baskets || [];
+  const on = basket ?? d?.basket;
   return (
     <div className="planner-scrim" onClick={onClose}>
       <aside className="planner bm" role="dialog" aria-label="Bot" onClick={(e) => e.stopPropagation()}>
         <div className="panel-head">
-          <h2 className="panel-title">Bot</h2>
+          <h2 className="panel-title">{shown.length === 1 ? `Bot · ${shown[0].name}` : "Bot"}</h2>
           <span className="bm-head-right">
             {status && <span className={`bm-status ${status}`}>{STATUS[status]}</span>}
             <button className="plan-close" onClick={onClose} aria-label="Close">✕</button>
           </span>
         </div>
-        <div className="bm-baskets" role="tablist" aria-label="Baskets">
-          {(d?.baskets || [{ key: "twap", name: "TWAPs" }, { key: "informed", name: "Informed flow" }, { key: "degen", name: "Degen" }]).map((b) => (
-            <button key={b.key} role="tab" aria-selected={basket === b.key} className={`bm-basket ${basket === b.key ? "on" : ""}`}
+        {shown.length > 1 && <div className="bm-baskets" role="tablist" aria-label="Baskets">
+          {shown.map((b) => (
+            <button key={b.key} role="tab" aria-selected={on === b.key} className={`bm-basket ${on === b.key ? "on" : ""}`}
               onClick={() => setBasket(b.key)}>
               <b>{b.name}</b>
               <span className={b.status === "warming" ? "muted" : tone(b.balance - b.start)}>
@@ -112,7 +114,7 @@ export default function Bot({ onClose }) {
               </span>
             </button>
           ))}
-        </div>
+        </div>}
         {error && <div className="plan-error">{error}</div>}
         {!d ? (
           <p className="plan-note muted" style={{ padding: 12 }}>{error ? "" : "Loading…"}</p>
@@ -831,7 +833,7 @@ function DgSettings({ d, call }) {
         <button className="plan-chip" onClick={() => call("POST", "/api/bot/reset")}>Start again</button>
       </div>
       <p className="plan-note muted">
-        Leverage is each coin's max on Hyperliquid: {Object.entries(d.hl_lev).map(([k, v]) => `${k} ${v}×`).join(", ")}. It fades wallets scoring {d.threshold} or worse (set in Informed flow).
+        Leverage is each coin's max on Hyperliquid: {Object.entries(d.hl_lev).map(([k, v]) => `${k} ${v}×`).join(", ")}. It fades wallets scoring {d.threshold} or worse (the informed basket's setting; that basket keeps running in the background).
         {changed.includes("pot_pct") ? " A new share applies from the next trade." : ""}
         {changed.includes("balance") ? " A new balance applies from the next week (or now, if no week is running)." : ""}
       </p>
