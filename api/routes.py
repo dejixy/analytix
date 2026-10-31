@@ -285,6 +285,12 @@ async def bot(request: Request, basket: str | None = None):
     return _bot_call(_rt(request).bot.public, basket)
 
 
+@router.get("/bot/history")
+async def bot_history(request: Request, basket: str | None = None, days: float | None = None):
+    """Every closed trade of a basket that keeps a full history (Degen) over the last `days`, newest first."""
+    return _bot_call(_rt(request).bot.history, basket, days if days and days > 0 else None)
+
+
 @router.put("/bot/settings")
 async def bot_settings(request: Request, patch: dict, basket: str | None = None):
     """Change a basket's settings. Balance, leverage, margin or hold restart its shadow balance."""

@@ -748,6 +748,7 @@ function DgOpen({ d }) {
 
 function DgLatest({ d }) {
   const [all, setAll] = useState(false);
+  const [hist, setHist] = useState(false);
   const rows = all ? d.recent : d.recent.slice(0, 5);
   return (
     <section className="plan-sec">
@@ -766,10 +767,83 @@ function DgLatest({ d }) {
           ))}
         </div>
       )}
-      {d.recent.length > 5 && (
-        <button className="plan-chip bm-more" onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${d.recent.length}`}</button>
-      )}
+      <div className="plan-holds">
+        {d.recent.length > 5 && (
+          <button className="plan-chip bm-more" onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${d.recent.length}`}</button>
+        )}
+        <button className={`plan-chip bm-more ${hist ? "on" : ""}`} onClick={() => setHist(!hist)}>History</button>
+      </div>
+      {hist && <DgHistory />}
     </section>
+  );
+}
+
+const RANGES = [[1, "24 h"], [2, "2 days"], [7, "7 days"], [0, "All"]];
+const dayKey = (ms) => new Date(ms).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+
+/* Every closed Degen trade over a chosen range, grouped by day with each day's count and result. */
+function DgHistory() {
+  const [days, setDays] = useState(2);
+  const [h, setH] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    let live = true;
+    setH(null);
+    fetch(`/api/bot/history?basket=degen${days ? `&days=${days}` : ""}`)
+      .then((r) => r.json().then((j) => (r.ok ? j : Promise.reject(new Error(j.detail || "Couldn't read the history.")))))
+      .then((j) => { if (live) { setH(j); setErr(null); } })
+      .catch((e) => { if (live) setErr(e.message); });
+    return () => { live = false; };
+  }, [days]);
+  const all = h?.trades || [];
+  const groups = [];
+  for (const t of all) {
+    const k = dayKey(t.t_ms);
+    if (!groups.length || groups[groups.length - 1].k !== k) groups.push({ k, rows: [] });
+    groups[groups.length - 1].rows.push(t);
+  }
+  const total = all.reduce((a, t) => a + t.pnl, 0);
+  return (
+    <div className="bm-history">
+      <div className="plan-holds" role="tablist" aria-label="Range">
+        {RANGES.map(([v, label]) => (
+          <button key={v} role="tab" aria-selected={days === v} className={`plan-chip ${days === v ? "on" : ""}`}
+            onClick={() => setDays(v)}>{label}</button>
+        ))}
+      </div>
+      {err ? <p className="plan-error">{err}</p> : !h ? <p className="plan-note muted">Loading…</p> : !all.length ? (
+        <p className="plan-note muted">No trades in this range.</p>
+      ) : (
+        <>
+          <p className="plan-note">
+            {all.length} trades · {Math.round((100 * all.filter((t) => t.pnl > 0).length) / all.length)}% won ·{" "}
+            {all.filter((t) => t.bust).length} liquidated · <span className={tone(total)}>{usd(total, true)}</span>
+          </p>
+          {groups.map((g) => {
+            const sum = g.rows.reduce((a, t) => a + t.pnl, 0);
+            return (
+              <div key={g.k}>
+                <div className="bm-day">
+                  <b>{g.k}</b>
+                  <span className="muted">{g.rows.length} trades</span>
+                  <span className={tone(sum)}>{usd(sum, true)}</span>
+                </div>
+                <div className="bm-list">
+                  {g.rows.map((t) => (
+                    <div key={t.id} className="bm-row">
+                      <span className="muted">{clock(t.t_ms)}</span>
+                      <span><b>{t.coin}</b> <span className={t.side > 0 ? "up" : "down"}>{sideWord(t.side).toLowerCase()}</span> <span className="muted">{usd(t.margin)}</span></span>
+                      <span className={tone(t.pnl)}>{t.bust ? "liquidated" : usd(t.pnl, true)}</span>
+                      <span className="muted" title="The pot after it">{usd(t.pot)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
   );
 }
 

@@ -73,6 +73,12 @@ class Bot:
                             "start": x.shadow["start"]} for k, x in self.baskets.items() if k in self.shown]
         return data
 
+    def history(self, key: str | None, days: float | None = None) -> dict:
+        b = self.get(key)
+        if not hasattr(b, "history"):
+            raise BotError(f"{b.name} doesn't keep a full trade history; Degen does.")
+        return b.history(days)
+
     def save_settings(self, key: str | None, patch: dict) -> dict:
         self.get(key).save_settings(patch)
         return self.public(key)
