@@ -322,8 +322,8 @@ class InformedBasket:
         self._unsaved.clear()
 
     def _notify(self, msg, coin: str) -> None:
-        if self.rt.mode != "live" or not getattr(self.rt, "alerts", None):
-            return
+        if self.rt.mode != "live" or not getattr(self.rt, "alerts", None) or getattr(self, "hidden", False):
+            return                                              # hidden from the panel: recorded, never called out
         from engine.alerts import Alert
         title, lines = msg
         self.rt.alerts.notify(Alert(f"bot-{time.time_ns()}", coin, "bot", int(time.time() * 1000), "neutral", title, lines))

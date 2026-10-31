@@ -279,19 +279,19 @@ def _bot_call(fn, *args):
 
 
 @router.get("/bot")
-async def bot(request: Request, basket: str = "twap"):
-    """One basket of the bot (twap or informed): what it's doing, its record and its shadow balance, plus the list of
-    baskets."""
+async def bot(request: Request, basket: str | None = None):
+    """One basket of the bot (the first shown when none is named): what it's doing, its record and its shadow balance,
+    plus the list of baskets shown in the panel. Hidden baskets can still be read by name."""
     return _bot_call(_rt(request).bot.public, basket)
 
 
 @router.put("/bot/settings")
-async def bot_settings(request: Request, patch: dict, basket: str = "twap"):
+async def bot_settings(request: Request, patch: dict, basket: str | None = None):
     """Change a basket's settings. Balance, leverage, margin or hold restart its shadow balance."""
     return _bot_call(_rt(request).bot.save_settings, basket, patch)
 
 
 @router.post("/bot/reset")
-async def bot_reset(request: Request, basket: str = "twap"):
+async def bot_reset(request: Request, basket: str | None = None):
     """Start a basket's shadow balance again from its set balance. Its record is kept."""
     return _bot_call(_rt(request).bot.reset_shadow, basket)
