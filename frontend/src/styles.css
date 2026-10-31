@@ -690,3 +690,7 @@ tr.wall td { color: var(--ink); }
   .bm-banner-why { display: none; }
   .bm-settings .plan-field { grid-template-columns: 1fr; }
 }
+
+.bm-history { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.bm-day { display: flex; gap: 10px; align-items: baseline; margin: 10px 0 2px; font-size: 12px; }
+.bm-day span:last-child { margin-left: auto; }

@@ -12,7 +12,8 @@ next week starts again from the balance. Paper only, alerts off: a live test.
                 point reaches the maintenance margin, half the margin's distance away
     a week      starts at its first trade; ends at 2x (doubled), at half (halved) or after 7 days (neither). What it
                 ended at, minus the balance, is banked
-    storage     data/bot_degen.json: settings, this week, open trades, the last 50 trades and the last 52 weeks
+    storage     data/bot_degen.json: settings, this week, open trades, the last 50 trades and the last 52 weeks;
+                data/bot_degen_trades.jsonl: every trade ever closed, one line each (the panel's History)
 """
 import asyncio
 import json
@@ -54,7 +55,11 @@ class DegenBasket:
         self.cfg = dict(DEFAULTS)
         self.state = self._fresh()
         self._task: asyncio.Task | None = None
+        self.hist_path = self.path.with_name(self.path.stem + "_trades.jsonl")
         self._load()
+        if not self.hist_path.exists() and self.state["done"]:      # first run with history: keep what's stored
+            for row in self.state["done"]:
+                self._log(row)
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -135,8 +140,10 @@ class DegenBasket:
         st["wins"] += pnl > 0
         st["busts"] += res is not None and res <= -1.0
         bps = (r.get("result") or {}).get("bps")
-        st["done"] = (st["done"] + [{**o, "pnl": round(pnl, 4), "pot": round(st["pot"], 4),
-                                     "bps": None if bps is None else round(bps, 2), "bust": res is not None and res <= -1.0}])[-50:]
+        row = {**o, "pnl": round(pnl, 4), "pot": round(st["pot"], 4), "bps": None if bps is None else round(bps, 2),
+               "bust": res is not None and res <= -1.0}
+        st["done"] = (st["done"] + [row])[-50:]
+        self._log(row)
         end = r["t_ms"] + (FILL_S + HOLD_S) * 1000
         if st["pot"] >= UP * st["start"]:
             self._end_week("2x", end)
@@ -169,6 +176,36 @@ class DegenBasket:
         self.state = self._fresh()
         if saved.get("v") == VERSION:
             self.state.update(saved.get("state") or {})
+
+    def _log(self, row: dict) -> None:
+        """Every closed trade, appended for good (the stored state keeps only the last 50)."""
+        try:
+            self.hist_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.hist_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+        except OSError as exc:
+            log.warning("could not log a degen trade to %s: %s", self.hist_path, exc)
+
+    def history(self, days: float | None = None) -> dict:
+        """Closed trades over the last `days` (all of them when None), newest first."""
+        now = self._now()
+        since = now - days * DAY_MS if days else 0
+        rows, seen = [], set()
+        try:
+            with self.hist_path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        t = json.loads(line)
+                    except ValueError:
+                        continue
+                    if t.get("t_ms", 0) >= since and t.get("id") not in seen:
+                        seen.add(t.get("id"))
+                        rows.append(t)
+        except FileNotFoundError:
+            pass
+        rows.sort(key=lambda t: t["t_ms"], reverse=True)
+        return {"basket": self.key, "days": days, "since_ms": since, "now_ms": now, "trades": rows,
+                "hold_s": HOLD_S}
 
     def _save(self) -> None:
         try:

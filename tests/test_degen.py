@@ -119,3 +119,24 @@ def test_a_balance_changed_mid_week_starts_next_week(tmp_path):
     assert dg.state["start"] == 50.0 and dg.state["pot"] == pot           # this week runs on as it was
     dg._end_week("neither", dg.state["week_ms"] + WEEK_MS)
     assert dg.state["start"] == dg.state["pot"] == 100.0 and dg.state["banked"] == pytest.approx(pot - 50.0)
+
+
+def test_every_trade_is_kept_in_the_history(tmp_path):
+    inf, dg = pair(tmp_path)
+    feed(inf, dg, secs=1200)
+    assert dg.state["trades"] == 1
+    h = dg.history()
+    assert [t["id"] for t in h["trades"]] == [dg.state["done"][-1]["id"]] and h["trades"][0]["pot"] == pytest.approx(dg.state["pot"], abs=1e-4)
+    dg.state["done"] = dg.state["done"] * 60                               # the state keeps only the last 50…
+    assert len(dg.history()["trades"]) == 1                               # …the history keeps each trade once
+    assert dg.history(days=1)["trades"] == [] or dg.history(days=1)["trades"][0]["t_ms"] >= dg._now() - 86_400_000
+
+
+def test_history_starts_from_what_was_stored(tmp_path):
+    import json
+    inf, _ = pair(tmp_path)
+    row = {"id": "a", "coin": "SOL", "side": -1, "t_ms": 5, "margin": 20.0, "lev": 20, "pnl": 1.0, "pot": 51.0,
+           "bps": 2.0, "bust": False}
+    (tmp_path / "bot_degen.json").write_text(json.dumps({"v": 1, "settings": {}, "state": {"done": [row]}}))
+    dg = DegenBasket(inf.rt, tmp_path / "bot_degen.json", inf)
+    assert dg.history()["trades"] == [row] and (tmp_path / "bot_degen_trades.jsonl").exists()
