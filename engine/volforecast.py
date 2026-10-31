@@ -35,6 +35,8 @@ class Forecast:
     pred: np.ndarray              # forecast |move| over the next 30 min, bps, per minute (nan where unknown)
     cuts: tuple[float, float]     # the fitting days' thirds
     quality: dict                 # how it did on the minutes after the split
+    price: np.ndarray | None = None   # the minute's last print (carried forward), for studies built on top
+    ok: np.ndarray | None = None      # a real print within STALE_MIN minutes
 
     def at(self, t_ms: float) -> tuple[float, str | None]:
         i = int(t_ms // MINUTE) - 1 - self.m0
@@ -123,4 +125,4 @@ def fit(coin: str, start_ms: float, split_ms: float, end_ms: float, store=tickSt
         reg = (pred[test] > cuts[0]).astype(int) + (pred[test] > cuts[1]).astype(int)
         quality["by_regime"] = {REGIMES[r]: (float(np.mean(y[test][reg == r])) if (reg == r).any() else None,
                                              float((reg == r).mean())) for r in range(3)}
-    return Forecast(coin, m0, pred, cuts, quality)
+    return Forecast(coin, m0, pred, cuts, quality, price, ok)

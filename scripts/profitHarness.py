@@ -31,7 +31,6 @@ import random
 import sqlite3
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -88,46 +87,23 @@ def pct(x):
     return "-" if x is None else f"{x * 100:.0f}%"
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", default=str(BARS_DB), help="the live bot's SQLite file (bars.sqlite)")
-    ap.add_argument("--test-days", type=float, default=7)
-    ap.add_argument("--capital", type=float, default=100.0)
-    ap.add_argument("--leverage", type=float, default=10.0)
-    ap.add_argument("--wait", type=float, default=30, help="seconds a limit order waits")
-    args = ap.parse_args()
-    notional = args.capital * args.leverage
-
-    coins_in_store = tickStore.coins(STORE_DIR)
-    if not coins_in_store:
+def store_span(test_days: float) -> tuple[str, str, int, int, int]:
+    """First and last stored day, the store's start and end (ms) and the split before the locked days."""
+    coins = tickStore.coins(STORE_DIR)
+    if not coins:
         sys.exit(f"no fast store in {STORE_DIR}: run scripts.buildStore first")
-    first_day = min(tickStore.days(c, STORE_DIR)[0] for c in coins_in_store)
-    last_day = max(tickStore.days(c, STORE_DIR)[-1] for c in coins_in_store)
+    first_day = min(tickStore.days(c, STORE_DIR)[0] for c in coins)
+    last_day = max(tickStore.days(c, STORE_DIR)[-1] for c in coins)
     start = tickStore.day_end_ms(first_day) - DAY_MS
     end = tickStore.day_end_ms(last_day)
-    split = end - int(args.test_days * DAY_MS)
+    return first_day, last_day, start, end, end - int(test_days * DAY_MS)
 
-    sigs = ideas(Path(args.db), start + DAY_MS, end - 3_600_000)     # a day of warm-up for the forecast
-    if not sigs:
-        sys.exit("no bot records in that range: check --db")
-    coins = sorted({s.coin for v in sigs.values() for s in v} & set(coins_in_store))
-    print(f"loading {', '.join(coins)}...", file=sys.stderr)
-    t0 = time.time()
-    markets = {c: Market(c, start, end) for c in coins}
-    fc = {c: volforecast.fit(c, start, split, end) for c in coins}
-    print(f"  loaded in {time.time() - t0:.0f}s", file=sys.stderr)
 
-    first_sig = min(s.t_ms for v in sigs.values() for s in v)
-    train_days = max((split - first_sig) / DAY_MS, 1e-9)
-    test_days = (end - split) / DAY_MS
-    print(f"Profit harness · store {first_day} to {last_day} · locked test from "
-          f"{time.strftime('%d %b %H:%M', time.gmtime(split / 1000))} UTC ({test_days:.1f} days) · "
-          f"${args.capital:g} at {args.leverage:g}x = ${notional:,.0f} a trade · 0.5 s delay · limit waits {args.wait:g}s")
-
+def forecast_table(fc: dict) -> None:
     print("\n1. Move-size forecast on the locked days (next 30 min, bps): does it sort quiet from loud?")
     print(f"{'coin':<6}{'corr':>7}{'naive':>8}{'quiet':>14}{'middle':>14}{'loud':>14}")
-    for c in coins:
-        q = fc[c].quality if fc[c] else {}
+    for c, x in fc.items():
+        q = x.quality if x else {}
         br = q.get("by_regime", {})
         cell = lambda r: f"{f(br[r][0], 1, False)} ({pct(br[r][1])})" if r in br and br[r][0] is not None else "-"
         print(f"{c:<6}{f(q.get('corr'), 2, False):>7}{f(q.get('naive_corr'), 2, False):>8}"
@@ -135,27 +111,31 @@ def main() -> None:
     print("  corr: forecast vs what happened (logs); naive: 'same as the last 30 minutes'. Cells: average |move| "
           "(share of minutes)")
 
-    # price every idea every way once
+
+def keep(filt: str, reg: str | None) -> bool:
+    if filt == "all":
+        return True
+    if filt == "not quiet":
+        return reg in ("middle", "loud")
+    return reg == filt.split()[0]                     # "loud only", "quiet only", "middle only"
+
+
+def judge(sigs: dict, markets: dict, fc: dict, split: int, train_days: float, test_days: float, notional: float,
+          wait_s: float, filters=FILTERS, by_coin: bool = False, capital: float = 100, leverage: float = 10) -> list:
+    """Sections 2 to 4: every idea every way (no filter), the pick chosen on the earlier days and judged once on
+    the locked days, and the verdict. Returns [(idea, passed, locked-days summary)]."""
     priced: dict[tuple[str, str], list] = {}
     regime: dict[str, list] = {}
     for name, ss in sigs.items():
         regime[name] = [fc[s.coin].at(s.t_ms)[1] if fc.get(s.coin) else None for s in ss]
         for style in STYLES:
-            priced[(name, style)] = [trade(markets[s.coin], s, style, args.wait * 1000) if s.coin in markets else None
+            priced[(name, style)] = [trade(markets[s.coin], s, style, wait_s * 1000) if s.coin in markets else None
                                      for s in ss]
 
-    def pick(name, style, filt, test: bool):
-        ss = sigs[name]
-        keep = []
-        for s, r, reg in zip(ss, priced[(name, style)], regime[name]):
-            if (s.t_ms > split) != test:
-                continue
-            if filt == "not quiet" and reg not in ("middle", "loud"):
-                continue
-            if filt == "loud only" and reg != "loud":
-                continue
-            keep.append(r)
-        return summary(keep, test_days if test else train_days, notional)
+    def pick(name, style, filt, test: bool, coin: str | None = None):
+        rows = [r for s, r, reg in zip(sigs[name], priced[(name, style)], regime[name])
+                if (s.t_ms > split) == test and keep(filt, reg) and (coin is None or s.coin == coin)]
+        return summary(rows, test_days if test else train_days, notional)
 
     print("\n2. Every idea, every way in and out, no filter (net bps a trade after fees; earlier days -> locked days)")
     print(f"{'idea':<22}{'style':<32}{'n':>6}{'filled':>8}{'gross':>8}{'net':>8}{'->':>4}{'n':>6}{'net':>8}{'t':>7}")
@@ -169,11 +149,11 @@ def main() -> None:
     print(f"{'idea':<22}{'chosen on earlier days':<44}{'n':>5}{'gross':>8}{'net':>8}{'t':>6}{'win':>6}"
           f"{'halves':>13}{'/day':>6}{'$/day':>8}")
     tried = 0
-    verdicts = []
+    verdicts, chosen_all = [], []
     for name in sigs:
         best = None
         for style in STYLES:
-            for filt in FILTERS:
+            for filt in filters:
                 tried += 1
                 a = pick(name, style, filt, False)
                 if a["trades"] >= MIN_TRAIN and a["net"] is not None and (best is None or a["net"] > best[2]["net"]):
@@ -185,6 +165,7 @@ def main() -> None:
         b = pick(name, style, filt, True)
         ok = (b["net"] or -1) > 0 and (b["t"] or 0) >= 2 and (b["first"] or -1) > 0 and (b["second"] or -1) > 0
         verdicts.append((name, ok, b))
+        chosen_all.append((name, style, filt))
         halves = f"{f(b['first'])}/{f(b['second'])}"
         chosen = f"{style}, {filt} ({f(a['net'])})"
         print(f"{name:<22}{chosen:<44}{b['trades']:>5}"
@@ -192,14 +173,58 @@ def main() -> None:
               f"{f(b['per_day'], 1, False):>6}{f(b['usd_day'], 2):>8}")
     print(f"  ({tried} combinations tried on the earlier days; the locked days were used once, for the pick)")
 
+    if by_coin:
+        print("\n   The picks by coin on the locked days (net bps, n)")
+        coins = sorted(markets)
+        print(f"   {'idea':<22}" + "".join(f"{c:>14}" for c in coins))
+        for name, style, filt in chosen_all:
+            cells = []
+            for c in coins:
+                b = pick(name, style, filt, True, c)
+                cells.append(f"{f(b['net'])} ({b['trades']})" if b["trades"] else "-")
+            print(f"   {name:<22}" + "".join(f"{x:>14}" for x in cells))
+
     print("\n4. Verdict")
     passed = [v for v in verdicts if v[1]]
     if passed:
         for name, _, b in passed:
             print(f"  PASSES: {name}: {f(b['net'])} bps a trade after fees on the locked days, about "
-                  f"{f(b['usd_day'], 2)} a day at ${args.capital:g} x {args.leverage:g}. Next: shadow it in the bot.")
+                  f"{f(b['usd_day'], 2)} a day at ${capital:g} x {leverage:g}. Next: shadow it in the bot.")
     else:
         print("  Nothing passes on the locked days (net > 0, t >= 2 over days, both halves positive).")
+    return verdicts
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--db", default=str(BARS_DB), help="the live bot's SQLite file (bars.sqlite)")
+    ap.add_argument("--test-days", type=float, default=7)
+    ap.add_argument("--capital", type=float, default=100.0)
+    ap.add_argument("--leverage", type=float, default=10.0)
+    ap.add_argument("--wait", type=float, default=30, help="seconds a limit order waits")
+    args = ap.parse_args()
+    notional = args.capital * args.leverage
+    first_day, last_day, start, end, split = store_span(args.test_days)
+
+    sigs = ideas(Path(args.db), start + DAY_MS, end - 3_600_000)     # a day of warm-up for the forecast
+    if not sigs:
+        sys.exit("no bot records in that range: check --db")
+    coins = sorted({s.coin for v in sigs.values() for s in v} & set(tickStore.coins(STORE_DIR)))
+    print(f"loading {', '.join(coins)}...", file=sys.stderr)
+    t0 = time.time()
+    markets = {c: Market(c, start, end) for c in coins}
+    fc = {c: volforecast.fit(c, start, split, end) for c in coins}
+    print(f"  loaded in {time.time() - t0:.0f}s", file=sys.stderr)
+
+    first_sig = min(s.t_ms for v in sigs.values() for s in v)
+    train_days = max((split - first_sig) / DAY_MS, 1e-9)
+    test_days = (end - split) / DAY_MS
+    print(f"Profit harness · store {first_day} to {last_day} · locked test from "
+          f"{time.strftime('%d %b %H:%M', time.gmtime(split / 1000))} UTC ({test_days:.1f} days) · "
+          f"${args.capital:g} at {args.leverage:g}x = ${notional:,.0f} a trade · 0.5 s delay · limit waits {args.wait:g}s")
+    forecast_table(fc)
+    judge(sigs, markets, fc, split, train_days, test_days, notional, args.wait,
+          capital=args.capital, leverage=args.leverage)
 
 
 if __name__ == "__main__":
