@@ -56,3 +56,18 @@ def test_one_trade_per_coin_at_a_time_and_summary():
     out = summary(rows, days=4, notional=1000)
     assert out["trades"] == 4 and out["fill"] == pytest.approx(0.8) and out["net"] == pytest.approx(3.5)
     assert out["usd_day"] == pytest.approx(14 * 1000 / 1e4 / 4) and out["t"] > 2
+
+
+def test_regime_ideas_trade_with_or_against_the_last_minutes_at_each_half_hour():
+    from engine.volforecast import Forecast
+    from scripts.regimeHarness import ideas
+    m0 = 1_790_000_000_000 // 60_000 // 30 * 30            # a :00 or :30 minute
+    price = np.full(120, 100.0)
+    price[25:30] = 101.0                                    # up into the half hour that ends minute 29
+    price[57:60] = 99.0                                     # down into the next
+    fc = {"ETH": Forecast("ETH", m0, np.zeros(120), (1.0, 2.0), {}, price, np.ones(120, bool))}
+    out = ideas(fc)
+    t30, t60 = (m0 + 30) * 60_000, (m0 + 60) * 60_000
+    assert [(s.t_ms, s.side) for s in out["trend 5m"]] == [(t30, 1), (t60, -1)]
+    assert [(s.t_ms, s.side) for s in out["revert 15m"]] == [(t30, -1), (t60, 1)]
+    assert all(s.hold_ms == 30 * 60_000 for s in out["trend 15m"])
