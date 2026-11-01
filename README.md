@@ -413,6 +413,7 @@ The recorder prints how many MB the current hour has taken, so you can see your 
 | `ANALYTIX_ALERTS_FILE` | `data/alerts.json` | alert settings, price levels and the Telegram bot token |
 | `ANALYTIX_RECORD_FILE` | none | in live mode, also record raw messages to this one file |
 | `ANALYTIX_LIQUIDATORS` | none | comma-separated addresses |
+| `ANALYTIX_LONGTAIL` | `1` | also record ~20 mid-volume coins (trades, book, best bid/offer, context) to `data/recordings_longtail`, for studies; picked daily by 24h volume (`ANALYTIX_LONGTAIL_N`, `_SKIP`, `_MIN_USD`, or `_COINS` by hand); `0` to turn off |
 | `ANALYTIX_BOT_SHOWN` | `degen` | baskets shown in the bot panel, in order; the others keep running and recording silently (`twap,informed,degen` shows all) |
 | `ANALYTIX_EXTERNAL` | `binance,bybit,lighter` | other exchanges' feeds (live mode); Binance and Bybit feed "where it started", Lighter is recorded only, for studies; empty to turn off |
 | `ANALYTIX_BINANCE_WS` / `ANALYTIX_BYBIT_WS` / `ANALYTIX_LIGHTER_WS` | their public feeds | override the exchange WebSocket addresses |

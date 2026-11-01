@@ -7,7 +7,8 @@ Build the fast store from the recordings: one compressed numpy file per coin per
 
 Run it once to convert the history, then again whenever you like (a daily scheduled run is ideal): finished days are
 skipped, and today is rebuilt from its finished hours. Studies that support the store read it instead of the gzipped
-JSON, in seconds instead of minutes.
+JSON, in seconds instead of minutes. The long-tail recordings build into the same store:
+    python -m scripts.buildStore data/recordings_longtail
 
 On the server, from /opt/analytix (the store must be somewhere you can write; data/ belongs to the analytix user):
     ANALYTIX_STORE_DIR=~/analytix-store nice -n 19 .venv/bin/python -m scripts.buildStore
@@ -20,7 +21,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from config import RECORD_DIR, STORE_DIR
-from storage.tickStore import built_sources, hours_by_day, sources_of, write_day
+from storage.tickStore import hours_by_day, is_built, sources_of, write_day
 
 
 def _build(store: str, day: str, paths: list[str]) -> tuple[str, list[str], float]:
@@ -49,7 +50,7 @@ def main() -> None:
 
     by_day = hours_by_day(args.paths)
     todo = sorted(by_day)[-args.days:] if args.days else sorted(by_day)
-    todo = [d for d in todo if args.rebuild or built_sources(store, d) != sources_of(by_day[d])]
+    todo = [d for d in todo if args.rebuild or not is_built(store, d, sources_of(by_day[d]))]
     print(f"{len(by_day)} days of recordings, {len(todo)} to build into {store}", file=sys.stderr)
     t0 = time.time()
     with ProcessPoolExecutor(max_workers=max(1, args.jobs)) as pool:

@@ -221,6 +221,20 @@ def built_sources(store: Path, day: str) -> list[str] | None:
     return None
 
 
+def is_built(store: Path, day: str, sources: list[str]) -> bool:
+    """Whether some coin's file for that day was built from exactly these hours. Several recording folders (the main
+    coins, the long tail) build into one store, each with its own coins, so any match counts."""
+    want = sorted(sources)
+    for f in sorted(store.glob(f"*/{day}.npz")):
+        try:
+            with np.load(f) as z:
+                if sorted(z["sources"].tolist()) == want:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
 # ----------------------------------------------------------------------------------------------- loading
 
 def days(coin: str, store: Path = STORE_DIR) -> list[str]:
