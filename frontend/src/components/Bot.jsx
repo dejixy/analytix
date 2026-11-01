@@ -760,7 +760,7 @@ function DgLatest({ d }) {
           {rows.map((t) => (
             <div key={t.id} className="bm-row">
               <span className="muted">{clock(t.t_ms)}</span>
-              <span><b>{t.coin}</b> <span className={t.side > 0 ? "up" : "down"}>{sideWord(t.side).toLowerCase()}</span> <span className="muted">{usd(t.margin)}</span></span>
+              <span><b>{t.coin}</b> <span className={t.side > 0 ? "up" : "down"}>{sideWord(t.side).toLowerCase()}</span> <span className="muted">{usd(t.margin)}{t.regime === "loud" ? " · loud" : ""}</span></span>
               <span className={tone(t.pnl)}>{t.bust ? "liquidated" : usd(t.pnl, true)}</span>
               <span className="muted" title="The pot after it">{usd(t.pot)}</span>
             </div>
@@ -832,7 +832,7 @@ function DgHistory() {
                   {g.rows.map((t) => (
                     <div key={t.id} className="bm-row">
                       <span className="muted">{clock(t.t_ms)}</span>
-                      <span><b>{t.coin}</b> <span className={t.side > 0 ? "up" : "down"}>{sideWord(t.side).toLowerCase()}</span> <span className="muted">{usd(t.margin)}</span></span>
+                      <span><b>{t.coin}</b> <span className={t.side > 0 ? "up" : "down"}>{sideWord(t.side).toLowerCase()}</span> <span className="muted">{usd(t.margin)}{t.regime === "loud" ? " · loud" : ""}</span></span>
                       <span className={tone(t.pnl)}>{t.bust ? "liquidated" : usd(t.pnl, true)}</span>
                       <span className="muted" title="The pot after it">{usd(t.pot)}</span>
                     </div>
@@ -901,6 +901,7 @@ function DgSettings({ d, call }) {
         })}
       </div>
       {field("pot_pct", "Share of the pot per trade", "%")}
+      {field("loud_size_pct", "Size in loud markets (0 skips them)", "%")}
       {field("balance", "Balance each week starts from", "$")}
       <div className="plan-holds">
         <button className="plan-open" disabled={!changed.length} onClick={() => call("PUT", "/api/bot/settings", Object.fromEntries(changed.map((k) => [k, draft[k]])))}>Save</button>
@@ -908,6 +909,7 @@ function DgSettings({ d, call }) {
       </div>
       <p className="plan-note muted">
         Leverage is each coin's max on Hyperliquid: {Object.entries(d.hl_lev).map(([k, v]) => `${k} ${v}×`).join(", ")}. It fades wallets scoring {d.threshold} or worse (the informed basket's setting; that basket keeps running in the background).
+        {" "}Loud means the coin's next 30 minutes are forecast in its busiest third (the gauge in the header).
         {changed.includes("pot_pct") ? " A new share applies from the next trade." : ""}
         {changed.includes("balance") ? " A new balance applies from the next week (or now, if no week is running)." : ""}
       </p>
@@ -922,6 +924,7 @@ function DgHow({ d }) {
         <li>It takes the informed basket's fades: a wallet whose pushes reliably reverse starts a hidden order, and the trade is the other side, {d.fill_s}s later, held {d.hold_s / 60} min.</li>
         <li>Only {d.settings.coins.join(" and ")}: the fade check found the edge there (about +1% of the margin a trade, 26 a day in the test). One open trade per coin.</li>
         <li>Each trade puts {d.settings.pot_pct}% of the pot, as it stands when the trade opens, up as margin at Hyperliquid's max leverage, with limit-order fees. If price reaches the liquidation point, that margin is lost.</li>
+        <li>When the coin's next 30 minutes are forecast loud (its busiest third), the trade is {d.settings.loud_size_pct >= 100 ? "the same size" : d.settings.loud_size_pct > 0 ? `${d.settings.loud_size_pct}% of the usual size` : "skipped"}: big moves are what liquidate a position at max leverage.</li>
         <li>A week ends at {usd(d.start * d.up)} (doubled) or {usd(d.start * d.down)} (halved), or after 7 days. The next week starts again from {usd(d.start)}, and what each week ended at is banked.</li>
         <li>Paper only, no alerts: it tests whether the fades can double a pot. With no edge, betting this big loses more often than it wins.</li>
       </ol>

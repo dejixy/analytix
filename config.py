@@ -56,6 +56,7 @@ HISTORY_SECONDS = MAX_TICK_WINDOW_S + BUFFER_MARGIN_S
 # Minute bars keep the longest window plus an hour.
 BAR_SECONDS = 60
 BAR_HISTORY_S = MAX_WINDOW_S + 3600
+BAR_KEEP_DAYS = float(os.getenv("ANALYTIX_BAR_KEEP_DAYS", "8"))   # minute bars kept on disk (the loud-market gauge)
 BACKFILL_INTERVAL = "5m"            # Hyperliquid serves the last 5000 candles: 5m covers ~17 days
 BACKFILL_ENABLED = os.getenv("ANALYTIX_BACKFILL", "1") == "1"
 BARS_DB = Path(os.getenv("ANALYTIX_BARS_DB", str(ROOT / "data" / "bars.sqlite")))
@@ -120,6 +121,9 @@ RECORD_FILE = os.getenv("ANALYTIX_RECORD_FILE")      # live mode: also record ra
 RECORD = os.getenv("ANALYTIX_RECORD", "0") == "1"    # live mode: also record to hourly files in RECORD_DIR
 RECORD_DIR = Path(os.getenv("ANALYTIX_RECORD_DIR", str(ROOT / "data" / "recordings")))
 RECORD_MIN_FREE_GB = float(os.getenv("ANALYTIX_RECORD_MIN_FREE_GB", "2"))   # pause recording below this much free disk
+# News (api/news.py): the US economic calendar and crypto headlines, kept in NEWS_FILE; ANALYTIX_NEWS=0 turns it off
+NEWS = os.getenv("ANALYTIX_NEWS", "1") == "1"
+NEWS_FILE = Path(os.getenv("ANALYTIX_NEWS_FILE", str(ROOT / "data" / "news.jsonl")))
 # Long-tail coins, recorded only (api/longtail.py): mid-volume perps for studies, in their own folder so replays of
 # the main recordings stay in time order. On whenever the main feed is recorded; ANALYTIX_LONGTAIL=0 turns it off
 LONGTAIL = os.getenv("ANALYTIX_LONGTAIL", "1") == "1"

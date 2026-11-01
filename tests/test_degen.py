@@ -140,3 +140,14 @@ def test_history_starts_from_what_was_stored(tmp_path):
     (tmp_path / "bot_degen.json").write_text(json.dumps({"v": 1, "settings": {}, "state": {"done": [row]}}))
     dg = DegenBasket(inf.rt, tmp_path / "bot_degen.json", inf)
     assert dg.history()["trades"] == [row] and (tmp_path / "bot_degen_trades.jsonl").exists()
+
+
+def test_smaller_in_loud_windows(tmp_path):
+    from types import SimpleNamespace
+    inf, dg = pair(tmp_path)
+    inf.rt.regime = SimpleNamespace(of=lambda coin: {"regime": "loud"})
+    feed(inf, dg, secs=300)
+    o = dg.state["open"][0]
+    assert o["margin"] == 10.0 and o["regime"] == "loud"            # half of 40% of $50
+    dg.save_settings({"loud_size_pct": 0})
+    assert dg.public()["regime"] == {"SOL": "loud", "HYPE": "loud"}

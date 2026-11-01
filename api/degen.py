@@ -7,7 +7,8 @@ next week starts again from the balance. Paper only, alerts off: a live test.
     trades      every hidden order on your coins from a wallet scoring at or below the informed basket's threshold:
                 the other side, in FILL_S after it's spotted, out HOLD_S later (as the informed basket), one open
                 trade per coin. The informed basket spots and settles them; this one sizes and books them
-    size        pot_pct of the pot when the trade opens (trades still open don't count yet), at each coin's max
+    size        pot_pct of the pot when the trade opens (trades still open don't count yet), times loud_size_pct
+                when the loud-market gauge (api/regime.py) says the coin is loud (0 skips those trades), at each coin's max
                 leverage on Hyperliquid, limit-order fees (3 bps a round trip). Liquidated (margin lost) if the worst
                 point reaches the maintenance margin, half the margin's distance away
     a week      starts at its first trade; ends at 2x (doubled), at half (halved) or after 7 days (neither). What it
@@ -31,8 +32,8 @@ TICK_S = 1.0
 UP, DOWN = 2.0, 0.5
 WEEK_MS = 7 * 86_400_000
 DAY_MS = 86_400_000
-DEFAULTS = {"balance": 50.0, "pot_pct": 40.0, "coins": ["SOL", "HYPE"]}
-LIMITS = {"balance": (1, 1e7), "pot_pct": (1, 100)}
+DEFAULTS = {"balance": 50.0, "pot_pct": 40.0, "coins": ["SOL", "HYPE"], "loud_size_pct": 50.0}
+LIMITS = {"balance": (1, 1e7), "pot_pct": (1, 100), "loud_size_pct": (0, 100)}
 
 
 def result(res: dict | None, coin: str) -> float | None:
@@ -121,13 +122,21 @@ class DegenBasket:
         start = r["t_ms"] + FILL_S * 1000
         if start < st["free"].get(coin, 0):
             return False                                   # that coin's last trade is still open
+        regime = self._regime(coin)
+        scale = self.cfg["loud_size_pct"] / 100 if regime == "loud" else 1.0
+        if scale <= 0:
+            return False                                   # set to skip loud windows
         if not st["week_ms"]:
             st["week_ms"] = start
         st["open"].append({"id": r["id"], "coin": coin, "side": r["side"], "t_ms": r["t_ms"], "usd": r.get("usd"),
-                           "margin": round(self.cfg["pot_pct"] / 100 * st["pot"], 4),
-                           "lev": HL_MAX_LEV.get(coin, 10)})
+                           "margin": round(self.cfg["pot_pct"] / 100 * st["pot"] * scale, 4),
+                           "lev": HL_MAX_LEV.get(coin, 10), "regime": regime})
         st["free"][coin] = start + HOLD_S * 1000
         return True
+
+    def _regime(self, coin: str) -> str | None:
+        svc = getattr(self.rt, "regime", None)
+        return svc.of(coin).get("regime") if svc is not None else None
 
     def _close(self, o: dict, r: dict) -> None:
         st = self.state
@@ -281,5 +290,6 @@ class DegenBasket:
             "count": count, "weeks": st["weeks"][-12:][::-1], "open": open_[::-1], "recent": st["done"][-30:][::-1],
             "today": {"trades": len(day), "wins": sum(1 for t in day if t["pnl"] > 0)},
             "threshold": self.inf.cfg["threshold"], "hl_lev": {c: HL_MAX_LEV.get(c, 10) for c in KNOWN_COINS},
+            "regime": {c: self._regime(c) for c in self.cfg["coins"]},
             "up": UP, "down": DOWN, "now_ms": now,
         }
