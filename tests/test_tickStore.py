@@ -120,3 +120,22 @@ def test_days_built_before_a_column_existed_still_load(tmp_path):
     np.savez_compressed(store / "ETH" / "20260921.npz", sources=np.array(["x"]), **old)   # no bbo, no Lighter
     z = tickStore.load("ETH", ["book", "bbo", "xtrade"], store=store)
     assert z["book_t"].tolist() == [t] and len(z["bbo_t"]) == 0 and len(z["xtrade_t"]) == 0
+
+
+def test_two_recording_folders_build_into_one_store(tmp_path):
+    main, tail, store = tmp_path / "main", tmp_path / "tail", tmp_path / "store"
+    main.mkdir(); tail.mkdir()
+    t = 1_790_035_200_000
+    _hour(main, "20260922_0000", [(t + 10, _book(t, 100.0, 100.1))])
+    with gzip.open(tail / "longtail_20260922_0000.jsonl.gz", "wt", encoding="utf-8") as fh:
+        book = {"channel": "l2Book", "data": {"coin": "AAA", "time": t, "levels": [[{"px": "1.0", "sz": "5", "n": 1}],
+                                                                               [{"px": "1.1", "sz": "5", "n": 1}]]}}
+        fh.write(json.dumps({"recv_ms": t + 10, "msg": book}) + "\n")
+    for folder in (main, tail):
+        for day, paths in tickStore.hours_by_day([folder]).items():
+            assert not tickStore.is_built(store, day, tickStore.sources_of(paths))
+            tickStore.write_day(store, day, paths)
+    for folder in (main, tail):                              # both now count as built: neither is rebuilt
+        for day, paths in tickStore.hours_by_day([folder]).items():
+            assert tickStore.is_built(store, day, tickStore.sources_of(paths))
+    assert tickStore.coins(store) == ["AAA", "ETH"]

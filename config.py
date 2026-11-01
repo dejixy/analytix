@@ -120,6 +120,14 @@ RECORD_FILE = os.getenv("ANALYTIX_RECORD_FILE")      # live mode: also record ra
 RECORD = os.getenv("ANALYTIX_RECORD", "0") == "1"    # live mode: also record to hourly files in RECORD_DIR
 RECORD_DIR = Path(os.getenv("ANALYTIX_RECORD_DIR", str(ROOT / "data" / "recordings")))
 RECORD_MIN_FREE_GB = float(os.getenv("ANALYTIX_RECORD_MIN_FREE_GB", "2"))   # pause recording below this much free disk
+# Long-tail coins, recorded only (api/longtail.py): mid-volume perps for studies, in their own folder so replays of
+# the main recordings stay in time order. On whenever the main feed is recorded; ANALYTIX_LONGTAIL=0 turns it off
+LONGTAIL = os.getenv("ANALYTIX_LONGTAIL", "1") == "1"
+LONGTAIL_DIR = Path(os.getenv("ANALYTIX_LONGTAIL_DIR", str(ROOT / "data" / "recordings_longtail")))
+LONGTAIL_N = int(os.getenv("ANALYTIX_LONGTAIL_N", "20"))                 # how many coins
+LONGTAIL_SKIP = int(os.getenv("ANALYTIX_LONGTAIL_SKIP", "5"))            # skip the busiest coins after the main ones
+LONGTAIL_MIN_USD = float(os.getenv("ANALYTIX_LONGTAIL_MIN_USD", "2e6"))  # 24h volume a coin needs
+LONGTAIL_COINS = [c.strip() for c in os.getenv("ANALYTIX_LONGTAIL_COINS", "").split(",") if c.strip()]  # or pick by hand
 STORE_DIR = Path(os.path.expanduser(os.getenv("ANALYTIX_STORE_DIR", str(ROOT / "data" / "store"))))  # fast columns
                                                      # built from the recordings for studies (scripts/buildStore.py)
 FRONTEND_DIST = ROOT / "frontend" / "dist"

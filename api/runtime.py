@@ -41,6 +41,7 @@ from config import (
 )
 from api.alerts import AlertService
 from api.baskets import Bot
+from api.longtail import LongTailRecorder
 from api.holdclock import HoldClock
 from api.hlp import HLPRecorder
 from api.liqmap import LiqMapCollector
@@ -117,6 +118,7 @@ class Runtime:
         self.bot = Bot(self, bot_file, self.bars_db)          # baskets of strategies: big TWAPs, informed flow
         self.liqmap = LiqMapCollector(self, positions_db if mode == "live" else None)   # big traders' liquidation prices
         self.hlp = HLPRecorder(self, positions_db if mode == "live" else None)           # HLP's positions, for a study
+        self.longtail = LongTailRecorder(self)          # mid-volume coins, recorded only, for a study
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -184,6 +186,7 @@ class Runtime:
         await self.bot.start()
         await self.liqmap.start()
         await self.hlp.start()
+        await self.longtail.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
@@ -195,6 +198,7 @@ class Runtime:
         await self.bot.stop()
         await self.liqmap.stop()
         await self.hlp.stop()
+        await self.longtail.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
@@ -382,6 +386,8 @@ class Runtime:
             if self.hlp.enabled and self.hlp.rounds:
                 h = self.hlp.last
                 line += f" · HLP: {h['positions']} positions in {h['vaults']} vaults, {h['liquidator_fills']} Liquidator fills"
+            if self.longtail.summary():
+                line += " · " + self.longtail.summary()
             if isinstance(self._recorder, HourlyRecorder):
                 line += (f" · recording this hour {self._recorder.hour_bytes / 1e6:.0f} MB"
                          + (" · PAUSED: disk nearly full" if self._recorder.paused else ""))
