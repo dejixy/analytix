@@ -121,6 +121,9 @@ RECORD_FILE = os.getenv("ANALYTIX_RECORD_FILE")      # live mode: also record ra
 RECORD = os.getenv("ANALYTIX_RECORD", "0") == "1"    # live mode: also record to hourly files in RECORD_DIR
 RECORD_DIR = Path(os.getenv("ANALYTIX_RECORD_DIR", str(ROOT / "data" / "recordings")))
 RECORD_MIN_FREE_GB = float(os.getenv("ANALYTIX_RECORD_MIN_FREE_GB", "2"))   # pause recording below this much free disk
+# News (api/news.py): the US economic calendar and crypto headlines, kept in NEWS_FILE; ANALYTIX_NEWS=0 turns it off
+NEWS = os.getenv("ANALYTIX_NEWS", "1") == "1"
+NEWS_FILE = Path(os.getenv("ANALYTIX_NEWS_FILE", str(ROOT / "data" / "news.jsonl")))
 # Long-tail coins, recorded only (api/longtail.py): mid-volume perps for studies, in their own folder so replays of
 # the main recordings stay in time order. On whenever the main feed is recorded; ANALYTIX_LONGTAIL=0 turns it off
 LONGTAIL = os.getenv("ANALYTIX_LONGTAIL", "1") == "1"

@@ -209,6 +209,12 @@ def positions_remove(request: Request, address: str):
 
 
 # ── scanner ─────────────────────────────────────────────────────────────────
+@router.get("/news")
+async def news(request: Request, hours: float = 24, coin: str | None = None):
+    """Upcoming US releases (7 days) and the latest headlines and releases, with how each coin reacted."""
+    return _rt(request).news.public(min(max(hours, 1), 168), coin)
+
+
 @router.get("/regime")
 async def regime(request: Request):
     """Each coin's loud-market gauge: quiet / middle / loud and the move to expect over the next 30 minutes."""

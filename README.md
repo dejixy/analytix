@@ -413,6 +413,7 @@ The recorder prints how many MB the current hour has taken, so you can see your 
 | `ANALYTIX_ALERTS_FILE` | `data/alerts.json` | alert settings, price levels and the Telegram bot token |
 | `ANALYTIX_RECORD_FILE` | none | in live mode, also record raw messages to this one file |
 | `ANALYTIX_LIQUIDATORS` | none | comma-separated addresses |
+| `ANALYTIX_NEWS` | `1` | read the US economic calendar (Forex Factory) and crypto headlines (CoinDesk, Cointelegraph, The Block, Decrypt) into `data/news.jsonl` (`ANALYTIX_NEWS_FILE`) for the News panel; `0` to turn off |
 | `ANALYTIX_BAR_KEEP_DAYS` | `8` | days of live minute bars kept on disk; the "Next 30 min" gauge fits on them (it needs about three days before it shows anything) |
 | `ANALYTIX_LONGTAIL` | `1` | also record ~20 mid-volume coins (trades, book, best bid/offer, context) to `data/recordings_longtail`, for studies; picked daily by 24h volume (`ANALYTIX_LONGTAIL_N`, `_SKIP`, `_MIN_USD`, or `_COINS` by hand); `0` to turn off |
 | `ANALYTIX_BOT_SHOWN` | `degen` | baskets shown in the bot panel, in order; the others keep running and recording silently (`twap,informed,degen` shows all) |

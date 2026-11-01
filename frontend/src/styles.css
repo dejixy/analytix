@@ -697,3 +697,12 @@ tr.wall td { color: var(--ink); }
 
 .regime-quiet, .regime-none { color: var(--muted); }
 .regime-loud { color: var(--ink); font-weight: 700; }
+
+.news-list { display: grid; gap: 0; font-size: 12px; }
+.news-item { display: grid; grid-template-columns: 86px 1fr; gap: 10px; padding: 6px 0; border-top: 1px solid var(--grid); align-items: baseline; }
+.news-item:first-child { border-top: 0; }
+.news-item a { color: var(--ink); text-decoration: none; }
+.news-item a:hover { text-decoration: underline; }
+.news-when { font-size: 11px; }
+.news-react { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px; font-size: 11px; }
+.news-gap { flex: 1; }
