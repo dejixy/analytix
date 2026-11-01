@@ -56,6 +56,7 @@ HISTORY_SECONDS = MAX_TICK_WINDOW_S + BUFFER_MARGIN_S
 # Minute bars keep the longest window plus an hour.
 BAR_SECONDS = 60
 BAR_HISTORY_S = MAX_WINDOW_S + 3600
+BAR_KEEP_DAYS = float(os.getenv("ANALYTIX_BAR_KEEP_DAYS", "8"))   # minute bars kept on disk (the loud-market gauge)
 BACKFILL_INTERVAL = "5m"            # Hyperliquid serves the last 5000 candles: 5m covers ~17 days
 BACKFILL_ENABLED = os.getenv("ANALYTIX_BACKFILL", "1") == "1"
 BARS_DB = Path(os.getenv("ANALYTIX_BARS_DB", str(ROOT / "data" / "bars.sqlite")))

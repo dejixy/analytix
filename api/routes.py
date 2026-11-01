@@ -209,6 +209,12 @@ def positions_remove(request: Request, address: str):
 
 
 # ── scanner ─────────────────────────────────────────────────────────────────
+@router.get("/regime")
+async def regime(request: Request):
+    """Each coin's loud-market gauge: quiet / middle / loud and the move to expect over the next 30 minutes."""
+    return _rt(request).regime.public()
+
+
 @router.get("/scanner")
 def scanner(request: Request):
     """Every Hyperliquid perp, most unusual first, with the reasons (live mode)."""

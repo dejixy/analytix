@@ -6,7 +6,8 @@ can beat the cost" filter: fees are fixed, so a signal is only worth taking when
     minutes     the last print each minute (carried forward) and the taker orders that minute (fills merged by
                 block, taker and side: one sweep through five resting orders is one order)
     inputs      at the end of each minute: average move per minute and orders per minute over the last
-                5, 30, 120 and 1,440 minutes, the hour's usual move size (from the fitting days only), and whether
+                5, 30, 120 and 1,440 minutes, the hour's usual move size (from the fitting days only, blended with
+                the all-hours average so a few days of one hour can't swing it), and whether
                 a High-impact US release is due in the next 30 minutes (engine/calendar.py)
     target      |move| over the next 30 minutes, bps
     model       least squares on logs, fitted only on minutes before the split; scaled so its average matches the
@@ -25,6 +26,7 @@ MINUTE = 60_000
 HORIZON = 30
 LOOKBACKS = (5, 30, 120, 1440)
 STALE_MIN = 5
+HOUR_PRIOR = 120                # minutes of "average hour" each hour's own mean is blended with
 REGIMES = ("quiet", "middle", "loud")
 
 
@@ -79,8 +81,33 @@ def _avg(x: np.ndarray, k: int) -> np.ndarray:
     return out
 
 
+def minutes_from_bars(bars) -> dict:
+    """The same per-minute arrays from the live service's minute bars (close and fill count; fills stand in for
+    orders, which the live bars don't merge)."""
+    bars = [b for b in bars if getattr(b, "span_s", 60) == 60 and getattr(b, "source", "live") == "live"]
+    if not bars:
+        return {}
+    ts = np.array([b.timestamp for b in bars], dtype=np.int64) // MINUTE
+    m0 = int(ts.min())
+    n = int(ts.max()) - m0 + 1
+    last = np.full(n, np.nan)
+    orders = np.zeros(n)
+    last[ts - m0] = [b.close for b in bars]
+    orders[ts - m0] = [b.fills for b in bars]
+    seen = np.where(np.isfinite(last), np.arange(n), -1)
+    np.maximum.accumulate(seen, out=seen)
+    ok = (seen >= 0) & (np.arange(n) - seen <= STALE_MIN)
+    price = np.where(seen >= 0, last[np.maximum(seen, 0)], np.nan)
+    return {"m0": m0, "price": price, "ok": ok, "orders": orders}
+
+
 def fit(coin: str, start_ms: float, split_ms: float, end_ms: float, store=tickStore.STORE_DIR) -> Forecast | None:
     g = minutes(coin, start_ms, end_ms, store)
+    return fit_minutes(coin, g, split_ms) if g else None
+
+
+def fit_minutes(coin: str, g: dict, split_ms: float, min_rows: int = 1000) -> Forecast | None:
+    """Fit on the minutes whose 30-minute outcome was known before split_ms; forecast every minute."""
     if not g:
         return None
     m0, price, ok, orders = g["m0"], g["price"], g["ok"], g["orders"]
@@ -95,8 +122,11 @@ def fit(coin: str, start_ms: float, split_ms: float, end_ms: float, store=tickSt
     t_end = (np.arange(n) + m0 + 1) * MINUTE                    # the moment each minute ends
     hour = (t_end // 3_600_000) % 24
     train = (t_end <= split_ms - HORIZON * MINUTE) & np.isfinite(y)
-    hour_mean = np.array([np.nanmean(y[train & (hour == h)]) if (train & (hour == h)).any() else np.nan
-                          for h in range(24)])
+    overall = np.nanmean(y[train]) if train.any() else np.nan
+    sums = np.bincount(hour[train], weights=y[train], minlength=24)
+    counts = np.bincount(hour[train], minlength=24)
+    hour_mean = (sums + HOUR_PRIOR * overall) / (counts + HOUR_PRIOR)   # shrunk toward the average: a few days of
+                                                                        # one hour are noisy
     cols = [np.ones(n)]
     for k in LOOKBACKS:
         cols.append(np.log1p(_avg(stepz, k)))
@@ -106,7 +136,7 @@ def fit(coin: str, start_ms: float, split_ms: float, end_ms: float, store=tickSt
     X = np.column_stack(cols)
     good = np.all(np.isfinite(X), axis=1)
     fit_rows = train & good
-    if fit_rows.sum() < 1000:
+    if fit_rows.sum() < min_rows:
         return None
     beta = np.linalg.lstsq(X[fit_rows], np.log1p(y[fit_rows]), rcond=None)[0]
     pred = np.full(n, np.nan)

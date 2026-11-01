@@ -24,6 +24,7 @@ from config import (
     BOT_FILE,
     BACKFILL_ENABLED,
     BAR_HISTORY_S,
+    BAR_KEEP_DAYS,
     BARS_DB,
     POSITIONS_DB,
     BROADCAST_INTERVAL_S,
@@ -42,6 +43,7 @@ from config import (
 from api.alerts import AlertService
 from api.baskets import Bot
 from api.longtail import LongTailRecorder
+from api.regime import RegimeService
 from api.holdclock import HoldClock
 from api.hlp import HLPRecorder
 from api.liqmap import LiqMapCollector
@@ -119,6 +121,7 @@ class Runtime:
         self.liqmap = LiqMapCollector(self, positions_db if mode == "live" else None)   # big traders' liquidation prices
         self.hlp = HLPRecorder(self, positions_db if mode == "live" else None)           # HLP's positions, for a study
         self.longtail = LongTailRecorder(self)          # mid-volume coins, recorded only, for a study
+        self.regime = RegimeService(self)               # quiet / middle / loud for the next 30 minutes
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -187,6 +190,7 @@ class Runtime:
         await self.liqmap.start()
         await self.hlp.start()
         await self.longtail.start()
+        await self.regime.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
@@ -199,6 +203,7 @@ class Runtime:
         await self.liqmap.stop()
         await self.hlp.stop()
         await self.longtail.stop()
+        await self.regime.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
@@ -219,7 +224,8 @@ class Runtime:
         try:
             self.store = BarStore(self.bars_db)
             since = int(time.time() * 1000) - BAR_HISTORY_S * 1000
-            self.store.prune(since - 86_400_000)
+            keep_ms = max(BAR_HISTORY_S * 1000 + 86_400_000, int(BAR_KEEP_DAYS * 86_400_000))
+            self.store.prune(int(time.time() * 1000) - keep_ms)          # the gauge reads up to BAR_KEEP_DAYS
             for coin, pipe in self.pipelines.items():
                 n = pipe.state.merge_bars(self.store.load(coin, since))
                 pipe.state.on_bar = self.store.save

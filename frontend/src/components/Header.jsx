@@ -71,6 +71,23 @@ function FeedBadge({ feed, conn }) {
   );
 }
 
+const REGIME_WORD = { quiet: "Quiet", middle: "Normal", loud: "Loud" };
+
+/* How big the next 30 minutes are likely to be (not which way), from the live forecast (api/regime.py). */
+function Regime({ r }) {
+  const tip = "How far price is likely to move over the next 30 minutes, either way: forecast from how busy trading has " +
+    "been, recent moves and the hour. Quiet / Normal / Loud are this coin's own thirds. It needs about three days of " +
+    "minute bars before it shows anything.";
+  return (
+    <div>
+      <div className="stat-label" title={tip}>Next 30 min</div>
+      <div className={`stat-value num regime-${r?.regime || "none"}`} title={tip}>
+        {r?.regime ? `${REGIME_WORD[r.regime]} · ~${Math.round(r.move_bps)} bps` : "warming up"}
+      </div>
+    </div>
+  );
+}
+
 export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions, onHold, onBot, more, onMore, outcomes, onOutcomes }) {
   const { price, context, coin, feed } = snap;
   const chg = context?.change_24h_pct;
@@ -104,6 +121,7 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
           <div className="stat-label" title="Hyperliquid's price compared with the index price from other big exchanges">vs index</div>
           <div className="stat-value num">{context ? fmtPct(context.premium_bps / 100, 3) : "-"}</div>
         </div>
+        <Regime r={snap.regime} />
       </div>
       </>}
 
