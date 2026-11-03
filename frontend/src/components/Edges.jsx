@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { fmtPct, fmtUsd } from "../format.js";
 import { ChangeLog } from "./TermChrome.jsx";
 import Compare from "./Compare.jsx";
+import { Head, Pill, SourcePill, fresh } from "./TermPanel.jsx";
 
 /* The edge terminal's main view (/api/edges): trade.xyz's commodities and currencies on Hyperliquid, the weekend
    record, the oil roll, what's coming up and the board of edges being worked on. Times are in your time zone. */
@@ -142,7 +143,7 @@ function Clock({ d, now }) {
   return (
     <section id="p-CLK" className={`panel term-wide term-hero ${s.open ? "is-open" : brk ? "is-break" : "is-shut"}`}>
       <div className="term-hero-state">
-        <div className="stat-label">Real markets · {d.hours.market}</div>
+        <div className="tp-kicker"><span className="term-code">CLK</span>Real markets: {d.hours.market}</div>
         <div className="term-big">{s.open ? "Open" : brk ? "Daily break" : "Shut"}</div>
         <div className="term-count">
           {s.open ? "shuts for the weekend in" : "reopens in"} <b className="num">{hms(target - now)}</b>
@@ -152,7 +153,7 @@ function Clock({ d, now }) {
       </div>
       <Week d={d} now={now} />
       <div className="term-hero-next">
-        <div className="stat-label">Next up</div>
+        <div className="tp-kicker">Next up</div>
         {next ? (
           <>
             <div className="term-next-title">{next.title}</div>
@@ -194,13 +195,15 @@ function RealMarket({ m, now }) {
   );
 }
 
-function Markets({ d }) {
+function Markets({ d, now }) {
+  const f = fresh(d, "Hyperliquid xyz", now, 60_000);
+  const alone = d.markets.filter((m) => m.session && !m.session.open && m.session.why !== "break").length;
   return (
     <section id="p-CMDY" className="panel term-wide">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">CMDY</span>Commodities on Hyperliquid</h2>
-        <span className="panel-sub">trade.xyz · fees {d.fees.taker_bps} bps taker, {d.fees.maker_bps} bps maker</span>
-      </div>
+      <Head code="CMDY" title="Commodities on Hyperliquid"
+        meta={[["Venue", "trade.xyz"], ["Fees", `${d.fees.taker_bps} / ${d.fees.maker_bps} bps`], ["Updated", f.age]]}
+        pills={[alone ? <Pill key="a" kind="state" title="The real market is shut: Hyperliquid's book sets these prices">HL only · {alone}</Pill> : null,
+          <SourcePill key="s" f={f} />]} />
       <div className="term-scroll">
         <table className="plan-table term-table">
           <thead>
@@ -324,10 +327,11 @@ function Record({ d }) {
   const f = p.fade;
   return (
     <section id="p-WKND" className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">WKND</span>Weekend record</h2>
-        <span className="panel-sub">hourly closes · holiday weekends left out</span>
-      </div>
+      <Head code="WKND" title="Weekend record"
+        meta={[["Sample", `${p.n} weekends`], ["Data", "hourly closes"], ["Fade t", f.t ?? "-"]]}
+        pills={[<Pill key="c" kind={f.t == null ? "mute" : Math.abs(f.t) >= 2 ? "good" : Math.abs(f.t) >= 1 ? "state" : "mute"}
+          title="How sure the fade result is: t under 1 is noise, 1 to 2 a hint, 2 or more significant">
+          {f.t == null ? "No result" : Math.abs(f.t) >= 2 ? "Significant" : Math.abs(f.t) >= 1 ? "Hint" : "Noise"}</Pill>]} />
       <div className="term-pad">
         {!p.n ? (
           <p className="plan-note muted">{d.enabled ? "Reading Hyperliquid's hourly history…" : "The record is read in live mode."}</p>
@@ -390,14 +394,16 @@ function Record({ d }) {
   );
 }
 
-function Roll({ d }) {
+function Roll({ d, now }) {
   const futures = d.status?.["Futures prices"];
+  const ff = fresh(d, "Futures prices", now, 30 * 60_000);
+  const rolling = d.roll.some((r) => r.phase === "during");
   return (
     <section id="p-ROLL" className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">ROLL</span>Oil roll</h2>
-        <span className="panel-sub">5th to 10th business day</span>
-      </div>
+      <Head code="ROLL" title="Oil roll"
+        meta={[["Window", "business days 5 to 10"], ["Futures", ff.state === "down" ? "unreachable" : `Yahoo, ${ff.age}`]]}
+        pills={[<Pill key="p" kind={rolling ? "state" : "mute"}>{rolling ? "Rolling" : "Upcoming"}</Pill>,
+          <Pill key="f" kind={ff.state === "down" ? "bad" : "mute"} title="Yahoo's futures prices run about 10 minutes late">Delayed</Pill>]} />
       <div className="term-pad term-stack">
         {d.roll.map((r) => {
           const today = new Date(d.now_ms).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
@@ -437,13 +443,13 @@ function Roll({ d }) {
   );
 }
 
-function Currencies({ d }) {
+function Currencies({ d, now }) {
+  const f = fresh(d, "Hyperliquid xyz", now, 60_000);
   return (
     <section id="p-FX" className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">FX</span>Currencies</h2>
-        <span className="panel-sub">trade.xyz on Hyperliquid</span>
-      </div>
+      <Head code="FX" title="Currencies" meta={[["Venue", "trade.xyz"], ["Updated", f.age]]}
+        pills={[<Pill key="y" kind={d.yen_watch ? "bad" : "mute"} title="A fast yen rally: 0.5% in an hour or 1% in a day">{d.yen_watch ? "Yen alert" : "Yen calm"}</Pill>,
+          <SourcePill key="s" f={f} />]} />
       <div className="term-pad">
         {d.yen_watch && <div className="term-watch">{d.yen_watch}</div>}
         {!d.fx.length ? (
@@ -488,10 +494,8 @@ function Coming({ d }) {
   }
   return (
     <section id="p-CAL" className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">CAL</span>Coming up</h2>
-        <span className="panel-sub">7 days · your time</span>
-      </div>
+      <Head code="CAL" title="Coming up" meta={[["Range", "7 days"], ["Times", "yours"]]}
+        pills={[<Pill key="n">{d.events.length} events</Pill>]} />
       <div className="term-pad term-events">
         {byDay.map(([day, evs]) => (
           <div key={day}>
@@ -517,12 +521,12 @@ function Board({ d }) {
   const rec = d.recording;
   return (
     <section id="p-EDGE" className="panel term-wide">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">EDGE</span>Edge board</h2>
-        <span className="panel-sub">
-          {rec.on && rec.markets.length ? `recording ${rec.markets.map((m) => m.split(":").pop()).join(", ")}` : "edge markets not recording yet"}
-        </span>
-      </div>
+      <Head code="EDGE" title="Edge board"
+        meta={[["Recording", rec.on && rec.markets.length ? rec.markets.map((m) => m.split(":").pop()).join(" ") : "off"]]}
+        pills={["testing", "watching", "planned"].map((k) => {
+          const n = d.board.filter((c) => c.status === k).length;
+          return n ? <Pill key={k} kind={k === "testing" ? "good" : k === "watching" ? "state" : "mute"}>{n} {STATUS[k].toLowerCase()}</Pill> : null;
+        })} />
       <div className="term-board">
         {d.board.map((c) => (
           <article key={c.key} className={`term-card ${c.status}`}>
@@ -571,14 +575,12 @@ function DaySpark({ m }) {
 }
 
 /* One tile per market, tinted by the day's move (stronger tint, bigger move); click to jump to its row. */
-function Monitor({ d, onPick }) {
+function Monitor({ d, onPick, now }) {
   const all = [...d.markets, ...d.fx];
+  const f = fresh(d, "Hyperliquid xyz", now, 60_000);
   return (
     <section id="p-MON" className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">MON</span>Market monitor</h2>
-        <span className="panel-sub">tint = 24h move · click for detail</span>
-      </div>
+      <Head code="MON" title="Market monitor" meta={[["Tint", "24h move"], ["Click", "detail"]]} pills={[<SourcePill key="s" f={f} />]} />
       <div className="term-tiles">
         {all.map((m) => {
           const c = m.change_24h_pct;
@@ -596,6 +598,10 @@ function Monitor({ d, onPick }) {
                 <span className="muted"> · 1h {fmtPct(m.change_1h_pct)}</span>
               </span>
               <DaySpark m={m} />
+              <span className="term-tile-foot">
+                <span><em>OI</em> {fmtUsd(m.oi_usd)}</span>
+                <span><em>Fund</em> {m.funding_apr == null ? "-" : fmtPct(m.funding_apr, 1)}</span>
+              </span>
             </button>
           );
         })}
@@ -607,10 +613,7 @@ function Monitor({ d, onPick }) {
 function Log({ log }) {
   return (
     <section id="p-LOG" className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">LOG</span>What changed</h2>
-        <span className="panel-sub">since you opened this page</span>
-      </div>
+      <Head code="LOG" title="What changed" meta={[["Since", "page opened"]]} pills={[<Pill key="n">{log.length} lines</Pill>]} />
       <ChangeLog log={log} />
     </section>
   );
@@ -635,21 +638,17 @@ export default function Edges({ d, error, now, log = [], onPick = () => {} }) {
     <div className="term-grid">
       {error && <div className="plan-error term-wide">{error}</div>}
       <Clock d={d} now={now} />
-      <div className="term-wide term-pair">
-        <Monitor d={d} onPick={onPick} />
-        <Log log={log} />
-      </div>
+      <div className="tw-8"><Monitor d={d} onPick={onPick} now={now} /></div>
+      <div className="tw-4"><Log log={log} /></div>
       <Compare d={d} now={now} />
-      <Markets d={d} />
-      <div className="term-col">
-        <Record d={d} />
-        <Currencies d={d} />
+      <Markets d={d} now={now} />
+      <div className="tw-7"><Record d={d} /></div>
+      <div className="tw-5 term-col">
+        <Roll d={d} now={now} />
+        <Currencies d={d} now={now} />
       </div>
-      <div className="term-col">
-        <Roll d={d} />
-        <Coming d={d} />
-      </div>
-      <Board d={d} />
+      <div className="tw-4"><Coming d={d} /></div>
+      <div className="tw-8"><Board d={d} /></div>
       {down.length > 0 && (
         <p className="plan-note muted term-wide">Not reachable right now: {down.map(([s]) => s).join(", ")}.</p>
       )}

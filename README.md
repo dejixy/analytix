@@ -302,6 +302,8 @@ A second page on the same server (the **Terminal ›** link on the dashboard), f
 - **Coming up:** the next 7 days: oil reports, closes and reopens, roll days, options expiry, and the US and Japan calendar.
 - **Edge board:** each edge being worked on, with its status and next step.
 
+**The look:** a market workstation on a 12-column grid. Every panel has the same header bar: its command code, its title, what the data is and how fresh it is, and status pills (live, stale, delayed, or how far to trust a result: noise, hint, significant). Colour has one job each: green and red are price direction, cyan is system state (live, open, active, selected), greys are everything else. Numbers, tickers and commands are set in JetBrains Mono; labels, titles and prose in IBM Plex Sans Condensed.
+
 Around the panels:
 - **Command line:** press `/` (or Ctrl+K) and type a market (`GOLD`, `WTI`, `JPY`…), a panel code (`CLK`, `MON`, `LOG`, `FLOW`, `CMDY`, `WKND`, `ROLL`, `FX`, `CAL`, `EDGE`), a tab (`NEWS`, `BOT`) or `HELP`, then Enter or **GO**. It jumps there and lights it up. Keys `1` `2` `3` switch tabs.
 - **World clocks:** CME/ICE (from the session schedule), New York, London and Tokyo cash-market hours (holidays not shown), your own time, and Hyperliquid 24/7.
