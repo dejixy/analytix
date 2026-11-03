@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Edges, { Tape } from "./components/Edges.jsx";
 import News from "./components/News.jsx";
 import Bot from "./components/Bot.jsx";
+import { CommandBar, StatusBar, WorldClocks, useChangeLog } from "./components/TermChrome.jsx";
 import { soundOn, unlockSound } from "./botSound.js";
 import { fmtTime } from "./format.js";
 
 /* The edge terminal (/terminal): the event edges, the news and the bot, on their own page next to the dashboard.
-   The tab lives in the address (#edges, #news, #bot) so a link or a reload lands on it. */
+   The tab lives in the address (#edges, #news, #bot) so a link or a reload lands on it. A command line jumps to any
+   market or panel; the status bar shows how fresh every source is. */
 
 const TABS = [
   ["edges", "Edges", "commodities · roll · yen"],
@@ -17,16 +19,57 @@ const fromHash = () => {
   const h = window.location.hash.replace("#", "");
   return TABS.some(([k]) => k === h) ? h : "edges";
 };
+const EDGES_EVERY_MS = 5000;
 
 export default function Terminal() {
   const [tab, setTab] = useState(fromHash);
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
   const [now, setNow] = useState(Date.now());
+  const [latency, setLatency] = useState(null);
+  const [lastFetch, setLastFetch] = useState(null);
+  const pending = useRef(null);                            // a jump waiting for the Edges tab to render
+  const log = useChangeLog(d, now);
+
   const go = (k) => {
     window.history.replaceState(null, "", k === "edges" ? "/terminal" : `/terminal#${k}`);
     setTab(k);
   };
+
+  /** Scroll to a panel (and a market's row in it) and light it up for a moment. */
+  const jump = (panel, mk) => {
+    const el = document.getElementById(`p-${panel}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    const row = mk ? el.querySelector(`[data-mk="${mk}"]`) : null;
+    for (const x of [el, row].filter(Boolean)) {
+      x.classList.remove("term-hl");
+      void x.offsetWidth;                                 // restart the highlight
+      x.classList.add("term-hl");
+      setTimeout(() => x.classList.remove("term-hl"), 1800);
+    }
+  };
+
+  const run = (c) => {
+    if (c.href) {
+      window.location.href = c.href;
+    } else if (c.tab) {
+      go(c.tab);
+    } else if (c.panel) {
+      if (tab !== "edges") {
+        pending.current = [c.panel, c.mk];
+        go("edges");
+      } else jump(c.panel, c.mk);
+    }
+  };
+
+  useEffect(() => {
+    if (tab === "edges" && d && pending.current) {
+      const [p, mk] = pending.current;
+      pending.current = null;
+      setTimeout(() => jump(p, mk), 60);
+    }
+  }, [tab, d]);
 
   useEffect(() => {
     const onHash = () => setTab(fromHash());
@@ -52,10 +95,13 @@ export default function Terminal() {
   useEffect(() => {
     let live = true;
     const load = async () => {
+      const t0 = performance.now();
       try {
         const r = await fetch("/api/edges");
         const j = await r.json();
         if (!live) return;
+        setLatency(performance.now() - t0);
+        setLastFetch(Date.now());
         if (r.ok) {
           setD(j);
           setError(null);
@@ -65,14 +111,14 @@ export default function Terminal() {
       }
     };
     load();
-    const t = setInterval(load, tab === "edges" ? 5000 : 60000);
+    const t = setInterval(load, tab === "edges" ? EDGES_EVERY_MS : 60000);
     return () => {
       live = false;
       clearInterval(t);
     };
   }, [tab]);
 
-
+  const cme = d?.markets?.find((m) => m.ticker === "CL")?.session?.open;
   return (
     <div className="app term">
       <header className="topbar">
@@ -81,9 +127,10 @@ export default function Terminal() {
           <span className="brand-tag">edge terminal</span>
         </div>
         <nav className="coins" aria-label="Section">
-          {TABS.map(([k, name, meta]) => (
-            <button key={k} className={`coin-tab ${tab === k ? "active" : ""}`} aria-pressed={tab === k} onClick={() => go(k)}>
-              <span className="coin-name">{name}</span>
+          {TABS.map(([k, name, meta], i) => (
+            <button key={k} className={`coin-tab ${tab === k ? "active" : ""}`} aria-pressed={tab === k} onClick={() => go(k)}
+              title={`${name} (key ${i + 1})`}>
+              <span className="coin-name"><span className="term-fkey">{i + 1}</span>{name}</span>
               <span className="coin-meta">{meta}</span>
             </button>
           ))}
@@ -97,14 +144,18 @@ export default function Terminal() {
           <span className="clock num" title="Your local time">{fmtTime(now)}</span>
         </div>
       </header>
-      <Tape d={d} />
-      {tab === "edges" && <Edges d={d} error={error} now={now} />}
+      <div className="term-bar">
+        <CommandBar onRun={run} />
+        <WorldClocks now={now} cme={cme} />
+      </div>
+      <div className="term-tape-wrap">
+        <Tape d={d} />
+        {tab === "edges" && lastFetch && <i key={lastFetch} className="term-sweep" style={{ animationDuration: `${EDGES_EVERY_MS}ms` }} title="Next refresh" />}
+      </div>
+      {tab === "edges" && <Edges d={d} error={error} now={now} log={log} onPick={(m) => jump(m.kind === "fx" ? "FX" : "CMDY", m.ticker)} />}
       {tab === "news" && <News inline coins={d?.coins} />}
       {tab === "bot" && <Bot inline />}
-      <footer className="term-foot muted">
-        <span>keys <b>1</b> <b>2</b> <b>3</b> switch tabs</span>
-        <span>{d ? `prices ${Math.max(0, Math.round((now - d.now_ms) / 1000))}s old · ` : ""}times in your time zone</span>
-      </footer>
+      <StatusBar d={d} error={error} now={now} latency={latency} lastFetch={lastFetch} every={tab === "edges" ? EDGES_EVERY_MS : 60000} />
     </div>
   );
 }
