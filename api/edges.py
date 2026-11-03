@@ -30,6 +30,8 @@ CANDLES_EVERY_S = 1800
 FUTURES_EVERY_S = 600
 HISTORY_KEEP_MS = 26 * E.HOUR
 SPARK_HOURS = 48
+COMP_HOURS = 168            # the compare chart: a week of hourly closes on one grid
+CORR_MIN = 24               # hourly returns two markets need in common before their link is shown
 LABELS = {"JPY": "USD/JPY", "EUR": "EUR/USD", "GBP": "GBP/USD", "DXY": "Dollar index"}
 YEN_WATCH_1H_PCT = 0.5      # USD/JPY down this much in an hour, or YEN_WATCH_24H_PCT in a day: a fast yen rally
 YEN_WATCH_24H_PCT = 1.0
@@ -49,6 +51,30 @@ async def fetch_dex_ctxs(dex: str) -> dict[str, dict]:
             "day_volume": _num(c.get("dayNtlVlm")), "prev_day": _num(c.get("prevDayPx")),
             "max_lev": _num(a.get("maxLeverage"))}
     return out
+
+
+def correlations(series: dict[str, list[float | None]], min_n: int = CORR_MIN) -> list[list[float | None]]:
+    """Pearson correlation of hourly log returns, pair by pair, over the hours both markets have."""
+    names = list(series)
+    rets = {}
+    for c, v in series.items():
+        rets[c] = [math.log(b / a) if a and b else None for a, b in zip(v, v[1:])]
+    m = [[None] * len(names) for _ in names]
+    for i, a in enumerate(names):
+        for j, b in enumerate(names):
+            if j < i:
+                m[i][j] = m[j][i]
+                continue
+            pairs = [(x, y) for x, y in zip(rets[a], rets[b]) if x is not None and y is not None]
+            if len(pairs) < min_n:
+                continue
+            mx = sum(x for x, _ in pairs) / len(pairs)
+            my = sum(y for _, y in pairs) / len(pairs)
+            sxy = sum((x - mx) * (y - my) for x, y in pairs)
+            sxx = sum((x - mx) ** 2 for x, _ in pairs)
+            syy = sum((y - my) ** 2 for _, y in pairs)
+            m[i][j] = round(sxy / math.sqrt(sxx * syy), 2) if sxx > 0 and syy > 0 else None
+    return m
 
 
 def _pct(a, b):
@@ -206,6 +232,30 @@ class EdgeService:
         self._cache = (now_ms, out)
         return out
 
+    def compare(self, now_ms: int) -> dict:
+        """Every market's hourly closes on one grid for the last week (the live price as the last point), how they
+        move together, and when the real market was open, for the shading."""
+        end = int(now_ms // E.HOUR) * E.HOUR                  # the hour in progress
+        hours = list(range(end - COMP_HOURS * E.HOUR, end + 1, E.HOUR))
+        series = {}
+        for c in self.coins:
+            closes = dict(self.candles.get(c, []))
+            if not closes:
+                continue
+            vals, last = [], None
+            for t in hours:
+                last = closes.get(t, last)
+                vals.append(last)
+            mark = (self.markets.get(c) or {}).get("mark")
+            if mark:
+                vals[-1] = mark
+            if sum(v is not None for v in vals) >= 2:
+                series[c] = [round(v, 6) if v is not None else None for v in vals]
+        t0 = hours[0] + E.HOUR                                # each candle's close is at the end of its hour
+        return {"t0": t0, "step": E.HOUR, "t_last": now_ms, "series": series,
+                "corr": {"names": list(series), "m": correlations(series)},
+                "open": E.open_intervals("CL", t0, now_ms), "market": "WTI, gold and silver"}
+
     def _market(self, c: str, now_ms: int, rec: dict) -> dict:
         x = self.markets.get(c) or {}
         b = E.bare(c)
@@ -306,7 +356,7 @@ class EdgeService:
         longtail = getattr(self.rt, "longtail", None)
         return {"now_ms": now, "enabled": self.enabled, "mode": self.rt.mode, "coins": list(getattr(self.rt, "coins", [])),
                 "markets": [m for m in markets if m["kind"] != "fx"], "fx": fx, "yen_watch": watch,
-                "weekend": rec, "roll": rolls, "events": self._events(now), "board": self._board(rec, rolls),
+                "weekend": rec, "roll": rolls, "compare": self.compare(now), "events": self._events(now), "board": self._board(rec, rolls),
                 "recording": {"on": bool(longtail and longtail.client), "markets": getattr(longtail, "edge_coins", [])},
                 "fees": {"taker_bps": E.TAKER_BPS, "maker_bps": E.MAKER_BPS},
                 "hours": {"from_ms": now - E.DAY, "to_ms": now + 6 * E.DAY, "market": "WTI, gold and silver",

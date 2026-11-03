@@ -991,3 +991,47 @@ kbd {
   .term-log-line, .term-hl, tr.term-hl td { animation: none; }
   .term-tile:hover { transform: none; }
 }
+
+/* ── COMP: every market on one scale, and how they move together ─────────────────────────────────────── */
+.term-comp-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 12px 0; }
+.term-comp-key {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 2px;
+  background: var(--surface-2); color: var(--ink); font-size: 11px; cursor: pointer;
+}
+.term-comp-key i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; box-shadow: 0 0 6px currentColor; }
+.term-comp-key.off { color: var(--muted); }
+.term-comp-key.off i { opacity: 0.25; }
+.term-comp-note { margin-left: auto; font-size: 10.5px; }
+.term-comp-chart { position: relative; padding: 4px 6px 6px; touch-action: pan-y; }
+.term-comp-chart svg { display: block; }
+.term-comp-shut { fill: rgba(31, 166, 122, 0.06); }
+.term-comp-shut-label { fill: var(--up); font-size: 9px; letter-spacing: 0.1em; font-family: var(--mono); opacity: 0.8; }
+.term-comp-grid { stroke: var(--grid); stroke-width: 1; }
+.term-comp-zero { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 3; }
+.term-comp-ax { fill: var(--muted); font-size: 9.5px; font-family: var(--mono); }
+.term-comp-line { fill: none; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.term-comp-end { font-size: 10px; font-family: var(--mono); font-weight: 600; }
+.term-comp-cross { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 2 3; }
+.term-comp-dot { stroke: var(--page); stroke-width: 1.5; }
+.term-comp-tip {
+  position: absolute; top: 10px; pointer-events: none; min-width: 150px; padding: 6px 9px; border: 1px solid var(--up-deep);
+  border-radius: 3px; background: rgba(9, 13, 12, 0.94); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55); font-size: 11px; display: grid; gap: 2px;
+}
+.term-comp-tip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.term-comp-tip b { float: right; margin-left: 12px; }
+.term-corr { display: grid; gap: 2px; font-size: 11px; }
+.term-corr-h { color: var(--muted); font-size: 10px; letter-spacing: 0.04em; text-align: center; align-self: end; padding-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-corr-h.left { text-align: left; align-self: center; padding: 0; }
+.term-corr-c { display: grid; place-items: center; height: 30px; border-radius: 2px; background: var(--surface-2); color: var(--ink); font-weight: 600; }
+.term-corr-c.self { background: var(--page); border: 1px solid var(--grid); }
+
+/* monitor tiles: the day against yesterday's price */
+.term-tile-24 { font-size: 9px; letter-spacing: 0.1em; color: var(--muted); text-transform: uppercase; }
+.term-tile-ch { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-tile-spark { display: block; width: 100%; height: 34px; margin-top: 3px; }
+.term-ds-base { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.5; vector-effect: non-scaling-stroke; }
+.term-ds-up, .term-ds-down { fill: none; stroke-width: 1.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.term-ds-up { stroke: var(--up-bright); }
+.term-ds-down { stroke: var(--down); }
+.term-ds-up-fill { fill: rgba(47, 196, 147, 0.18); }
+.term-ds-down-fill { fill: rgba(229, 83, 95, 0.16); }

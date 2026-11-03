@@ -303,9 +303,10 @@ A second page on the same server (the **Terminal ›** link on the dashboard), f
 - **Edge board:** each edge being worked on, with its status and next step.
 
 Around the panels:
-- **Command line:** press `/` (or Ctrl+K) and type a market (`GOLD`, `WTI`, `JPY`…), a panel code (`CLK`, `MON`, `LOG`, `CMDY`, `WKND`, `ROLL`, `FX`, `CAL`, `EDGE`), a tab (`NEWS`, `BOT`) or `HELP`, then Enter or **GO**. It jumps there and lights it up. Keys `1` `2` `3` switch tabs.
+- **Command line:** press `/` (or Ctrl+K) and type a market (`GOLD`, `WTI`, `JPY`…), a panel code (`CLK`, `MON`, `LOG`, `COMP`, `CMDY`, `WKND`, `ROLL`, `FX`, `CAL`, `EDGE`), a tab (`NEWS`, `BOT`) or `HELP`, then Enter or **GO**. It jumps there and lights it up. Keys `1` `2` `3` switch tabs.
 - **World clocks:** CME/ICE (from the session schedule), New York, London and Tokyo cash-market hours (holidays not shown), your own time, and Hyperliquid 24/7.
-- **Market monitor:** a tile per market tinted by its 24h move; click one to jump to its row.
+- **Market monitor:** a tile per market tinted by its 24h move, with the day drawn against yesterday's price (green above, red below); click one to jump to its row.
+- **Moving together (COMP):** every market on one scale for 2 or 7 days (% from the start), with the hours the real market was shut shaded (Hyperliquid alone), a crosshair that reads every line, and a **Links** view: how each pair's hourly moves lined up over the week (correlation), with the strongest links in words.
 - **What changed:** a running log, since the page opened, of price moves past a threshold, the real markets opening and shutting, roll steps, events 15 minutes out and sources going down.
 - **Status bar:** request time, the next refresh, and how fresh each source is (Hyperliquid, hourly candles, futures prices).
 
