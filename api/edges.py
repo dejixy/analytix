@@ -29,7 +29,7 @@ CTX_EVERY_S = 15
 CANDLES_EVERY_S = 1800
 FUTURES_EVERY_S = 600
 HISTORY_KEEP_MS = 26 * E.HOUR
-LABELS = {"JPY": "USD/JPY", "EUR": "EUR/USD", "GBP": "GBP/USD"}
+LABELS = {"JPY": "USD/JPY", "EUR": "EUR/USD", "GBP": "GBP/USD", "DXY": "Dollar index"}
 YEN_WATCH_1H_PCT = 0.5      # USD/JPY down this much in an hour, or YEN_WATCH_24H_PCT in a day: a fast yen rally
 YEN_WATCH_24H_PCT = 1.0
 

@@ -12,8 +12,8 @@ def ny(y, m, d, h, mi=0):
 
 
 def test_sessions_follow_new_york_time_through_the_clock_change():
-    assert E.session_state("xyz:WTIOIL", ny(2026, 10, 30, 16, 59))["open"]
-    fri = E.session_state("xyz:WTIOIL", ny(2026, 10, 30, 17, 0))
+    assert E.session_state("xyz:CL", ny(2026, 10, 30, 16, 59))["open"]
+    fri = E.session_state("xyz:CL", ny(2026, 10, 30, 17, 0))
     assert not fri["open"] and fri["why"] == "weekend" and fri["next_change_ms"] == ny(2026, 11, 1, 18)
     # 17:00 New York is 21:00 UTC before the clock change and 22:00 UTC after it
     assert fri["since_ms"] == utc(2026, 10, 30, 21)
@@ -71,7 +71,7 @@ def test_fit_and_fade():
 
 
 def test_roll_window_weights_and_contracts():
-    r = E.roll_state("xyz:WTIOIL", ny(2026, 11, 3, 12))
+    r = E.roll_state("xyz:CL", ny(2026, 11, 3, 12))
     assert (r["start"], r["end"], r["phase"], r["front"], r["next"]) == ("2026-11-06", "2026-11-13", "before", "Z26", "F27")
     assert r["symbols"] == ["CLZ26.NYM", "CLF27.NYM"]
     assert E.roll_state("WTIOIL", ny(2026, 11, 7, 12))["front_weight"] == 1.0       # Saturday keeps Friday's
@@ -108,3 +108,8 @@ def test_service_shows_the_live_weekend(monkeypatch):
     assert d["fx"][0]["label"] == "USD/JPY" and d["yen_watch"]                       # down 1.3% in a day
     assert [c["key"] for c in d["board"]][:2] == ["weekend", "roll"]
     assert d["recording"] == {"on": True, "markets": ["xyz:GOLD"]}
+
+
+def test_wti_answers_to_both_names():
+    assert E.bare("xyz:CL") == E.bare("xyz:WTIOIL") == "CL"
+    assert E.roll_state("WTIOIL", ny(2026, 11, 10, 12))["symbols"][0] == "CLZ26.NYM"
