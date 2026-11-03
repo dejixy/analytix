@@ -10,15 +10,23 @@ and the schedule in engine/edges.py.
                 from the long-tail socket that records them, or a socket of its own when recording is off
     /api/edges  sessions, the live weekend (when shut), the weekend record and fits, the roll, currencies,
                 what's coming up and the edge board
-    /api/edges/trades?since=ms   the orders since then, for the live bubble map
+    flow        every market's dollars bought and sold by takers, minute by minute, kept FLOW_KEEP_MS: live from
+                the trades, and on a restart the hours before it read back from the long-tail recordings
+    /api/edges/trades?since=ms   the orders since then (the world map's flow rings)
+    /api/edges/flow?minutes=     the flow river: bought above, sold below, each market's normal pace beside it
 
 Live mode only; in replay it still shows the schedule.
 """
 import asyncio
+import gzip
+import json
 import logging
 import math
+import re
+import statistics
 import time
 from collections import deque
+from pathlib import Path
 
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
@@ -37,14 +45,12 @@ CANDLES_EVERY_S = 1800
 FUTURES_EVERY_S = 600
 HISTORY_KEEP_MS = 26 * E.HOUR
 SPARK_HOURS = 48
-TRADES_KEEP_MS = 3_600_000  # live orders kept for the bubble map
-TRADES_MIN_USD = 1_000      # smaller orders aren't kept
+TRADES_KEEP_MS = 3_600_000  # live orders kept for the world map's flow rings
+TRADES_MIN_USD = 1_000      # smaller orders aren't sent
 TRADES_MAX_SEND = 800
-BOOK_KEEP_MS = 45 * 60_000  # the liquidity map: order-book snapshots kept this long
-BOOK_EVERY_MS = 3_000       # at most one snapshot per market this often (the newest in each slot wins)
-BBO_EVERY_MS = 1_000        # best bid and offer, sampled
-BOOK_LEVELS = 20
-DEPTH_TARGET_BPS = 2.5      # grouped book for the map: price bands near this size (1–8 bps), so 20 levels reach ±0.2–1.6%
+FLOW_KEEP_MS = 12 * E.HOUR + 30 * 60_000   # the flow river: a minute's bought and sold dollars kept this long
+FLOW_BACKFILL_FILES = 14    # on start, the newest long-tail recordings read back (an hour each)
+NORMAL_WEEKS = 8            # a market's normal pace: its median dollar volume at this weekday and hour, these weeks
 OWN_FEED_AFTER_S = 90       # no trades from the long-tail socket by then: open a socket of our own
 COMP_HOURS = 168            # the compare chart: a week of hourly closes on one grid
 ACTIVITY_DAYS = 30          # the heat grid: average hourly move by hour of day over this many days
@@ -68,21 +74,6 @@ async def fetch_dex_ctxs(dex: str) -> dict[str, dict]:
             "day_volume": _num(c.get("dayNtlVlm")), "prev_day": _num(c.get("prevDayPx")),
             "max_lev": _num(a.get("maxLeverage"))}
     return out
-
-
-def depth_sig_figs(price: float, target_bps: float = DEPTH_TARGET_BPS) -> int:
-    """Hyperliquid's nSigFigs (2 to 5) whose price band is nearest `target_bps` of the price (in log terms)."""
-    best, dist = 5, None
-    for n in (2, 3, 4, 5):
-        band = 10 ** (math.floor(math.log10(price)) + 1 - n)
-        d = abs(math.log(band / price * 1e4 / target_bps))
-        if dist is None or d < dist:
-            best, dist = n, d
-    return best
-
-
-def depth_band(price: float, n: int) -> float:
-    return 10 ** (math.floor(math.log10(price)) + 1 - n)
 
 
 def correlations(series: dict[str, list[float | None]], min_n: int = CORR_MIN) -> list[list[float | None]]:
@@ -161,11 +152,11 @@ class EdgeService:
         self.trade_source: str | None = None
         self.last_trade_ms: int | None = None
         self.own_feed: HyperliquidClient | None = None
-        self.books: dict[str, deque] = {}                    # coin → [(t, bids [(px, sz)], asks [(px, sz)])]
-        self.bbos: dict[str, deque] = {}                     # coin → [(t, best bid, best ask)]
-        self.depth_feed: HyperliquidClient | None = None     # grouped books for the map, on a socket of their own
-        self.depth_sig: dict[str, int] = {}                  # coin → nSigFigs it's grouped by
-        self.grouped: set[str] = set()                       # coins whose map book is the grouped one
+        self.volumes: dict[str, dict[int, float]] = {}       # coin → hour → dollars traded (the hourly candles)
+        self.flow: dict[str, dict[int, list[float]]] = {}    # coin → minute → [bought, sold] dollars
+        self.flow_cut = int(time.time() * 1000)             # trades before this come from the recordings
+        self.flow_from_ms: int | None = None                 # the oldest minute the river has
+        self.backfilled: int | None = None                   # trades read back from the recordings (None: not yet)
 
     @property
     def enabled(self) -> bool:
@@ -174,11 +165,12 @@ class EdgeService:
     async def start(self) -> None:
         if not self.enabled:
             return
+        self.flow_cut = int(time.time() * 1000)
         self._tasks = [asyncio.create_task(self._ctx_loop(), name="edges-ctx"),
                        asyncio.create_task(self._candle_loop(), name="edges-candles"),
                        asyncio.create_task(self._futures_loop(), name="edges-futures"),
                        asyncio.create_task(self._trade_feed(), name="edges-trades"),
-                       asyncio.create_task(self._depth_loop(), name="edges-depth")]
+                       asyncio.create_task(self._flow_backfill(), name="edges-backfill")]
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -225,6 +217,7 @@ class EdgeService:
                 try:
                     rows = await fetch_candles(c, "1h", 5000)
                     self.candles[c] = [(int(r["t"]), float(r["c"])) for r in rows if r.get("c")]
+                    self.volumes[c] = {int(r["t"]): float(r["v"]) * float(r["c"]) for r in rows if r.get("c") and r.get("v")}
                     self._cache = None
                     self.heavy_v += 1
                     self._ok("Hourly candles")
@@ -249,18 +242,9 @@ class EdgeService:
             await asyncio.sleep(FUTURES_EVERY_S)
 
     def on_message(self, msg: dict) -> None:
-        """One of our markets' messages: trades (fills from one taker order in one block become one order), book
-        snapshots and best bid/offer (for the liquidity map)."""
-        ch = msg.get("channel")
-        if ch == "l2Book":                                   # the exact book: only until the grouped one arrives
-            data = msg.get("data") or {}
-            if data.get("coin") not in self.grouped:
-                self._take_book(data)
-            return
-        if ch == "bbo":
-            self._take_bbo(msg.get("data") or {})
-            return
-        if ch != "trades":
+        """One of our markets' messages; only trades are used (fills from one taker order in one block become one
+        order), and every fill adds to its minute of the flow river."""
+        if msg.get("channel") != "trades":
             return
         now = int(time.time() * 1000)
         for raw in msg.get("data") or []:
@@ -273,6 +257,8 @@ class EdgeService:
                 continue
             side = 1 if t.side.value == "B" else -1
             usd = t.price * t.size
+            if t.timestamp >= self.flow_cut:                   # earlier ones (a reconnect's catch-up) are the recordings'
+                self._add_flow(self.flow, coin, t.timestamp, side, usd)
             last = self.orders[-1] if self.orders else None
             if last and last["coin"] == coin and last["t"] == t.timestamp and last["side"] == side and last["_taker"] == t.taker:
                 last["px"] = (last["px"] * last["usd"] + t.price * usd) / (last["usd"] + usd)
@@ -285,92 +271,144 @@ class EdgeService:
         while self.orders and now - self.orders[0]["t"] > TRADES_KEEP_MS:
             self.orders.popleft()
 
-    @staticmethod
-    def _keep(dq: deque, t: int, row: tuple, every: int) -> None:
-        """Append, or replace the last row while still inside its slot; drop rows older than BOOK_KEEP_MS."""
-        if dq and t - dq[-1][0] < every:
-            dq[-1] = row
-        else:
-            dq.append(row)
-        while dq and t - dq[0][0] > BOOK_KEEP_MS:
-            dq.popleft()
+    # ── the flow river ────────────────────────────────────────────────────
+    def _add_flow(self, flow: dict, coin: str, t_ms: int, side: int, usd: float) -> None:
+        per = flow.setdefault(coin, {})
+        m = t_ms // 60_000 * 60_000
+        row = per.get(m)
+        if row is None:
+            row = per[m] = [0.0, 0.0]
+            if flow is self.flow:
+                self.flow_from_ms = m if self.flow_from_ms is None else min(self.flow_from_ms, m)
+                old = [k for k in per if m - k > FLOW_KEEP_MS]
+                for k in old:
+                    del per[k]
+        row[0 if side > 0 else 1] += usd
 
-    def _take_book(self, data: dict) -> None:
-        coin = data.get("coin")
-        if coin not in self.coins:
+    def read_recordings(self, folder: str | Path, cut_ms: int, files: int = FLOW_BACKFILL_FILES) -> tuple[dict, int]:
+        """Our markets' trades before `cut_ms` in the newest long-tail recordings, as minute flow (off the event
+        loop: a fresh dict, merged in afterwards). Only trade lines naming a trade.xyz market are parsed."""
+        stamp = re.compile(r"_(\d{8}_\d{2})00(?:_\d+)?\.jsonl(?:\.gz)?$")
+        found = []
+        for f in Path(folder).glob("longtail_*.jsonl*"):
+            m = stamp.search(f.name)
+            if m:
+                found.append((m.group(1), f))
+        lo = cut_ms - FLOW_KEEP_MS
+        flow, n = {}, 0
+        for _, f in sorted(found)[-files:]:
+            opener = gzip.open if f.suffix == ".gz" else open
+            try:
+                with opener(f, "rt", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if '"trades"' not in line or '"coin":"xyz:' not in line:
+                            continue
+                        try:
+                            msg = json.loads(line)["msg"]
+                        except (ValueError, KeyError, TypeError):
+                            continue                           # a line cut off by a crash
+                        if msg.get("channel") != "trades":
+                            continue
+                        for raw in msg.get("data") or []:
+                            if raw.get("coin") not in self.coins:
+                                continue
+                            try:
+                                t = parse_trade(raw)
+                            except (KeyError, TypeError, ValueError):
+                                continue
+                            if lo <= t.timestamp < cut_ms:
+                                self._add_flow(flow, raw["coin"], t.timestamp, 1 if t.side.value == "B" else -1,
+                                               t.price * t.size)
+                                n += 1
+            except (OSError, EOFError) as exc:                 # the hour being written, or a damaged file
+                log.debug("flow backfill: %s skipped (%s)", f.name, exc)
+        return flow, n
+
+    def merge_flow(self, got: dict) -> None:
+        for coin, per in got.items():
+            mine = self.flow.setdefault(coin, {})
+            for m, (b, s_) in per.items():
+                row = mine.setdefault(m, [0.0, 0.0])
+                row[0] += b
+                row[1] += s_
+                self.flow_from_ms = m if self.flow_from_ms is None else min(self.flow_from_ms, m)
+
+    async def _flow_backfill(self) -> None:
+        lt = getattr(self.rt, "longtail", None)
+        folder = getattr(lt, "folder", None)
+        if not folder or not Path(folder).exists():
+            self.backfilled = 0
             return
         try:
-            t = int(data["time"])
-            bids, asks = data["levels"]
-            row = (t, [(float(l["px"]), float(l["sz"])) for l in bids[:BOOK_LEVELS]],
-                   [(float(l["px"]), float(l["sz"])) for l in asks[:BOOK_LEVELS]])
-        except (KeyError, TypeError, ValueError):
-            return
-        self._keep(self.books.setdefault(coin, deque()), t, row, BOOK_EVERY_MS)
+            got, n = await asyncio.to_thread(self.read_recordings, folder, self.flow_cut)
+            self.merge_flow(got)
+            self.backfilled = n
+            log.info("flow river: %d trades read back from the recordings", n)
+        except Exception as exc:                               # the river still fills live
+            self.backfilled = 0
+            log.warning("flow backfill failed: %s: %s", type(exc).__name__, exc)
 
-    def _take_bbo(self, data: dict) -> None:
-        coin = data.get("coin")
-        if coin not in self.coins:
-            return
-        try:
-            bid, ask = data["bbo"]
-            row = (int(data["time"]), float(bid["px"]) if bid else None, float(ask["px"]) if ask else None)
-        except (KeyError, TypeError, ValueError):
-            return
-        self._keep(self.bbos.setdefault(coin, deque()), row[0], row, BBO_EVERY_MS)
+    def normal_rate(self, coin: str, t_ms: int) -> float | None:
+        """A market's normal pace, dollars a minute: the median hourly dollar volume at this weekday and UTC hour over
+        the last NORMAL_WEEKS weeks (oil at 3 pm New York is not oil on a Sunday night). Too few: the median hour."""
+        vols = self.volumes.get(coin)
+        if not vols:
+            return None
+        hour = t_ms // E.HOUR * E.HOUR
+        same = [vols[h] for w in range(1, NORMAL_WEEKS + 1) if (h := hour - w * 7 * 24 * E.HOUR) in vols]
+        if len(same) < 3:
+            same = [v for h, v in vols.items() if 0 < hour - h <= 14 * 24 * E.HOUR]
+        return statistics.median(same) / 60 if same else None
 
-    def book_public(self, coin: str, since_ms: int | None = None, minutes: float = 20) -> dict:
-        """One market's book snapshots (each level as [price, dollars resting]), best bid/offer and taker orders since
-        `since` (or the last `minutes`)."""
-        now = int(time.time() * 1000)
-        lo = max(since_ms or 0, now - int(min(minutes, BOOK_KEEP_MS / 60_000) * 60_000))
-        def usd3(p, z):                                      # dollars resting, to 3 significant figures: enough
-            v = p * z                                        # for a colour, and it compresses far better
-            return int(float(f"{v:.3g}")) if v >= 1 else round(v, 2)
-        cols = [[t, [[p, usd3(p, z)] for p, z in b], [[p, usd3(p, z)] for p, z in a]]
-                for t, b, a in self.books.get(coin, ()) if t > lo]
-        bbo = [list(r) for r in self.bbos.get(coin, ()) if r[0] > lo]
-        trades = [[o["t"], o["side"], round(o["usd"]), round(o["px"], 6)] for o in self.orders
-                  if o["coin"] == coin and o["t"] > lo]
-        mark = (self.markets.get(coin) or {}).get("mark")
-        band = depth_band(mark, self.depth_sig[coin]) if coin in self.grouped and mark and coin in self.depth_sig else None
-        return {"coin": coin, "now_ms": now, "cols": cols, "bbo": bbo, "trades": trades, "keep_ms": BOOK_KEEP_MS,
-                "band": band,
-                "every_ms": BOOK_EVERY_MS, "markets": [c for c in self.coins if self.books.get(c)],
-                "enabled": self.enabled}
-
-    def _on_depth(self, msg: dict) -> None:
-        """The grouped books' socket: the first grouped book for a coin clears its exact-book history, so the map
-        never mixes the two."""
-        if msg.get("channel") != "l2Book":
-            return
-        data = msg.get("data") or {}
-        coin = data.get("coin")
-        if coin in self.coins and coin not in self.grouped:
-            self.grouped.add(coin)
-            self.books.pop(coin, None)
-        self._take_book(data)
-        if coin in self.coins:
-            self._ok("Grouped books")
-
-    async def _depth_loop(self) -> None:
-        """Once every market has a price, subscribe to each one's book grouped into ~2.5 bps bands. Not recorded."""
-        for _ in range(60):
-            if all((self.markets.get(c) or {}).get("mark") for c in self.coins):
-                break
-            await asyncio.sleep(5)
-        subs = []
+    def flow_public(self, minutes: float = 60, now_ms: int | None = None) -> dict:
+        """The river over the last `minutes`: per market, dollars a minute bought and sold by takers in each step
+        (1, 5 or 15 minutes), the last point a trailing step up to now, and the normal pace at each step's hour."""
+        now = now_ms or int(time.time() * 1000)
+        minutes = max(15, min(minutes, FLOW_KEEP_MS / 60_000 - 30))
+        step = 60_000 if minutes <= 90 else 300_000 if minutes <= 360 else 900_000
+        end = now // step * step
+        n = int(minutes * 60_000 // step)
+        t0 = end - n * step
+        ts = [t0 + i * step + step // 2 for i in range(n)] + [now]
+        tail = (now - step) // 60_000 * 60_000                    # the trailing point's first minute
+        per_min = step / 60_000
+        out = []
         for c in self.coins:
-            mark = (self.markets.get(c) or {}).get("mark")
-            if not mark:
-                continue
-            self.depth_sig[c] = depth_sig_figs(mark)
-            subs.append({"method": "subscribe", "subscription": {"type": "l2Book", "coin": c, "nSigFigs": self.depth_sig[c]}})
-        if not subs:
-            return
-        self.depth_feed = HyperliquidClient([], self._on_depth, FeedStatus(mode="live"))
-        self.depth_feed.set_subscriptions(subs)
-        await self.depth_feed.run()
+            b, s_ = [0.0] * (n + 1), [0.0] * (n + 1)
+            pace_b = pace_s = 0.0
+            for m, (bb, ss) in self.flow.get(c, {}).items():
+                i = (m - t0) // step
+                if 0 <= i < n:
+                    b[i] += bb
+                    s_[i] += ss
+                if m >= tail:
+                    b[n] += bb
+                    s_[n] += ss
+                if now - m < 15 * 60_000:
+                    pace_b += bb
+                    pace_s += ss
+            tail_min = max((now - tail) / 60_000, 0.5)
+            b = [round(x / per_min) for x in b[:n]] + [round(b[n] / tail_min)]
+            s_ = [round(x / per_min) for x in s_[:n]] + [round(s_[n] / tail_min)]
+            norm = [self.normal_rate(c, t) for t in ts]
+            now_norm = norm[-1]
+            out.append({"coin": c, "b": b, "s": s_, "norm": [round(x) if x else None for x in norm],
+                        "bought": round(sum(x * per_min for x in b[:n])), "sold": round(sum(x * per_min for x in s_[:n])),
+                        "pace": round((pace_b + pace_s) / 15 / now_norm, 2) if now_norm else None,
+                        "pace_buy": round(pace_b / (pace_b + pace_s), 3) if pace_b + pace_s else None})
+        return {"now_ms": now, "step_ms": step, "from_ms": t0, "t": ts, "markets": out, "data_from_ms": self.flow_from_ms,
+                "events": self._past_events(t0, now), "backfilled": self.backfilled, "source": self.trade_source,
+                "last_ms": self.last_trade_ms, "enabled": self.enabled}
+
+    def _past_events(self, lo: int, hi: int) -> list[dict]:
+        """The scheduled moments inside the river's window, to see what the flow did around them."""
+        out = [e for e in E.recurring(lo, days=1) if not e["all_day"] and lo <= e["t_ms"] <= hi]
+        news = getattr(self.rt, "news", None)
+        if news is not None:
+            for it in news.store.upcoming(lo, days=(hi - lo) / 86_400_000):
+                if it["t_ms"] <= hi and "crude oil inventories" not in it["title"].lower():
+                    out.append({"t_ms": it["t_ms"], "title": it["title"], "group": "macro"})
+        return [{"t_ms": e["t_ms"], "title": e["title"], "group": e["group"]} for e in sorted(out, key=lambda e: e["t_ms"])]
 
     async def _trade_feed(self) -> None:
         """Trades come from the long-tail socket when it carries our markets; otherwise from a socket of our own."""
@@ -384,8 +422,8 @@ class EdgeService:
             waited += 5
         self.trade_source = "own socket"
         self.own_feed = HyperliquidClient([], self.on_message, FeedStatus(mode="live"))
-        self.own_feed.set_subscriptions([x for c in self.coins for x in subscriptions(c)       # trades and best
-                                         if x["subscription"]["type"] in ("trades", "bbo")])     # bid/offer
+        self.own_feed.set_subscriptions([x for c in self.coins for x in subscriptions(c)
+                                         if x["subscription"]["type"] == "trades"])
         await self.own_feed.run()
 
     def trades_public(self, since_ms: int | None = None, min_usd: float = TRADES_MIN_USD) -> dict:

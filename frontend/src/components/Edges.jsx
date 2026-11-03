@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { fmtPct, fmtUsd } from "../format.js";
 import { ChangeLog } from "./TermChrome.jsx";
 import { useOrders } from "./Compare.jsx";
-import Depth from "./Depth.jsx";
+import Flow from "./River.jsx";
 import World from "./World.jsx";
 import Charts from "./Charts.jsx";
 import { Flash, Head, Pill, SourcePill, fresh } from "./TermPanel.jsx";
@@ -554,7 +554,7 @@ export default function Edges({ d, error, now, log = [], onPick = () => {} }) {
       <div className="tw-8"><World d={d} now={now} orders={orders} info={info} /></div>
       <div className="tw-4"><Log log={log} coins={d.coins} /></div>
       <Charts d={d} onPick={onPick} />
-      <Depth d={d} now={now} orders={orders} info={info} />
+      <Flow d={d} now={now} />
       <Markets d={d} now={now} />
       <div className="tw-7"><Record d={d} /></div>
       <div className="tw-5 term-col">

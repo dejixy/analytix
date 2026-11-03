@@ -3,7 +3,7 @@ import math
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from api.edges import EdgeService, correlations, depth_band, depth_sig_figs
+from api.edges import EdgeService, correlations
 from engine import edges as E
 
 
@@ -197,38 +197,65 @@ def test_activity_by_hour_and_the_light_reply():
     assert light["light"] and light["weekend"] is None and light["compare"] is None and light["markets"]
 
 
-def test_book_snapshots_for_the_liquidity_map():
-    import time as _t
-    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:GOLD"])
-    now = int(_t.time() * 1000)
-    lv = lambda px, sz: {"px": str(px), "sz": str(sz), "n": 1}
-    book = lambda t, bid: {"channel": "l2Book", "data": {"coin": "xyz:GOLD", "time": t,
-                                                           "levels": [[lv(bid, 2), lv(bid - 1, 5)], [lv(bid + 1, 3)]]}}
-    svc.on_message(book(now - 10_000, 4000))
-    svc.on_message(book(now - 9_000, 4001))               # same 3-second slot: replaces the one before
-    svc.on_message(book(now - 5_000, 4002))
-    svc.on_message({"channel": "l2Book", "data": {"coin": "xyz:OTHER", "time": now, "levels": [[], []]}})
-    svc.on_message({"channel": "bbo", "data": {"coin": "xyz:GOLD", "time": now - 4_000, "bbo": [lv(4002, 2), lv(4003, 3)]}})
-    b = svc.book_public("xyz:GOLD")
-    assert [c[1][0][0] for c in b["cols"]] == [4001.0, 4002.0] and b["cols"][0][2] == [[4002.0, 12000]]   # $ resting
-    assert b["bbo"] == [[now - 4_000, 4002.0, 4003.0]] and b["markets"] == ["xyz:GOLD"]
-    assert svc.book_public("xyz:GOLD", since_ms=now - 6_000)["cols"][0][0] == now - 5_000
+def _trade(coin, t, side, px, sz, tid=1):
+    return {"coin": coin, "px": str(px), "sz": str(sz), "side": side, "time": t, "tid": tid, "hash": "0x", "users": ["0xa", "0xb"]}
 
 
-def test_grouped_books_choose_bands_near_4_bps_and_replace_the_exact_book():
-    assert [depth_sig_figs(p) for p in (91.13, 4157.0, 61.03, 157.19, 1.2135, 100.6)] == [4, 4, 4, 4, 5, 5]
-    assert depth_sig_figs(91.13, target_bps=4.0) == 3
-    assert depth_band(91.13, 3) == 0.1 and depth_band(91.13, 4) == 0.01 and depth_band(4157.0, 4) == 1.0
-    import time as _t
-    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:GOLD"])
-    now = int(_t.time() * 1000)
-    lv = lambda px, sz: {"px": str(px), "sz": str(sz), "n": 1}
-    exact = {"channel": "l2Book", "data": {"coin": "xyz:GOLD", "time": now - 9000, "levels": [[lv(4000.1, 1)], [lv(4000.2, 1)]]}}
-    grouped = {"channel": "l2Book", "data": {"coin": "xyz:GOLD", "time": now - 4000, "levels": [[lv(4000, 9)], [lv(4001, 9)]]}}
-    svc.on_message(exact)
-    svc._on_depth(grouped)
-    svc.on_message(dict(exact, data=dict(exact["data"], time=now - 1000)))   # the exact book is ignored from now on
-    svc.markets["xyz:GOLD"] = {"mark": 4000.0}
-    svc.depth_sig["xyz:GOLD"] = 4
-    b = svc.book_public("xyz:GOLD")
-    assert [c[1][0][0] for c in b["cols"]] == [4000.0] and b["band"] == 1.0
+def test_flow_river_steps_rates_and_the_trailing_point():
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:GOLD", "xyz:CL"])
+    now = 1_800_000_000_000 + 42 * 60_000 + 30_000              # 42.5 minutes into an hour
+    svc.flow_cut = now - 3 * E.HOUR
+    m = lambda k: now // 60_000 * 60_000 - k * 60_000         # k whole minutes before the current one
+    svc.on_message({"channel": "trades", "data": [
+        _trade("xyz:GOLD", m(30) + 5, "B", 4000, 2),           # $8,000 bought, 30 minutes back
+        _trade("xyz:GOLD", m(30) + 9, "A", 4000, 1, 2),        # $4,000 sold, same minute
+        _trade("xyz:GOLD", m(0) + 1, "B", 4000, 0.5, 3),       # $2,000 bought this minute
+        _trade("xyz:OTHER", m(1), "B", 1, 1, 4),
+        _trade("xyz:GOLD", svc.flow_cut - 1, "B", 4000, 9, 5),  # before the cut: the recordings' to count
+    ]})
+    r = svc.flow_public(60, now_ms=now)
+    assert r["step_ms"] == 60_000 and len(r["t"]) == 61 and r["t"][-1] == now
+    g = next(x for x in r["markets"] if x["coin"] == "xyz:GOLD")
+    i = r["t"].index(m(30) + 30_000)                          # the step's midpoint
+    assert g["b"][i] == 8000 and g["s"][i] == 4000             # dollars a minute, 1-minute steps
+    assert g["b"][-1] == round(2000 / 1.5)                     # trailing minute: the current one and 30 s before
+    assert g["bought"] == 8000 and g["sold"] == 4000           # the current minute is only in the trailing point
+    assert svc.flow_public(240, now_ms=now)["step_ms"] == 300_000 and svc.flow_public(720, now_ms=now)["step_ms"] == 900_000
+    assert svc.flow_from_ms == m(30)
+
+
+def test_normal_pace_is_the_same_weekday_and_hour():
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:CL"])
+    hour = 1_800_000_000_000 // E.HOUR * E.HOUR
+    week = 7 * 24 * E.HOUR
+    svc.volumes["xyz:CL"] = {hour - w * week: 60_000 * (w + 1) for w in range(1, 6)}       # 120k…360k at this hour
+    svc.volumes["xyz:CL"].update({hour - w * week + E.HOUR: 6e9 for w in range(1, 6)})     # the next hour: huge
+    assert svc.normal_rate("xyz:CL", hour + 10 * 60_000) == 240_000 / 60                   # median 240k an hour
+    assert svc.normal_rate("xyz:GOLD", hour) is None
+
+
+def test_flow_backfill_reads_recorded_trades_before_the_cut(tmp_path):
+    import gzip
+    import json
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:CL"])
+    cut = 1_800_000_000_000
+    def line(t, coin="xyz:CL", side="B"):
+        return json.dumps({"recv_ms": t, "msg": {"channel": "trades", "data": [_trade(coin, t, side, 90, 100)]}},
+                          separators=(",", ":"))
+    book = json.dumps({"recv_ms": cut - 5, "msg": {"channel": "l2Book", "data": {"coin": "xyz:CL", "levels": [[], []]}}},
+                      separators=(",", ":"))
+    with gzip.open(tmp_path / "longtail_20270115_0800.jsonl.gz", "wt") as fh:
+        fh.write("\n".join([line(cut - 120_000), line(cut - 60_000, side="A"), line(cut - 50_000, "xyz:GOLD"), book]) + "\n")
+    (tmp_path / "longtail_20270115_0900.jsonl").write_text(line(cut - 10_000) + "\n" + line(cut + 5_000) + "\n" + '{"recv_ms": 1, "ms')
+    got, n = svc.read_recordings(tmp_path, cut)
+    assert n == 3 and got["xyz:CL"][(cut - 120_000) // 60_000 * 60_000] == [9000.0, 0.0]
+    svc.merge_flow(got)
+    assert sum(b for b, _ in svc.flow["xyz:CL"].values()) == 18_000 and sum(s for _, s in svc.flow["xyz:CL"].values()) == 9_000
+
+
+def test_flow_river_marks_the_events_inside_its_window():
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:CL"])
+    eia = ny(2026, 11, 4, 10, 30)                              # a Wednesday
+    ev = svc.flow_public(60, now_ms=eia + 20 * 60_000)["events"]
+    assert [e["title"] for e in ev] == ["EIA crude stocks"]
+    assert svc.flow_public(60, now_ms=eia - 60_000)["events"] == []

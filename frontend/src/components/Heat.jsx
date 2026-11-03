@@ -9,7 +9,7 @@ const SHORT = { CL: "WTI", BRENTOIL: "BRENT", JPY: "USD/JPY", EUR: "EUR/USD", DX
 const ORDER = ["CL", "BRENTOIL", "GOLD", "SILVER", "JPY", "EUR", "DXY", "GBP"];
 const tk = (n) => n.split(":").pop();
 
-/** The grid alone (the BOOK panel's Hours tab, or inside its own panel). */
+/** The grid alone (the FLOW panel's Hours tab, or inside its own panel). */
 export function HeatBody({ d, now }) {
   const a = d.activity;
   if (!a || !a.names.length) return <p className="plan-note muted term-pad">Needs a few days of hourly history.</p>;

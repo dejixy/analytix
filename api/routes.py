@@ -228,10 +228,10 @@ async def edge_trades(request: Request, since: int | None = None, min_usd: float
     return _rt(request).edges.trades_public(since, max(min_usd, 0))
 
 
-@router.get("/edges/book")
-async def edge_book(request: Request, coin: str, since: int | None = None, minutes: float = 20):
-    """One edge market's order-book snapshots, best bid/offer and taker orders, for the liquidity map."""
-    return _rt(request).edges.book_public(coin, since, minutes)
+@router.get("/edges/flow")
+async def edge_flow(request: Request, minutes: float = 60):
+    """The flow river: every edge market's dollars bought and sold by takers, step by step, with its normal pace."""
+    return _rt(request).edges.flow_public(minutes)
 
 
 @router.get("/regime")
