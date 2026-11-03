@@ -12,6 +12,8 @@ a week or two of their data first.
                   on its own socket, to hourly files in LONGTAIL_DIR (prefix "longtail"), separate from the main
                   recordings so their replays stay in time order
     store         python -m scripts.buildStore <LONGTAIL_DIR> adds them to the fast store like any other coin
+    edge markets  EDGE_COINS (trade.xyz's oil, gold, silver, yen and euro) always ride along on the same socket,
+                  checked against their builder's market list first, for the event-edge studies (api/edges.py)
 
 Live mode, and only while the main feed is recorded.
 """
@@ -19,10 +21,11 @@ import asyncio
 import logging
 import time
 
-from config import (LONGTAIL, LONGTAIL_COINS, LONGTAIL_DIR, LONGTAIL_MIN_USD, LONGTAIL_N, LONGTAIL_SKIP,
+from config import (EDGE_COINS, LONGTAIL, LONGTAIL_COINS, LONGTAIL_DIR, LONGTAIL_MIN_USD, LONGTAIL_N, LONGTAIL_SKIP,
                     RECORD_MIN_FREE_GB)
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
+from ingestion.outcomes import fetch_dex_marks
 from ingestion.parsers import subscriptions
 from ingestion.recorder import HourlyRecorder
 
@@ -47,12 +50,35 @@ def pick(volumes: dict[str, float], exclude: set[str], current: list[str], n: in
     return keep
 
 
+async def resolve_dex_coins(wanted: list[str], fetch=None) -> tuple[list[str], list[str]]:
+    """(the builder markets that exist, the ones that don't), in the order asked. A builder whose list can't be read
+    keeps its names: better to try the subscription than to drop a market over a hiccup."""
+    fetch = fetch or fetch_dex_marks
+    listed: dict[str, set[str] | None] = {}
+    for dex in dict.fromkeys(c.split(":", 1)[0] for c in wanted if ":" in c):
+        try:
+            listed[dex] = set(await fetch(dex))
+        except Exception as exc:
+            log.warning("couldn't read %s's markets (%s): recording its names anyway", dex, exc)
+            listed[dex] = None
+    keep, missing = [], []
+    for c in wanted:
+        names = listed.get(c.split(":", 1)[0]) if ":" in c else None
+        (missing if names is not None and c not in names else keep).append(c)
+    for dex, names in listed.items():
+        gone = [c for c in missing if c.startswith(f"{dex}:")]
+        if gone:
+            log.warning("%s doesn't list %s; it lists: %s", dex, ", ".join(gone), ", ".join(sorted(names)))
+    return keep, missing
+
+
 class LongTailRecorder:
     def __init__(self, runtime, folder=LONGTAIL_DIR, enabled: bool = LONGTAIL):
         self.rt = runtime
         self.folder = folder
         self.on = enabled
         self.coins: list[str] = []
+        self.edge_coins: list[str] = []
         self.status = FeedStatus(mode="live")
         self.client: HyperliquidClient | None = None
         self.recorder: HourlyRecorder | None = None
@@ -86,14 +112,17 @@ class LongTailRecorder:
     async def _run(self) -> None:
         while not LONGTAIL_COINS and not self._volumes():          # the scanner's first market poll
             await asyncio.sleep(WAIT_S)
+        if EDGE_COINS:
+            self.edge_coins, _ = await resolve_dex_coins(EDGE_COINS)
         self.coins = self.repick()
         self.picked_at = time.time()
-        if not self.coins:
+        if not self.coins and not self.edge_coins:
             log.warning("long-tail recorder: no coins match, nothing recorded")
             return
         self.recorder = HourlyRecorder(self.folder, "longtail", min_free_gb=RECORD_MIN_FREE_GB)
-        self.client = HyperliquidClient(self.coins, lambda msg: None, self.status, recorder=self.recorder)
-        log.info("long-tail recorder: %d coins (%s) to %s", len(self.coins), ", ".join(self.coins), self.folder)
+        self.client = HyperliquidClient(self.all_coins, lambda msg: None, self.status, recorder=self.recorder)
+        log.info("long-tail recorder: %d coins (%s) and %d edge markets (%s) to %s", len(self.coins),
+                 ", ".join(self.coins), len(self.edge_coins), ", ".join(self.edge_coins) or "none", self.folder)
         feed = asyncio.create_task(self.client.run(), name="longtail-feed")
         try:
             while True:
@@ -102,15 +131,20 @@ class LongTailRecorder:
                 if new and new != self.coins:
                     gone, added = set(self.coins) - set(new), [c for c in new if c not in self.coins]
                     self.coins = new
-                    self.client.set_subscriptions([s for c in new for s in subscriptions(c)])
+                    self.client.set_subscriptions([s for c in self.all_coins for s in subscriptions(c)])
                     log.info("long-tail recorder: +%s −%s", ",".join(added) or "none", ",".join(sorted(gone)) or "none")
                 self.picked_at = time.time()
         finally:
             feed.cancel()
             await asyncio.gather(feed, return_exceptions=True)
 
+    @property
+    def all_coins(self) -> list[str]:
+        return self.coins + [c for c in self.edge_coins if c not in self.coins]
+
     def summary(self) -> str:
         if not self.client:
             return ""
-        return (f"long tail: {len(self.coins)} coins, feed {'up' if self.status.connected else 'down'} "
+        return (f"long tail: {len(self.coins)} coins + {len(self.edge_coins)} edge markets, "
+                f"feed {'up' if self.status.connected else 'down'} "
                 f"({self.status.messages:,} messages)")

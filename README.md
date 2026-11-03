@@ -416,6 +416,7 @@ The recorder prints how many MB the current hour has taken, so you can see your 
 | `ANALYTIX_NEWS` | `1` | read the US economic calendar (Forex Factory) and crypto headlines (CoinDesk, Cointelegraph, The Block, Decrypt) into `data/news.jsonl` (`ANALYTIX_NEWS_FILE`) for the News panel; `0` to turn off |
 | `ANALYTIX_BAR_KEEP_DAYS` | `8` | days of live minute bars kept on disk; the "Next 30 min" gauge fits on them (it needs about three days before it shows anything) |
 | `ANALYTIX_LONGTAIL` | `1` | also record ~20 mid-volume coins (trades, book, best bid/offer, context) to `data/recordings_longtail`, for studies; picked daily by 24h volume (`ANALYTIX_LONGTAIL_N`, `_SKIP`, `_MIN_USD`, or `_COINS` by hand); `0` to turn off |
+| `ANALYTIX_EDGE_COINS` | `xyz:WTIOIL,xyz:BRENTOIL,xyz:GOLD,xyz:SILVER,xyz:JPY,xyz:EUR` | builder markets recorded on the same socket for the event-edge studies (trade.xyz oil, gold, silver, yen, euro); checked against the builder's market list at start, missing names logged and skipped |
 | `ANALYTIX_BOT_SHOWN` | `degen` | baskets shown in the bot panel, in order; the others keep running and recording silently (`twap,informed,degen` shows all) |
 | `ANALYTIX_EXTERNAL` | `binance,bybit,lighter` | other exchanges' feeds (live mode); Binance and Bybit feed "where it started", Lighter is recorded only, for studies; empty to turn off |
 | `ANALYTIX_BINANCE_WS` / `ANALYTIX_BYBIT_WS` / `ANALYTIX_LIGHTER_WS` | their public feeds | override the exchange WebSocket addresses |

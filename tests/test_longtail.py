@@ -29,6 +29,7 @@ def test_it_starts_recording_once_the_scanner_has_volumes(tmp_path, monkeypatch)
 
     monkeypatch.setattr(longtail, "HyperliquidClient", FakeClient)
     monkeypatch.setattr(longtail, "WAIT_S", 0.01)
+    monkeypatch.setattr(longtail, "EDGE_COINS", [])
     scanner = SimpleNamespace(contexts={})
     rt = SimpleNamespace(mode="live", record=True, coins=["BTC"], scanner=scanner)
     rec = LongTailRecorder(rt, folder=tmp_path, enabled=True)
@@ -53,3 +54,49 @@ def test_off_unless_the_main_feed_is_recorded(tmp_path):
     assert not LongTailRecorder(rt, folder=tmp_path, enabled=True).enabled
     rt.record = True
     assert LongTailRecorder(rt, folder=tmp_path, enabled=True).enabled
+
+
+def test_edge_markets_are_checked_against_the_builder_list():
+    async def fetch(dex):
+        assert dex == "xyz"
+        return {"xyz:GOLD": 4000.0, "xyz:SILVER": 50.0}
+
+    keep, missing = asyncio.run(longtail.resolve_dex_coins(["xyz:GOLD", "xyz:WTIOIL", "xyz:SILVER", "ETH"], fetch))
+    assert keep == ["xyz:GOLD", "xyz:SILVER", "ETH"] and missing == ["xyz:WTIOIL"]
+
+    async def down(dex):
+        raise OSError("no route")
+
+    keep, missing = asyncio.run(longtail.resolve_dex_coins(["xyz:GOLD"], down))
+    assert keep == ["xyz:GOLD"] and missing == []                        # can't check: try anyway
+
+
+def test_edge_markets_ride_along_with_the_long_tail(tmp_path, monkeypatch):
+    started = {}
+
+    class FakeClient:
+        def __init__(self, coins, on_message, status, recorder=None):
+            started.update(coins=list(coins))
+
+        async def run(self):
+            await asyncio.sleep(3600)
+
+    async def fetch(dex):
+        return {"xyz:GOLD": 4000.0}
+
+    monkeypatch.setattr(longtail, "HyperliquidClient", FakeClient)
+    monkeypatch.setattr(longtail, "fetch_dex_marks", fetch)
+    monkeypatch.setattr(longtail, "EDGE_COINS", ["xyz:GOLD", "xyz:NOPE"])
+    monkeypatch.setattr(longtail, "LONGTAIL_SKIP", 0)
+    rt = SimpleNamespace(mode="live", record=True, coins=["BTC"],
+                         scanner=SimpleNamespace(contexts={"AAA": {"day_volume": 3e7}}))
+    rec = LongTailRecorder(rt, folder=tmp_path, enabled=True)
+
+    async def go():
+        await rec.start()
+        await asyncio.sleep(0.1)
+        await rec.stop()
+
+    asyncio.run(go())
+    assert started["coins"] == ["AAA", "xyz:GOLD"]
+    assert "1 edge markets" in rec.summary()
