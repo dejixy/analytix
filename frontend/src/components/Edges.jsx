@@ -5,7 +5,11 @@ import { fmtPct, fmtUsd } from "../format.js";
    record, the oil roll, what's coming up and the board of edges being worked on. Times are in your time zone. */
 
 const px = (p) => (p == null ? "-" : p.toLocaleString(undefined, { maximumFractionDigits: p >= 1000 ? 1 : p >= 10 ? 2 : 4, minimumFractionDigits: p >= 1000 ? 1 : p >= 10 ? 2 : 4 }));
-const bps = (x, d = 0) => (x == null ? "-" : `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(d)} bps`);
+const bps = (x, d = 0) => {
+  if (x == null) return "-";
+  const r = Number(x.toFixed(d));                         // no "−0 bps"
+  return `${r > 0 ? "+" : r < 0 ? "−" : ""}${Math.abs(r).toFixed(d)} bps`;
+};
 const tone = (x) => (x == null || Math.abs(x) < 1e-9 ? "" : x > 0 ? "up" : "down");
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const dayTime = (ms) => new Date(ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
@@ -354,7 +358,10 @@ function Record({ d }) {
             </div>
             <h3 className="term-h3">Latest weekends</h3>
             <table className="plan-table">
-              <thead><tr><th>Friday</th><th>Market</th><th>Weekend</th><th>Reopen</th><th>Gave back</th></tr></thead>
+              <thead><tr><th>Friday</th><th>Market</th>
+                <th title="Hyperliquid's price just before the reopen, against Friday's close">Weekend</th>
+                <th title="The price an hour after the reopen, against Friday's close">Reopen</th>
+                <th title="What happened after the reopen: the reopen move minus the weekend move. The same sign as the weekend means the real market went further; the opposite sign means it gave some back">After the reopen</th></tr></thead>
               <tbody>
                 {latest.map((r) => (
                   <tr key={`${r.market}-${r.close_ms}`}>
@@ -362,7 +369,10 @@ function Record({ d }) {
                     <td>{r.market}</td>
                     <td className={tone(r.w_bps)}>{bps(r.w_bps)}</td>
                     <td className={tone(r.r_bps)}>{bps(r.r_bps)}</td>
-                    <td className={tone(r.snap_bps)}>{bps(r.snap_bps)}</td>
+                    <td className={tone(r.snap_bps)}>
+                      {bps(r.snap_bps)}{" "}
+                      <span className="muted">{Math.abs(r.snap_bps) < 5 ? "held" : (r.snap_bps > 0) === (r.w_bps > 0) ? "went further" : "gave back"}</span>
+                    </td>
                   </tr>
                 ))}
               </tbody>
