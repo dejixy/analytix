@@ -132,6 +132,12 @@ LONGTAIL_N = int(os.getenv("ANALYTIX_LONGTAIL_N", "20"))                 # how m
 LONGTAIL_SKIP = int(os.getenv("ANALYTIX_LONGTAIL_SKIP", "5"))            # skip the busiest coins after the main ones
 LONGTAIL_MIN_USD = float(os.getenv("ANALYTIX_LONGTAIL_MIN_USD", "2e6"))  # 24h volume a coin needs
 LONGTAIL_COINS = [c.strip() for c in os.getenv("ANALYTIX_LONGTAIL_COINS", "").split(",") if c.strip()]  # or pick by hand
+# Builder-deployed (HIP-3) markets for the event-edge studies, recorded on the long-tail socket whenever it runs:
+# trade.xyz's oil, gold and silver (24/7 on Hyperliquid while CME/ICE are shut) and its yen and euro. Names are
+# checked against each builder's market list at start; missing ones are logged and skipped
+EDGE_COINS = [c.strip() for c in os.getenv("ANALYTIX_EDGE_COINS",
+                                           "xyz:WTIOIL,xyz:BRENTOIL,xyz:GOLD,xyz:SILVER,xyz:JPY,xyz:EUR").split(",")
+              if c.strip()]
 STORE_DIR = Path(os.path.expanduser(os.getenv("ANALYTIX_STORE_DIR", str(ROOT / "data" / "store"))))  # fast columns
                                                      # built from the recordings for studies (scripts/buildStore.py)
 FRONTEND_DIST = ROOT / "frontend" / "dist"
