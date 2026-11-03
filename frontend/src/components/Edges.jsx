@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { fmtPct, fmtUsd } from "../format.js";
+import { ChangeLog } from "./TermChrome.jsx";
 
 /* The edge terminal's main view (/api/edges): trade.xyz's commodities and currencies on Hyperliquid, the weekend
    record, the oil roll, what's coming up and the board of edges being worked on. Times are in your time zone. */
@@ -138,7 +139,7 @@ function Clock({ d, now }) {
   const timed = d.events.filter((e) => !e.all_day && e.t_ms > now);
   const [next, ...after] = timed;
   return (
-    <section className={`panel term-wide term-hero ${s.open ? "is-open" : brk ? "is-break" : "is-shut"}`}>
+    <section id="p-CLK" className={`panel term-wide term-hero ${s.open ? "is-open" : brk ? "is-break" : "is-shut"}`}>
       <div className="term-hero-state">
         <div className="stat-label">Real markets · {d.hours.market}</div>
         <div className="term-big">{s.open ? "Open" : brk ? "Daily break" : "Shut"}</div>
@@ -194,9 +195,9 @@ function RealMarket({ m, now }) {
 
 function Markets({ d }) {
   return (
-    <section className="panel term-wide">
+    <section id="p-CMDY" className="panel term-wide">
       <div className="panel-head">
-        <h2 className="panel-title">Commodities on Hyperliquid</h2>
+        <h2 className="panel-title"><span className="term-code">CMDY</span>Commodities on Hyperliquid</h2>
         <span className="panel-sub">trade.xyz · fees {d.fees.taker_bps} bps taker, {d.fees.maker_bps} bps maker</span>
       </div>
       <div className="term-scroll">
@@ -210,7 +211,7 @@ function Markets({ d }) {
           </thead>
           <tbody>
             {d.markets.map((m) => [
-              <tr key={m.name}>
+              <tr key={m.name} data-mk={m.ticker}>
                 <td><b>{m.label}</b> <span className="muted">{short(m)}</span></td>
                 <td><RealMarket m={m} now={d.now_ms} /></td>
                 <td className="num"><Flash value={m.price}>{px(m.price)}</Flash></td>
@@ -321,9 +322,9 @@ function Record({ d }) {
   const latest = [...all].sort((a, b) => b.close_ms - a.close_ms).slice(0, 8);
   const f = p.fade;
   return (
-    <section className="panel">
+    <section id="p-WKND" className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Weekend record</h2>
+        <h2 className="panel-title"><span className="term-code">WKND</span>Weekend record</h2>
         <span className="panel-sub">hourly closes · holiday weekends left out</span>
       </div>
       <div className="term-pad">
@@ -391,9 +392,9 @@ function Record({ d }) {
 function Roll({ d }) {
   const futures = d.status?.["Futures prices"];
   return (
-    <section className="panel">
+    <section id="p-ROLL" className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Oil roll</h2>
+        <h2 className="panel-title"><span className="term-code">ROLL</span>Oil roll</h2>
         <span className="panel-sub">5th to 10th business day</span>
       </div>
       <div className="term-pad term-stack">
@@ -437,9 +438,9 @@ function Roll({ d }) {
 
 function Currencies({ d }) {
   return (
-    <section className="panel">
+    <section id="p-FX" className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Currencies</h2>
+        <h2 className="panel-title"><span className="term-code">FX</span>Currencies</h2>
         <span className="panel-sub">trade.xyz on Hyperliquid</span>
       </div>
       <div className="term-pad">
@@ -455,7 +456,7 @@ function Currencies({ d }) {
                 const c = m.change_24h_pct;
                 const dollarUp = m.ticker === "DXY" ? c > 0 : c < 0;     // EUR/USD and GBP/USD rise as the dollar falls
                 return (
-                  <tr key={m.name}>
+                  <tr key={m.name} data-mk={m.ticker}>
                     <td><b>{m.label}</b></td>
                     <td className="num"><Flash value={m.price}>{px(m.price)}</Flash></td>
                     <td className="num">{fmtPct(m.change_1h_pct)}</td>
@@ -485,9 +486,9 @@ function Coming({ d }) {
     byDay.at(-1)[1].push(e);
   }
   return (
-    <section className="panel">
+    <section id="p-CAL" className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Coming up</h2>
+        <h2 className="panel-title"><span className="term-code">CAL</span>Coming up</h2>
         <span className="panel-sub">7 days · your time</span>
       </div>
       <div className="term-pad term-events">
@@ -514,9 +515,9 @@ function Coming({ d }) {
 function Board({ d }) {
   const rec = d.recording;
   return (
-    <section className="panel term-wide">
+    <section id="p-EDGE" className="panel term-wide">
       <div className="panel-head">
-        <h2 className="panel-title">Edge board</h2>
+        <h2 className="panel-title"><span className="term-code">EDGE</span>Edge board</h2>
         <span className="panel-sub">
           {rec.on && rec.markets.length ? `recording ${rec.markets.map((m) => m.split(":").pop()).join(", ")}` : "edge markets not recording yet"}
         </span>
@@ -539,6 +540,52 @@ function Board({ d }) {
   );
 }
 
+/* One tile per market, tinted by the day's move (stronger tint, bigger move); click to jump to its row. */
+function Monitor({ d, onPick }) {
+  const all = [...d.markets, ...d.fx];
+  return (
+    <section id="p-MON" className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title"><span className="term-code">MON</span>Market monitor</h2>
+        <span className="panel-sub">tint = 24h move · click for detail</span>
+      </div>
+      <div className="term-tiles">
+        {all.map((m) => {
+          const c = m.change_24h_pct;
+          const heat = c == null ? 0 : Math.min(1, Math.abs(c) / (m.kind === "fx" ? 1 : 3));
+          const bg = c == null || Math.abs(c) < 0.01 ? undefined
+            : c > 0 ? `rgba(31, 166, 122, ${0.05 + 0.27 * heat})` : `rgba(229, 83, 95, ${0.05 + 0.25 * heat})`;
+          const shut = m.session && !m.session.open && m.session.why !== "break";
+          return (
+            <button key={m.name} className="term-tile" style={{ background: bg }} onClick={() => onPick(m)}
+              title={`${m.label}: open ${m.kind === "fx" ? "Currencies" : "Commodities"}`}>
+              <span className="term-tile-top"><b>{short(m)}</b>{shut && <span className="term-tape-alone">HL only</span>}</span>
+              <Flash value={m.price} className="term-tile-px num">{px(m.price)}</Flash>
+              <span className="term-tile-ch">
+                <span className={tone(c)}>{fmtPct(c)}</span>
+                <span className="muted"> 1h {fmtPct(m.change_1h_pct)}</span>
+              </span>
+              <Spark v={m.spark} w={128} h={18} />
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function Log({ log }) {
+  return (
+    <section id="p-LOG" className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title"><span className="term-code">LOG</span>What changed</h2>
+        <span className="panel-sub">since you opened this page</span>
+      </div>
+      <ChangeLog log={log} />
+    </section>
+  );
+}
+
 function Boot({ error }) {
   return (
     <div className="term-boot" role="status">
@@ -550,7 +597,7 @@ function Boot({ error }) {
   );
 }
 
-export default function Edges({ d, error, now }) {
+export default function Edges({ d, error, now, log = [], onPick = () => {} }) {
   if (!d) return <Boot error={error} />;
   now = now || d.now_ms;
   const down = Object.entries(d.status || {}).filter(([, s]) => !s.ok);
@@ -558,6 +605,10 @@ export default function Edges({ d, error, now }) {
     <div className="term-grid">
       {error && <div className="plan-error term-wide">{error}</div>}
       <Clock d={d} now={now} />
+      <div className="term-wide term-pair">
+        <Monitor d={d} onPick={onPick} />
+        <Log log={log} />
+      </div>
       <Markets d={d} />
       <div className="term-col">
         <Record d={d} />

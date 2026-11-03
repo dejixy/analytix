@@ -302,6 +302,13 @@ A second page on the same server (the **Terminal ›** link on the dashboard), f
 - **Coming up:** the next 7 days: oil reports, closes and reopens, roll days, options expiry, and the US and Japan calendar.
 - **Edge board:** each edge being worked on, with its status and next step.
 
+Around the panels:
+- **Command line:** press `/` (or Ctrl+K) and type a market (`GOLD`, `WTI`, `JPY`…), a panel code (`CLK`, `MON`, `LOG`, `CMDY`, `WKND`, `ROLL`, `FX`, `CAL`, `EDGE`), a tab (`NEWS`, `BOT`) or `HELP`, then Enter or **GO**. It jumps there and lights it up. Keys `1` `2` `3` switch tabs.
+- **World clocks:** CME/ICE (from the session schedule), New York, London and Tokyo cash-market hours (holidays not shown), your own time, and Hyperliquid 24/7.
+- **Market monitor:** a tile per market tinted by its 24h move; click one to jump to its row.
+- **What changed:** a running log, since the page opened, of price moves past a threshold, the real markets opening and shutting, roll steps, events 15 minutes out and sources going down.
+- **Status bar:** request time, the next refresh, and how fresh each source is (Hyperliquid, hourly candles, futures prices).
+
 The markets are recorded on the long-tail socket (`ANALYTIX_EDGE_COINS`) for studies at finer resolution later.
 
 ### Position watch
