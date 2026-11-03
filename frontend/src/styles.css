@@ -1347,3 +1347,27 @@ kbd {
 .term .term-grid { align-items: stretch; }
 .term .wm-night { fill: rgba(0, 0, 0, 0.62); }
 .term .wm-land { stroke: #34655b; }
+
+/* ── BOOK: the liquidity map ───────────────────────────────────────────────────────────────────────── */
+.bk-bar { padding-bottom: 8px; }
+.bk-sep { width: 1px; height: 16px; background: var(--line, #1c2724); margin: 0 4px; }
+.bk-key { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.bk-ramp { width: 56px; height: 7px; display: inline-block; margin-right: 4px; background: linear-gradient(90deg, #07140f, #12686a, #3eb2b8, #96e8e8, #f2fffd); }
+.bk-line { width: 14px; height: 0; display: inline-block; margin: 0 4px 0 8px; border-top: 2px solid; }
+.bk-line.bid { border-color: var(--t-green); }
+.bk-line.ask { border-color: var(--t-red); }
+.bk-stage { position: relative; margin: 0 8px; border: 1px solid var(--t-line); background: #030706; cursor: crosshair; overflow: hidden; }
+.bk-stage canvas { display: block; }
+.bk-empty { display: grid; place-items: center; margin: 0 8px; border: 1px solid var(--t-line); background: #030706; font-size: 12.5px; }
+.bk-cross-x, .bk-cross-y { position: absolute; pointer-events: none; border-color: rgba(76, 196, 204, 0.55); border-style: dashed; border-width: 0; }
+.bk-cross-x { top: 0; width: 0; border-left-width: 1px; }
+.bk-cross-y { left: 0; height: 0; border-top-width: 1px; }
+.bk-tip {
+  position: absolute; pointer-events: none; z-index: 2; min-width: 170px; padding: 6px 9px; display: grid; gap: 2px;
+  border: 1px solid var(--t-cyan-line); border-radius: 2px; background: rgba(6, 10, 9, 0.94); font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+.bk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; margin: 8px 0 0; background: var(--t-line); border-top: 1px solid var(--t-edge); }
+.bk-stats > div { display: grid; gap: 2px; padding: 7px 12px; background: var(--t-head); }
+.bk-stats dt { font-size: 11px; color: var(--t-mute); }
+.bk-stats dd { margin: 0; font-size: 12px; color: var(--t-ink); }

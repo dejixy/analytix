@@ -22,7 +22,7 @@ from collections import deque
 
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
-from ingestion.parsers import parse_trade, trade_subscription
+from ingestion.parsers import parse_trade, subscriptions
 
 from config import EDGE_COINS
 from engine import edges as E
@@ -40,6 +40,11 @@ SPARK_HOURS = 48
 TRADES_KEEP_MS = 3_600_000  # live orders kept for the bubble map
 TRADES_MIN_USD = 1_000      # smaller orders aren't kept
 TRADES_MAX_SEND = 800
+BOOK_KEEP_MS = 45 * 60_000  # the liquidity map: order-book snapshots kept this long
+BOOK_EVERY_MS = 3_000       # at most one snapshot per market this often (the newest in each slot wins)
+BBO_EVERY_MS = 1_000        # best bid and offer, sampled
+BOOK_LEVELS = 20
+DEPTH_TARGET_BPS = 2.5      # grouped book for the map: price bands near this size (1–8 bps), so 20 levels reach ±0.2–1.6%
 OWN_FEED_AFTER_S = 90       # no trades from the long-tail socket by then: open a socket of our own
 COMP_HOURS = 168            # the compare chart: a week of hourly closes on one grid
 ACTIVITY_DAYS = 30          # the heat grid: average hourly move by hour of day over this many days
@@ -63,6 +68,21 @@ async def fetch_dex_ctxs(dex: str) -> dict[str, dict]:
             "day_volume": _num(c.get("dayNtlVlm")), "prev_day": _num(c.get("prevDayPx")),
             "max_lev": _num(a.get("maxLeverage"))}
     return out
+
+
+def depth_sig_figs(price: float, target_bps: float = DEPTH_TARGET_BPS) -> int:
+    """Hyperliquid's nSigFigs (2 to 5) whose price band is nearest `target_bps` of the price (in log terms)."""
+    best, dist = 5, None
+    for n in (2, 3, 4, 5):
+        band = 10 ** (math.floor(math.log10(price)) + 1 - n)
+        d = abs(math.log(band / price * 1e4 / target_bps))
+        if dist is None or d < dist:
+            best, dist = n, d
+    return best
+
+
+def depth_band(price: float, n: int) -> float:
+    return 10 ** (math.floor(math.log10(price)) + 1 - n)
 
 
 def correlations(series: dict[str, list[float | None]], min_n: int = CORR_MIN) -> list[list[float | None]]:
@@ -141,6 +161,11 @@ class EdgeService:
         self.trade_source: str | None = None
         self.last_trade_ms: int | None = None
         self.own_feed: HyperliquidClient | None = None
+        self.books: dict[str, deque] = {}                    # coin → [(t, bids [(px, sz)], asks [(px, sz)])]
+        self.bbos: dict[str, deque] = {}                     # coin → [(t, best bid, best ask)]
+        self.depth_feed: HyperliquidClient | None = None     # grouped books for the map, on a socket of their own
+        self.depth_sig: dict[str, int] = {}                  # coin → nSigFigs it's grouped by
+        self.grouped: set[str] = set()                       # coins whose map book is the grouped one
 
     @property
     def enabled(self) -> bool:
@@ -152,7 +177,8 @@ class EdgeService:
         self._tasks = [asyncio.create_task(self._ctx_loop(), name="edges-ctx"),
                        asyncio.create_task(self._candle_loop(), name="edges-candles"),
                        asyncio.create_task(self._futures_loop(), name="edges-futures"),
-                       asyncio.create_task(self._trade_feed(), name="edges-trades")]
+                       asyncio.create_task(self._trade_feed(), name="edges-trades"),
+                       asyncio.create_task(self._depth_loop(), name="edges-depth")]
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -223,8 +249,18 @@ class EdgeService:
             await asyncio.sleep(FUTURES_EVERY_S)
 
     def on_message(self, msg: dict) -> None:
-        """A trades message for one of our markets: fills from one taker order in one block become one order."""
-        if msg.get("channel") != "trades":
+        """One of our markets' messages: trades (fills from one taker order in one block become one order), book
+        snapshots and best bid/offer (for the liquidity map)."""
+        ch = msg.get("channel")
+        if ch == "l2Book":                                   # the exact book: only until the grouped one arrives
+            data = msg.get("data") or {}
+            if data.get("coin") not in self.grouped:
+                self._take_book(data)
+            return
+        if ch == "bbo":
+            self._take_bbo(msg.get("data") or {})
+            return
+        if ch != "trades":
             return
         now = int(time.time() * 1000)
         for raw in msg.get("data") or []:
@@ -249,6 +285,93 @@ class EdgeService:
         while self.orders and now - self.orders[0]["t"] > TRADES_KEEP_MS:
             self.orders.popleft()
 
+    @staticmethod
+    def _keep(dq: deque, t: int, row: tuple, every: int) -> None:
+        """Append, or replace the last row while still inside its slot; drop rows older than BOOK_KEEP_MS."""
+        if dq and t - dq[-1][0] < every:
+            dq[-1] = row
+        else:
+            dq.append(row)
+        while dq and t - dq[0][0] > BOOK_KEEP_MS:
+            dq.popleft()
+
+    def _take_book(self, data: dict) -> None:
+        coin = data.get("coin")
+        if coin not in self.coins:
+            return
+        try:
+            t = int(data["time"])
+            bids, asks = data["levels"]
+            row = (t, [(float(l["px"]), float(l["sz"])) for l in bids[:BOOK_LEVELS]],
+                   [(float(l["px"]), float(l["sz"])) for l in asks[:BOOK_LEVELS]])
+        except (KeyError, TypeError, ValueError):
+            return
+        self._keep(self.books.setdefault(coin, deque()), t, row, BOOK_EVERY_MS)
+
+    def _take_bbo(self, data: dict) -> None:
+        coin = data.get("coin")
+        if coin not in self.coins:
+            return
+        try:
+            bid, ask = data["bbo"]
+            row = (int(data["time"]), float(bid["px"]) if bid else None, float(ask["px"]) if ask else None)
+        except (KeyError, TypeError, ValueError):
+            return
+        self._keep(self.bbos.setdefault(coin, deque()), row[0], row, BBO_EVERY_MS)
+
+    def book_public(self, coin: str, since_ms: int | None = None, minutes: float = 20) -> dict:
+        """One market's book snapshots (each level as [price, dollars resting]), best bid/offer and taker orders since
+        `since` (or the last `minutes`)."""
+        now = int(time.time() * 1000)
+        lo = max(since_ms or 0, now - int(min(minutes, BOOK_KEEP_MS / 60_000) * 60_000))
+        def usd3(p, z):                                      # dollars resting, to 3 significant figures: enough
+            v = p * z                                        # for a colour, and it compresses far better
+            return int(float(f"{v:.3g}")) if v >= 1 else round(v, 2)
+        cols = [[t, [[p, usd3(p, z)] for p, z in b], [[p, usd3(p, z)] for p, z in a]]
+                for t, b, a in self.books.get(coin, ()) if t > lo]
+        bbo = [list(r) for r in self.bbos.get(coin, ()) if r[0] > lo]
+        trades = [[o["t"], o["side"], round(o["usd"]), round(o["px"], 6)] for o in self.orders
+                  if o["coin"] == coin and o["t"] > lo]
+        mark = (self.markets.get(coin) or {}).get("mark")
+        band = depth_band(mark, self.depth_sig[coin]) if coin in self.grouped and mark and coin in self.depth_sig else None
+        return {"coin": coin, "now_ms": now, "cols": cols, "bbo": bbo, "trades": trades, "keep_ms": BOOK_KEEP_MS,
+                "band": band,
+                "every_ms": BOOK_EVERY_MS, "markets": [c for c in self.coins if self.books.get(c)],
+                "enabled": self.enabled}
+
+    def _on_depth(self, msg: dict) -> None:
+        """The grouped books' socket: the first grouped book for a coin clears its exact-book history, so the map
+        never mixes the two."""
+        if msg.get("channel") != "l2Book":
+            return
+        data = msg.get("data") or {}
+        coin = data.get("coin")
+        if coin in self.coins and coin not in self.grouped:
+            self.grouped.add(coin)
+            self.books.pop(coin, None)
+        self._take_book(data)
+        if coin in self.coins:
+            self._ok("Grouped books")
+
+    async def _depth_loop(self) -> None:
+        """Once every market has a price, subscribe to each one's book grouped into ~2.5 bps bands. Not recorded."""
+        for _ in range(60):
+            if all((self.markets.get(c) or {}).get("mark") for c in self.coins):
+                break
+            await asyncio.sleep(5)
+        subs = []
+        for c in self.coins:
+            mark = (self.markets.get(c) or {}).get("mark")
+            if not mark:
+                continue
+            self.depth_sig[c] = depth_sig_figs(mark)
+            subs.append({"method": "subscribe", "subscription": {"type": "l2Book", "coin": c, "nSigFigs": self.depth_sig[c]}})
+        if not subs:
+            return
+        self.depth_feed = HyperliquidClient([], self._on_depth, FeedStatus(mode="live"))
+        self.depth_feed.set_subscriptions(subs)
+        await self.depth_feed.run()
+
     async def _trade_feed(self) -> None:
         """Trades come from the long-tail socket when it carries our markets; otherwise from a socket of our own."""
         lt = getattr(self.rt, "longtail", None)
@@ -261,7 +384,8 @@ class EdgeService:
             waited += 5
         self.trade_source = "own socket"
         self.own_feed = HyperliquidClient([], self.on_message, FeedStatus(mode="live"))
-        self.own_feed.set_subscriptions([trade_subscription(c) for c in self.coins])
+        self.own_feed.set_subscriptions([x for c in self.coins for x in subscriptions(c)       # trades and best
+                                         if x["subscription"]["type"] in ("trades", "bbo")])     # bid/offer
         await self.own_feed.run()
 
     def trades_public(self, since_ms: int | None = None, min_usd: float = TRADES_MIN_USD) -> dict:
