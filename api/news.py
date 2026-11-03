@@ -9,7 +9,8 @@ each coin reacted, from the live minute bars.
                     after       the move from t0 to 30 minutes later (or to now, while it's still running)
                     activity    trades in those 30 minutes against the average 30 minutes of the day before
                 from the live minute bars, which reach back about a day
-    calendar    High-impact releases are handed to engine/calendar.py, so the loud-market gauge expects them
+    calendar    High-impact US releases are handed to engine/calendar.py, so the loud-market gauge expects them
+                (Japan's are shown and kept, not fed to the gauge it was fitted without)
     /api/news   what's coming up (7 days), and the latest items with their reactions
 """
 import asyncio
@@ -122,7 +123,9 @@ class NewsService:
                         if r.status_code == 404:                   # next week's isn't always published yet
                             continue
                         r.raise_for_status()
-                        items = parse_calendar(r.json(), int(time.time() * 1000))
+                        now = int(time.time() * 1000)
+                        payload = r.json()
+                        items = parse_calendar(payload, now) + parse_calendar(payload, now, ("JPY",), ("High",))
                         new = self.store.add(items)
                         self._feed_calendar(items)
                         got += len(new)
@@ -135,7 +138,9 @@ class NewsService:
 
     @staticmethod
     def _feed_calendar(items: list[dict]) -> None:
-        calendar.add_live([(it["t_ms"], it["title"], it.get("impact")) for it in items if it.get("kind") == "scheduled"])
+        """US releases only: the loud-market forecast was fitted on US releases."""
+        calendar.add_live([(it["t_ms"], it["title"], it.get("impact")) for it in items
+                           if it.get("kind") == "scheduled" and it.get("country", "USD") == "USD"])
 
     # ── reactions ─────────────────────────────────────────────────────────
     def coins_for(self, it: dict) -> list[str]:

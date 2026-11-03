@@ -88,7 +88,7 @@ function Regime({ r }) {
   );
 }
 
-export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions, onHold, onBot, onNews, more, onMore, outcomes, onOutcomes }) {
+export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositions, onHold, more, onMore, outcomes, onOutcomes }) {
   const { price, context, coin, feed } = snap;
   const chg = context?.change_24h_pct;
   return (
@@ -126,12 +126,10 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
       </>}
 
       <div className="header-right">
-        <button className="alerts-open" onClick={onNews} title="US releases coming up, and the latest crypto headlines with how each coin reacted">
-          News
-        </button>
-        <button className="alerts-open" onClick={onBot} title="The bot: paper-trading baskets, each with its own balance and record">
-          Bot
-        </button>
+        <a className="alerts-open term-link" href="/terminal"
+          title="The edge terminal: oil, gold and silver on Hyperliquid while the real markets are shut, the oil roll, the yen, what's coming up, the news and the bot">
+          Terminal ›
+        </a>
         <button className="alerts-open" onClick={onHold} title="Very high leverage: how long a position like yours survives, measured on the real best bid and ask">
           Hold clock
         </button>

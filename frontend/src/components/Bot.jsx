@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { setSound, soundOn } from "../botSound.js";
+import Drawer from "./Drawer.jsx";
 
 /* The bot: baskets of strategies, each with its own balance. The panel shows the baskets the server lists (Degen
    only, by default); the others keep running and recording in the background. With one basket the strip of basket
@@ -41,7 +42,7 @@ function headline(d) {
   return `Watching for big TWAPs on ${where}.${last ? ` Last one ${ago(last.end_ms || last.t_ms, d.now_ms)}.` : " None yet."}${off}`;
 }
 
-export default function Bot({ onClose }) {
+export default function Bot({ onClose, inline = false }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState(null);
@@ -95,13 +96,12 @@ export default function Bot({ onClose }) {
   const shown = d?.baskets || [];
   const on = basket ?? d?.basket;
   return (
-    <div className="planner-scrim" onClick={onClose}>
-      <aside className="planner bm" role="dialog" aria-label="Bot" onClick={(e) => e.stopPropagation()}>
+    <Drawer inline={inline} className="bm" label="Bot" onClose={onClose}>
         <div className="panel-head">
           <h2 className="panel-title">{shown.length === 1 ? `Bot · ${shown[0].name}` : "Bot"}</h2>
           <span className="bm-head-right">
             {status && <span className={`bm-status ${status}`}>{STATUS[status]}</span>}
-            <button className="plan-close" onClick={onClose} aria-label="Close">✕</button>
+            {!inline && <button className="plan-close" onClick={onClose} aria-label="Close">✕</button>}
           </span>
         </div>
         {shown.length > 1 && <div className="bm-baskets" role="tablist" aria-label="Baskets">
@@ -139,8 +139,7 @@ export default function Bot({ onClose }) {
             {tab === "how" && <How d={d} />}
           </>
         )}
-      </aside>
-    </div>
+    </Drawer>
   );
 }
 
