@@ -26,7 +26,7 @@ from config import (EDGE_COINS, LONGTAIL, LONGTAIL_COINS, LONGTAIL_DIR, LONGTAIL
 from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
 from ingestion.outcomes import fetch_dex_marks
-from ingestion.parsers import subscriptions
+from ingestion.parsers import coin_of, subscriptions
 from ingestion.recorder import HourlyRecorder
 
 log = logging.getLogger("analytix.longtail")
@@ -79,6 +79,7 @@ class LongTailRecorder:
         self.on = enabled
         self.coins: list[str] = []
         self.edge_coins: list[str] = []
+        self.on_edge = None                                # api/edges.py's live trades: edge markets' messages
         self.status = FeedStatus(mode="live")
         self.client: HyperliquidClient | None = None
         self.recorder: HourlyRecorder | None = None
@@ -120,7 +121,7 @@ class LongTailRecorder:
             log.warning("long-tail recorder: no coins match, nothing recorded")
             return
         self.recorder = HourlyRecorder(self.folder, "longtail", min_free_gb=RECORD_MIN_FREE_GB)
-        self.client = HyperliquidClient(self.all_coins, lambda msg: None, self.status, recorder=self.recorder)
+        self.client = HyperliquidClient(self.all_coins, self._on_message, self.status, recorder=self.recorder)
         log.info("long-tail recorder: %d coins (%s) and %d edge markets (%s) to %s", len(self.coins),
                  ", ".join(self.coins), len(self.edge_coins), ", ".join(self.edge_coins) or "none", self.folder)
         feed = asyncio.create_task(self.client.run(), name="longtail-feed")
@@ -137,6 +138,16 @@ class LongTailRecorder:
         finally:
             feed.cancel()
             await asyncio.gather(feed, return_exceptions=True)
+
+    def _on_message(self, msg: dict) -> None:
+        """Recorded either way; the edge markets' messages also go to the edge terminal. Nothing reaches the
+        dashboard."""
+        if self.on_edge is not None and coin_of(msg) in self.edge_coins:
+            self.on_edge(msg)
+
+    @property
+    def carries_edges(self) -> bool:
+        return self.client is not None and bool(self.edge_coins)
 
     @property
     def all_coins(self) -> list[str]:
