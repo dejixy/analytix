@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { fmtPct, fmtUsd } from "../format.js";
 import { ChangeLog } from "./TermChrome.jsx";
+import Compare from "./Compare.jsx";
 
 /* The edge terminal's main view (/api/edges): trade.xyz's commodities and currencies on Hyperliquid, the weekend
    record, the oil roll, what's coming up and the board of edges being worked on. Times are in your time zone. */
@@ -540,6 +541,35 @@ function Board({ d }) {
   );
 }
 
+/* A tile's day: the last 24 hours against the price 24 hours ago (the dashed line, the same reference as the tile's
+   % and tint), green above it and red below, so the shape and the number always agree. */
+function DaySpark({ m }) {
+  const id = useId();
+  const pts = (m.spark || []).slice(-25).filter((x) => x != null);
+  if (pts.length < 3 || m.price == null) return <span className="term-tile-spark muted">-</span>;
+  const base = m.change_24h_pct != null ? m.price / (1 + m.change_24h_pct / 100) : pts[0];
+  const W = 140, H = 34;
+  const lo = Math.min(base, ...pts);
+  const r = Math.max(base, ...pts) - lo || 1;
+  const X = (i) => 1 + (i / (pts.length - 1)) * (W - 2);
+  const Y = (p) => 3 + (1 - (p - lo) / r) * (H - 6);
+  const by = Y(base);
+  const line = pts.map((p, i) => `${X(i).toFixed(1)},${Y(p).toFixed(1)}`).join(" ");
+  const area = `${X(0)},${by} ${line} ${X(pts.length - 1)},${by}`;
+  return (
+    <svg className="term-tile-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
+      aria-label={`24 hours: ${fmtPct(m.change_24h_pct)} against yesterday's price`}>
+      <clipPath id={`${id}a`}><rect x="0" y="0" width={W} height={by} /></clipPath>
+      <clipPath id={`${id}b`}><rect x="0" y={by} width={W} height={H - by} /></clipPath>
+      <polygon points={area} className="term-ds-up-fill" clipPath={`url(#${id}a)`} />
+      <polygon points={area} className="term-ds-down-fill" clipPath={`url(#${id}b)`} />
+      <line x1="0" x2={W} y1={by} y2={by} className="term-ds-base" />
+      <polyline points={line} className="term-ds-up" clipPath={`url(#${id}a)`} />
+      <polyline points={line} className="term-ds-down" clipPath={`url(#${id}b)`} />
+    </svg>
+  );
+}
+
 /* One tile per market, tinted by the day's move (stronger tint, bigger move); click to jump to its row. */
 function Monitor({ d, onPick }) {
   const all = [...d.markets, ...d.fx];
@@ -559,13 +589,13 @@ function Monitor({ d, onPick }) {
           return (
             <button key={m.name} className="term-tile" style={{ background: bg }} onClick={() => onPick(m)}
               title={`${m.label}: open ${m.kind === "fx" ? "Currencies" : "Commodities"}`}>
-              <span className="term-tile-top"><b>{short(m)}</b>{shut && <span className="term-tape-alone">HL only</span>}</span>
+              <span className="term-tile-top"><b>{short(m)}</b>{shut ? <span className="term-tape-alone">HL only</span> : <span className="term-tile-24">24h</span>}</span>
               <Flash value={m.price} className="term-tile-px num">{px(m.price)}</Flash>
               <span className="term-tile-ch">
                 <span className={tone(c)}>{fmtPct(c)}</span>
-                <span className="muted"> 1h {fmtPct(m.change_1h_pct)}</span>
+                <span className="muted"> · 1h {fmtPct(m.change_1h_pct)}</span>
               </span>
-              <Spark v={m.spark} w={128} h={18} />
+              <DaySpark m={m} />
             </button>
           );
         })}
@@ -609,6 +639,7 @@ export default function Edges({ d, error, now, log = [], onPick = () => {} }) {
         <Monitor d={d} onPick={onPick} />
         <Log log={log} />
       </div>
+      <Compare d={d} />
       <Markets d={d} />
       <div className="term-col">
         <Record d={d} />

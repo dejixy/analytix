@@ -3,7 +3,7 @@ import math
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from api.edges import EdgeService
+from api.edges import EdgeService, correlations
 from engine import edges as E
 
 
@@ -121,3 +121,25 @@ def test_open_intervals_across_a_weekend():
     assert got == [(ny(2026, 11, 5, 12), ny(2026, 11, 5, 17)), (ny(2026, 11, 5, 18), ny(2026, 11, 6, 17)),
                    (ny(2026, 11, 8, 18), ny(2026, 11, 9, 12))]
     assert E.open_intervals("CL", ny(2026, 11, 7, 12), ny(2026, 11, 7, 13)) == []        # Saturday: shut throughout
+
+
+def test_correlations_of_hourly_moves():
+    up = [100 * 1.01 ** i * (1.02 if i % 2 else 1) for i in range(40)]
+    same = [2 * x for x in up]
+    mirror = [1e4 / x for x in up]
+    m = correlations({"A": up, "B": same, "C": mirror, "D": [None] * 40})
+    assert m[0][1] == 1.0 and m[0][2] == -1.0 and m[0][3] is None and m[2][0] == -1.0
+
+
+def test_compare_puts_every_market_on_one_grid():
+    rt = SimpleNamespace(mode="live", news=None, longtail=None)
+    svc = EdgeService(rt, coins=["xyz:GOLD", "xyz:JPY"])
+    now = ny(2026, 11, 4, 12, 30)
+    base = (now // E.HOUR) * E.HOUR
+    svc.candles["xyz:GOLD"] = [(base - k * E.HOUR, 4000.0 + k) for k in range(200)]
+    svc.candles["xyz:JPY"] = [(base - k * E.HOUR, 150.0 - k / 100) for k in range(0, 200, 2)]    # gaps: carried
+    svc.take({"xyz:GOLD": {"mark": 3999.0}}, now)
+    c = svc.compare(now)
+    assert len(c["series"]["xyz:GOLD"]) == len(c["series"]["xyz:JPY"]) == 169
+    assert c["series"]["xyz:GOLD"][-1] == 3999.0 and c["series"]["xyz:JPY"][1] == c["series"]["xyz:JPY"][0]
+    assert c["corr"]["names"] == ["xyz:GOLD", "xyz:JPY"] and c["open"]
