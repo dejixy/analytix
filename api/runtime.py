@@ -126,6 +126,7 @@ class Runtime:
         self.regime = RegimeService(self)               # quiet / middle / loud for the next 30 minutes
         self.news = NewsService(self)                   # economic calendar and headlines, with each coin's reaction
         self.edges = EdgeService(self)                  # the edge terminal: trade.xyz commodities, roll, yen, events
+        self.longtail.on_edge = self.edges.on_message   # the edge markets' live trades, from the socket recording them
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────

@@ -143,3 +143,35 @@ def test_compare_puts_every_market_on_one_grid():
     assert len(c["series"]["xyz:GOLD"]) == len(c["series"]["xyz:JPY"]) == 169
     assert c["series"]["xyz:GOLD"][-1] == 3999.0 and c["series"]["xyz:JPY"][1] == c["series"]["xyz:JPY"][0]
     assert c["corr"]["names"] == ["xyz:GOLD", "xyz:JPY"] and c["open"]
+
+
+def test_live_trades_merge_fills_into_orders():
+    import time as _t
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:GOLD", "xyz:CL"])
+    now = int(_t.time() * 1000)
+    fill = lambda px, sz, side, users, tid, t=now, coin="xyz:GOLD": {"coin": coin, "px": str(px), "sz": str(sz),
+                                                                     "side": side, "time": t, "tid": tid, "users": users}
+    svc.on_message({"channel": "trades", "data": [
+        fill(4000, 10, "B", ["0xtaker", "0xm1"], 1), fill(4001, 10, "B", ["0xtaker", "0xm2"], 2),   # one order, 2 fills
+        fill(4000, 0.1, "A", ["0xm3", "0xother"], 3),                                                # $400: too small to send
+        fill(60, 500, "A", ["0xm4", "0xseller"], 4, coin="xyz:CL"),
+        fill(1, 1, "B", ["a", "b"], 5, coin="xyz:SOMETHING"),                                       # not ours
+    ]})
+    got = svc.trades_public()["orders"]
+    assert [(o["coin"], o["side"], o["usd"], o["fills"]) for o in got] == [("xyz:GOLD", 1, 80010, 2), ("xyz:CL", -1, 30000, 1)]
+    assert got[0]["px"] == round((4000 * 40000 + 4001 * 40010) / 80010, 6) and "_taker" not in got[0]
+    assert svc.trades_public(since_ms=now)["orders"] == []                    # nothing newer than the last one
+    f = svc.trades_public()["flow"]
+    assert f["xyz:GOLD"][15] == {"net": 80010 - 400, "buy": 80010, "sell": 400, "n": 2}   # flow counts every order
+    assert f["xyz:CL"][5]["net"] == -30000
+
+
+def test_longtail_hands_edge_messages_to_the_terminal(tmp_path):
+    from api.longtail import LongTailRecorder
+    rec = LongTailRecorder(SimpleNamespace(mode="live", record=True, coins=[]), folder=tmp_path, enabled=True)
+    rec.edge_coins = ["xyz:GOLD"]
+    seen = []
+    rec.on_edge = seen.append
+    rec._on_message({"channel": "trades", "data": [{"coin": "xyz:GOLD"}]})
+    rec._on_message({"channel": "trades", "data": [{"coin": "DOGE"}]})
+    assert seen == [{"channel": "trades", "data": [{"coin": "xyz:GOLD"}]}]

@@ -639,7 +639,7 @@ export default function Edges({ d, error, now, log = [], onPick = () => {} }) {
         <Monitor d={d} onPick={onPick} />
         <Log log={log} />
       </div>
-      <Compare d={d} />
+      <Compare d={d} now={now} />
       <Markets d={d} />
       <div className="term-col">
         <Record d={d} />

@@ -221,6 +221,12 @@ async def edges(request: Request):
     return _rt(request).edges.public()
 
 
+@router.get("/edges/trades")
+async def edge_trades(request: Request, since: int | None = None, min_usd: float = 1000):
+    """The edge markets' taker orders since `since` (ms), for the live bubble map."""
+    return _rt(request).edges.trades_public(since, max(min_usd, 0))
+
+
 @router.get("/regime")
 async def regime(request: Request):
     """Each coin's loud-market gauge: quiet / middle / loud and the move to expect over the next 30 minutes."""

@@ -6,8 +6,11 @@ and the schedule in engine/edges.py.
                 builder, every CTX_EVERY_S); a minute-by-minute mark history in memory for 1-hour moves
     candles     each market's last 5000 hourly candles (about 7 months), every CANDLES_EVERY_S: the weekend record
     futures     the oil roll's front and next contracts from Yahoo Finance, every FUTURES_EVERY_S (optional)
+    trades      every taker order on these markets, live (fills merged by block, taker and side), kept an hour:
+                from the long-tail socket that records them, or a socket of its own when recording is off
     /api/edges  sessions, the live weekend (when shut), the weekend record and fits, the roll, currencies,
                 what's coming up and the edge board
+    /api/edges/trades?since=ms   the orders since then, for the live bubble map
 
 Live mode only; in replay it still shows the schedule.
 """
@@ -16,6 +19,10 @@ import logging
 import math
 import time
 from collections import deque
+
+from ingestion.feedStatus import FeedStatus
+from ingestion.hyperliquidClient import HyperliquidClient
+from ingestion.parsers import parse_trade, trade_subscription
 
 from config import EDGE_COINS
 from engine import edges as E
@@ -30,6 +37,10 @@ CANDLES_EVERY_S = 1800
 FUTURES_EVERY_S = 600
 HISTORY_KEEP_MS = 26 * E.HOUR
 SPARK_HOURS = 48
+TRADES_KEEP_MS = 3_600_000  # live orders kept for the bubble map
+TRADES_MIN_USD = 1_000      # smaller orders aren't kept
+TRADES_MAX_SEND = 800
+OWN_FEED_AFTER_S = 90       # no trades from the long-tail socket by then: open a socket of our own
 COMP_HOURS = 168            # the compare chart: a week of hourly closes on one grid
 CORR_MIN = 24               # hourly returns two markets need in common before their link is shown
 LABELS = {"JPY": "USD/JPY", "EUR": "EUR/USD", "GBP": "GBP/USD", "DXY": "Dollar index"}
@@ -124,6 +135,10 @@ class EdgeService:
         self.status: dict[str, dict] = {}
         self._tasks: list[asyncio.Task] = []
         self._cache: tuple[int, dict] | None = None        # (when, weekend record): candles change every 30 min
+        self.orders: deque = deque(maxlen=20_000)            # live taker orders, oldest first
+        self.trade_source: str | None = None
+        self.last_trade_ms: int | None = None
+        self.own_feed: HyperliquidClient | None = None
 
     @property
     def enabled(self) -> bool:
@@ -134,7 +149,8 @@ class EdgeService:
             return
         self._tasks = [asyncio.create_task(self._ctx_loop(), name="edges-ctx"),
                        asyncio.create_task(self._candle_loop(), name="edges-candles"),
-                       asyncio.create_task(self._futures_loop(), name="edges-futures")]
+                       asyncio.create_task(self._futures_loop(), name="edges-futures"),
+                       asyncio.create_task(self._trade_feed(), name="edges-trades")]
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -202,6 +218,75 @@ class EdgeService:
                 if errors:
                     self._fail("Futures prices", "; ".join(f"{s}: {e}" for s, e in errors.items()))
             await asyncio.sleep(FUTURES_EVERY_S)
+
+    def on_message(self, msg: dict) -> None:
+        """A trades message for one of our markets: fills from one taker order in one block become one order."""
+        if msg.get("channel") != "trades":
+            return
+        now = int(time.time() * 1000)
+        for raw in msg.get("data") or []:
+            coin = raw.get("coin")
+            if coin not in self.coins:
+                continue
+            try:
+                t = parse_trade(raw)
+            except (KeyError, TypeError, ValueError):
+                continue
+            side = 1 if t.side.value == "B" else -1
+            usd = t.price * t.size
+            last = self.orders[-1] if self.orders else None
+            if last and last["coin"] == coin and last["t"] == t.timestamp and last["side"] == side and last["_taker"] == t.taker:
+                last["px"] = (last["px"] * last["usd"] + t.price * usd) / (last["usd"] + usd)
+                last["usd"] += usd
+                last["fills"] += 1
+            else:
+                self.orders.append({"id": f"{coin}:{t.timestamp}:{t.tid}", "t": t.timestamp, "coin": coin, "side": side,
+                                    "usd": usd, "px": t.price, "fills": 1, "_taker": t.taker})
+            self.last_trade_ms = now
+        while self.orders and now - self.orders[0]["t"] > TRADES_KEEP_MS:
+            self.orders.popleft()
+
+    async def _trade_feed(self) -> None:
+        """Trades come from the long-tail socket when it carries our markets; otherwise from a socket of our own."""
+        lt = getattr(self.rt, "longtail", None)
+        waited = 0
+        while waited < OWN_FEED_AFTER_S:
+            if lt is not None and lt.carries_edges:
+                self.trade_source = "long-tail socket"
+                return
+            await asyncio.sleep(5)
+            waited += 5
+        self.trade_source = "own socket"
+        self.own_feed = HyperliquidClient([], self.on_message, FeedStatus(mode="live"))
+        self.own_feed.set_subscriptions([trade_subscription(c) for c in self.coins])
+        await self.own_feed.run()
+
+    def trades_public(self, since_ms: int | None = None, min_usd: float = TRADES_MIN_USD) -> dict:
+        """New orders since `since` (past TRADES_MAX_SEND, the biggest), and from every order kept: each market's
+        flow and the "key order" size (the biggest fifth) over 5, 15 and 60 minutes."""
+        now = int(time.time() * 1000)
+        lo = max(since_ms or 0, now - TRADES_KEEP_MS)
+        got = [o for o in self.orders if o["t"] > lo and o["usd"] >= min_usd]
+        if len(got) > TRADES_MAX_SEND:
+            got = sorted(sorted(got, key=lambda o: -o["usd"])[:TRADES_MAX_SEND], key=lambda o: o["t"])
+        flow, cut = {}, {}
+        for mins in (5, 15, 60):
+            recent = [o for o in self.orders if now - o["t"] <= mins * 60_000]
+            sizes = sorted(o["usd"] for o in recent)
+            cut[mins] = round(sizes[int(len(sizes) * 0.8)]) if sizes else 0
+            for o in recent:
+                f = flow.setdefault(o["coin"], {}).setdefault(mins, {"net": 0.0, "buy": 0.0, "sell": 0.0, "n": 0})
+                f["net"] += o["side"] * o["usd"]
+                f["buy" if o["side"] > 0 else "sell"] += o["usd"]
+                f["n"] += 1
+        for per in flow.values():
+            for f in per.values():
+                for k in ("net", "buy", "sell"):
+                    f[k] = round(f[k])
+        clean = [{k: (round(v, 6) if k == "px" else round(v) if k == "usd" else v) for k, v in o.items() if k != "_taker"}
+                 for o in got]
+        return {"now_ms": now, "orders": clean, "flow": flow, "cut": cut, "source": self.trade_source,
+                "last_ms": self.last_trade_ms, "keep_ms": TRADES_KEEP_MS, "enabled": self.enabled}
 
     # ── reading ───────────────────────────────────────────────────────────
     def _move_1h(self, c: str, now_ms: int) -> float | None:

@@ -992,27 +992,12 @@ kbd {
   .term-tile:hover { transform: none; }
 }
 
-/* ── COMP: every market on one scale, and how they move together ─────────────────────────────────────── */
+/* ── COMP/FLOW panel: shared bits (legend row, tooltip, axis text) and the Links grid ─────────────────────────────────────── */
 .term-comp-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 12px 0; }
-.term-comp-key {
-  display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 2px;
-  background: var(--surface-2); color: var(--ink); font-size: 11px; cursor: pointer;
-}
-.term-comp-key i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; box-shadow: 0 0 6px currentColor; }
-.term-comp-key.off { color: var(--muted); }
-.term-comp-key.off i { opacity: 0.25; }
 .term-comp-note { margin-left: auto; font-size: 10.5px; }
 .term-comp-chart { position: relative; padding: 4px 6px 6px; touch-action: pan-y; }
 .term-comp-chart svg { display: block; }
-.term-comp-shut { fill: rgba(31, 166, 122, 0.06); }
-.term-comp-shut-label { fill: var(--up); font-size: 9px; letter-spacing: 0.1em; font-family: var(--mono); opacity: 0.8; }
-.term-comp-grid { stroke: var(--grid); stroke-width: 1; }
-.term-comp-zero { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 3; }
 .term-comp-ax { fill: var(--muted); font-size: 9.5px; font-family: var(--mono); }
-.term-comp-line { fill: none; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
-.term-comp-end { font-size: 10px; font-family: var(--mono); font-weight: 600; }
-.term-comp-cross { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 2 3; }
-.term-comp-dot { stroke: var(--page); stroke-width: 1.5; }
 .term-comp-tip {
   position: absolute; top: 10px; pointer-events: none; min-width: 150px; padding: 6px 9px; border: 1px solid var(--up-deep);
   border-radius: 3px; background: rgba(9, 13, 12, 0.94); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55); font-size: 11px; display: grid; gap: 2px;
@@ -1035,3 +1020,31 @@ kbd {
 .term-ds-down { stroke: var(--down); }
 .term-ds-up-fill { fill: rgba(47, 196, 147, 0.18); }
 .term-ds-down-fill { fill: rgba(229, 83, 95, 0.16); }
+
+/* ── FLOW: live taker orders as bubbles ──────────────────────────────────────────────────────────── */
+.term-bub-wrap { position: relative; }
+.term-bub-wrap svg { display: block; }
+.term-bub-lane { fill: var(--surface); }
+.term-bub-lane.alt { fill: var(--surface-2); }
+.term-bub-name { fill: var(--ink); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; font-family: var(--mono); }
+.term-bub-sub { fill: var(--muted); font-size: 9px; font-family: var(--mono); }
+.term-bub-sub.hl { fill: var(--up-bright); font-weight: 700; letter-spacing: 0.08em; }
+.term-bub-net { fill: var(--ink-2); font-size: 11px; font-weight: 700; font-family: var(--mono); }
+.term-bub-net.up { fill: var(--up-bright); }
+.term-bub-net.down { fill: var(--down); }
+.term-bub-tick { stroke: var(--grid); stroke-width: 1; }
+.term-bub-now { stroke: var(--up-bright); stroke-width: 1.2; filter: drop-shadow(0 0 4px rgba(47, 196, 147, 0.7)); }
+.term-bub { stroke-width: 1; cursor: pointer; transition: opacity 0.6s; }
+.term-bub.buy { fill: rgba(47, 196, 147, 0.55); stroke: var(--up-bright); }
+.term-bub.sell { fill: rgba(229, 83, 95, 0.5); stroke: var(--down); }
+.term-bub.on { opacity: 1 !important; stroke-width: 2; }
+.term-bub-ring { fill: none; stroke-width: 1.5; animation: term-ripple 1.6s ease-out 2; transform-box: fill-box; transform-origin: center; }
+.term-bub-ring.buy { stroke: var(--up-bright); }
+.term-bub-ring.sell { stroke: var(--down); }
+@keyframes term-ripple { from { transform: scale(1); opacity: 0.9; } to { transform: scale(2.6); opacity: 0; } }
+.term-bub-label { fill: var(--ink); font-size: 9.5px; font-weight: 700; font-family: var(--mono); paint-order: stroke; stroke: var(--page); stroke-width: 3px; }
+.term-dotkey { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 4px 0 8px; vertical-align: -1px; }
+.term-dotkey.buy { background: var(--up-bright); }
+.term-dotkey.sell { background: var(--down); }
+.term-bub-foot { margin: 0; padding-top: 4px; }
+@media (prefers-reduced-motion: reduce) { .term-bub-ring { display: none; } }

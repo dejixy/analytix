@@ -13,7 +13,7 @@ export const COMMANDS = [
   { keys: ["CLK", "CLOCK"], label: "Market clock and the week's hours", panel: "CLK" },
   { keys: ["MON", "MONITOR"], label: "Market monitor tiles", panel: "MON" },
   { keys: ["LOG"], label: "What changed while you watched", panel: "LOG" },
-  { keys: ["COMP", "CHART", "CORR"], label: "Moving together: the chart and the links", panel: "COMP" },
+  { keys: ["FLOW", "TRADES", "BUBBLES", "COMP", "CORR"], label: "Live trades (bubble map) and links", panel: "COMP" },
   { keys: ["CMDY", "COMMODITIES"], label: "Commodities table", panel: "CMDY" },
   { keys: ["WKND", "WEEKEND"], label: "Weekend record", panel: "WKND" },
   { keys: ["ROLL"], label: "Oil roll", panel: "ROLL" },

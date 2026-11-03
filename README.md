@@ -303,10 +303,10 @@ A second page on the same server (the **Terminal ›** link on the dashboard), f
 - **Edge board:** each edge being worked on, with its status and next step.
 
 Around the panels:
-- **Command line:** press `/` (or Ctrl+K) and type a market (`GOLD`, `WTI`, `JPY`…), a panel code (`CLK`, `MON`, `LOG`, `COMP`, `CMDY`, `WKND`, `ROLL`, `FX`, `CAL`, `EDGE`), a tab (`NEWS`, `BOT`) or `HELP`, then Enter or **GO**. It jumps there and lights it up. Keys `1` `2` `3` switch tabs.
+- **Command line:** press `/` (or Ctrl+K) and type a market (`GOLD`, `WTI`, `JPY`…), a panel code (`CLK`, `MON`, `LOG`, `FLOW`, `CMDY`, `WKND`, `ROLL`, `FX`, `CAL`, `EDGE`), a tab (`NEWS`, `BOT`) or `HELP`, then Enter or **GO**. It jumps there and lights it up. Keys `1` `2` `3` switch tabs.
 - **World clocks:** CME/ICE (from the session schedule), New York, London and Tokyo cash-market hours (holidays not shown), your own time, and Hyperliquid 24/7.
 - **Market monitor:** a tile per market tinted by its 24h move, with the day drawn against yesterday's price (green above, red below); click one to jump to its row.
-- **Moving together (COMP):** every market on one scale for 2 or 7 days (% from the start), with the hours the real market was shut shaded (Hyperliquid alone), a crosshair that reads every line, and a **Links** view: how each pair's hourly moves lined up over the week (correlation), with the strongest links in words.
+- **Live trades and links (FLOW):** a bubble map of every taker order on these markets as it happens, one lane per market: size by dollars, green bought and red sold, fading with age, the newest rippling. Each lane ends with its net flow (bought minus sold) over 5, 15 or 60 minutes; Auto shows the biggest fifth of orders in the window, or pick a floor ($10k+, $50k+, $250k+). Fills from one taker order in one block count as one order. The **Links** view shows how each pair's hourly moves lined up over the week (correlation), with the strongest links in words.
 - **What changed:** a running log, since the page opened, of price moves past a threshold, the real markets opening and shutting, roll steps, events 15 minutes out and sources going down.
 - **Status bar:** request time, the next refresh, and how fresh each source is (Hyperliquid, hourly candles, futures prices).
 
@@ -462,6 +462,7 @@ Thresholds live in `config.py`.
 | `GET /api/alerts` · `PUT /api/alerts` · `POST /api/alerts/levels` · `POST /api/alerts/telegram/{token,discover,test}` | alert settings (never the token), price alerts, Telegram connection and the latest alerts. |
 | `GET /api/outcomes` · `GET /api/outcomes/{id}?range=12h\|2w` · `GET /api/outcomes/questions/{id}?range=12h\|2w` | every prediction market with live odds, fair odds and the add-up check; one market's page (book, trades, who is trading, why the odds moved, odds history) |
 | `GET /api/hold?coin=BTC&side=long&leverage=800&target_pct=50&entry=&bust=` | the hold clock: survival odds by hold time (overall and like now), fill drift, the target-vs-bust race, the tape right now, and a live position read |
+| `GET /api/edges/trades?since=<ms>` | the edge markets' taker orders since then (fills merged), and each market's flow and key-order size over 5, 15 and 60 minutes, for the live bubble map |
 | `GET /api/edges` | the edge terminal: trade.xyz's oil, gold, silver, yen and euro on Hyperliquid (price, oracle, funding, open interest, whether the real market is open), the live weekend when it's shut, the weekend record and fits, the oil roll, what's coming up, and the edge board |
 | `GET /api/news?hours=24&coin=BTC` | US and Japan releases coming up, and the latest headlines with each coin's reaction |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
