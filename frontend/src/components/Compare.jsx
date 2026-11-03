@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { Head, Pill, age } from "./TermPanel.jsx";
 
 /* FLOW: the edge markets' taker orders as they happen, one lane per market. A bubble is one order (its fills merged):
    size by dollars, green bought from the asks, red sold into the bids, fading with age; the newest ripple. Each lane
@@ -60,9 +61,8 @@ function useOrders(enabled) {
   return { orders, info };
 }
 
-function Bubbles({ d, now, W }) {
+function Bubbles({ d, now, W, orders, info }) {
   const clip = useId();
-  const { orders, info } = useOrders(true);
   const [mins, setMins] = useState(15);
   const [floor, setFloor] = useState("auto");
   const [hover, setHover] = useState(null);
@@ -226,19 +226,25 @@ function Links({ c }) {
 
 export default function Compare({ d, now }) {
   const [view, setView] = useState("flow");
+  const { orders, info } = useOrders(Boolean(d));
   if (!d) return null;
+  const last = info?.last_ms;
+  const live = last != null && now - last < 60_000;
   return (
     <section id="p-COMP" className="panel term-wide">
-      <div className="panel-head">
-        <h2 className="panel-title"><span className="term-code">FLOW</span>Live trades and links</h2>
-        <span className="plan-holds">
+      <Head code="FLOW" title={view === "flow" ? "Live trades" : "Links"}
+        meta={view === "flow"
+          ? [["Feed", info?.source || "starting"], ["Last trade", last ? age(now - last) : "-"], ["Kept", "1 hour"]]
+          : [["Data", "hourly moves"], ["Range", "7 days"]]}
+        pills={[view === "flow" ? (live ? <Pill key="l" kind="live">Live</Pill> : <Pill key="l">{info?.enabled === false ? "Live mode only" : "Waiting"}</Pill>) : null]}>
+        <span className="tp-tabs" role="tablist">
           {[["flow", "Live trades"], ["links", "Links"]].map(([k, t]) => (
-            <button key={k} className={`plan-chip ${view === k ? "on" : ""}`} onClick={() => setView(k)}>{t}</button>
+            <button key={k} role="tab" aria-selected={view === k} className={view === k ? "on" : ""} onClick={() => setView(k)}>{t}</button>
           ))}
         </span>
-      </div>
+      </Head>
       {view === "flow" ? (
-        <Measured>{(w) => <Bubbles d={d} now={now} W={w} />}</Measured>
+        <Measured>{(w) => <Bubbles d={d} now={now} W={w} orders={orders} info={info} />}</Measured>
       ) : d.compare && Object.keys(d.compare.series).length ? (
         <Links c={d.compare} />
       ) : (
