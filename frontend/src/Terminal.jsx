@@ -56,6 +56,7 @@ export default function Terminal() {
     } else if (c.tab) {
       go(c.tab);
     } else if (c.panel) {
+      if (c.view) setTimeout(() => window.dispatchEvent(new CustomEvent("term-view", { detail: c })), 0);
       if (tab !== "edges") {
         pending.current = [c.panel, c.mk];
         go("edges");

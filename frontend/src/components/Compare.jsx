@@ -64,7 +64,7 @@ export function useOrders(enabled) {
   return { orders, info };
 }
 
-function Bubbles({ d, now, W, orders, info }) {
+export function Bubbles({ d, now, W, orders, info }) {
   const clip = useId();
   const [mins, setMins] = useState(15);
   const [floor, setFloor] = useState("auto");
@@ -176,7 +176,7 @@ function Bubbles({ d, now, W, orders, info }) {
 }
 
 /* Draws at the box's real width (one unit, one pixel), so text and bubbles keep their size on any screen. */
-function Measured({ children }) {
+export function Measured({ children }) {
   const box = useRef(null);
   const [w, setW] = useState(760);
   useEffect(() => {
@@ -189,7 +189,7 @@ function Measured({ children }) {
   return <div className="term-comp-chart" ref={box}>{children(w)}</div>;
 }
 
-function Links({ c }) {
+export function Links({ c }) {
   const names = c.corr.names;
   const m = c.corr.m;
   const pairs = [];

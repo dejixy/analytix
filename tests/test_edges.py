@@ -3,7 +3,7 @@ import math
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from api.edges import EdgeService, correlations
+from api.edges import EdgeService, correlations, depth_band, depth_sig_figs
 from engine import edges as E
 
 
@@ -195,3 +195,40 @@ def test_activity_by_hour_and_the_light_reply():
     assert full["weekend"] is not None and full["activity"] is not None and full["heavy_v"] == 3
     light = svc.public(base, have=3)
     assert light["light"] and light["weekend"] is None and light["compare"] is None and light["markets"]
+
+
+def test_book_snapshots_for_the_liquidity_map():
+    import time as _t
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:GOLD"])
+    now = int(_t.time() * 1000)
+    lv = lambda px, sz: {"px": str(px), "sz": str(sz), "n": 1}
+    book = lambda t, bid: {"channel": "l2Book", "data": {"coin": "xyz:GOLD", "time": t,
+                                                           "levels": [[lv(bid, 2), lv(bid - 1, 5)], [lv(bid + 1, 3)]]}}
+    svc.on_message(book(now - 10_000, 4000))
+    svc.on_message(book(now - 9_000, 4001))               # same 3-second slot: replaces the one before
+    svc.on_message(book(now - 5_000, 4002))
+    svc.on_message({"channel": "l2Book", "data": {"coin": "xyz:OTHER", "time": now, "levels": [[], []]}})
+    svc.on_message({"channel": "bbo", "data": {"coin": "xyz:GOLD", "time": now - 4_000, "bbo": [lv(4002, 2), lv(4003, 3)]}})
+    b = svc.book_public("xyz:GOLD")
+    assert [c[1][0][0] for c in b["cols"]] == [4001.0, 4002.0] and b["cols"][0][2] == [[4002.0, 12000]]   # $ resting
+    assert b["bbo"] == [[now - 4_000, 4002.0, 4003.0]] and b["markets"] == ["xyz:GOLD"]
+    assert svc.book_public("xyz:GOLD", since_ms=now - 6_000)["cols"][0][0] == now - 5_000
+
+
+def test_grouped_books_choose_bands_near_4_bps_and_replace_the_exact_book():
+    assert [depth_sig_figs(p) for p in (91.13, 4157.0, 61.03, 157.19, 1.2135, 100.6)] == [4, 4, 4, 4, 5, 5]
+    assert depth_sig_figs(91.13, target_bps=4.0) == 3
+    assert depth_band(91.13, 3) == 0.1 and depth_band(91.13, 4) == 0.01 and depth_band(4157.0, 4) == 1.0
+    import time as _t
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:GOLD"])
+    now = int(_t.time() * 1000)
+    lv = lambda px, sz: {"px": str(px), "sz": str(sz), "n": 1}
+    exact = {"channel": "l2Book", "data": {"coin": "xyz:GOLD", "time": now - 9000, "levels": [[lv(4000.1, 1)], [lv(4000.2, 1)]]}}
+    grouped = {"channel": "l2Book", "data": {"coin": "xyz:GOLD", "time": now - 4000, "levels": [[lv(4000, 9)], [lv(4001, 9)]]}}
+    svc.on_message(exact)
+    svc._on_depth(grouped)
+    svc.on_message(dict(exact, data=dict(exact["data"], time=now - 1000)))   # the exact book is ignored from now on
+    svc.markets["xyz:GOLD"] = {"mark": 4000.0}
+    svc.depth_sig["xyz:GOLD"] = 4
+    b = svc.book_public("xyz:GOLD")
+    assert [c[1][0][0] for c in b["cols"]] == [4000.0] and b["band"] == 1.0
