@@ -29,6 +29,7 @@ CTX_EVERY_S = 15
 CANDLES_EVERY_S = 1800
 FUTURES_EVERY_S = 600
 HISTORY_KEEP_MS = 26 * E.HOUR
+SPARK_HOURS = 48
 LABELS = {"JPY": "USD/JPY", "EUR": "EUR/USD", "GBP": "GBP/USD", "DXY": "Dollar index"}
 YEN_WATCH_1H_PCT = 0.5      # USD/JPY down this much in an hour, or YEN_WATCH_24H_PCT in a day: a fast yen rally
 YEN_WATCH_24H_PCT = 1.0
@@ -69,9 +70,10 @@ BOARD = [
     {"key": "holders", "name": "HYPE holder map", "markets": "HYPE",
      "idea": "Who holds HYPE and how each group behaves. The 7-day unstaking queue is the warning a holder may sell.",
      "next": "Collect balances and stakes for the addresses in our recordings."},
-    {"key": "fresh", "name": "Fresh whales", "markets": "BTC, ETH, SOL, HYPE",
-     "idea": "A brand-new wallet bridging in big money and opening one large position, like October 2025.",
-     "next": "Find them in the recordings and measure the next hours."},
+    {"key": "fresh", "name": "Fresh money", "markets": "BTC, ETH, SOL, HYPE",
+     "idea": "A metric, not a person: the share of trading and new positions from wallets never seen here before, "
+             "and money bridged in. A spike is the footprint (October 2025's crash short came from fresh money).",
+     "next": "Measure the first-seen share in our recordings; test whether spikes lead big moves."},
     {"key": "listings", "name": "Listing footprints", "markets": "Long-tail coins",
      "idea": "A token reaching an exchange's wallets, or deposits opening, before the listing notice.",
      "next": "Line up past listing notices with on-chain transfers (Dune)."},
@@ -215,7 +217,8 @@ class EdgeService:
                "funding_apr": round(x["funding"] * 24 * 365 * 100, 1) if x.get("funding") is not None else None,
                "oi_usd": round(oi * mark) if oi and mark else None, "day_volume": x.get("day_volume"),
                "change_24h_pct": _pct(mark, x.get("prev_day")), "change_1h_pct": self._move_1h(c, now_ms),
-               "max_lev": x.get("max_lev"), "seen_ms": x.get("t_ms")}
+               "max_lev": x.get("max_lev"), "seen_ms": x.get("t_ms"),
+               "spark": [round(p, 6) for _, p in self.candles.get(c, [])[-SPARK_HOURS:]] + ([mark] if mark else [])}
         if b not in E.SESSIONS:
             return row
         s = E.session_state(c, now_ms)
@@ -306,4 +309,6 @@ class EdgeService:
                 "weekend": rec, "roll": rolls, "events": self._events(now), "board": self._board(rec, rolls),
                 "recording": {"on": bool(longtail and longtail.client), "markets": getattr(longtail, "edge_coins", [])},
                 "fees": {"taker_bps": E.TAKER_BPS, "maker_bps": E.MAKER_BPS},
+                "hours": {"from_ms": now - E.DAY, "to_ms": now + 6 * E.DAY, "market": "WTI, gold and silver",
+                          "open": E.open_intervals("CL", now - E.DAY, now + 6 * E.DAY)},
                 "status": self.status}

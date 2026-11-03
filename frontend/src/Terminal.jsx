@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import Edges from "./components/Edges.jsx";
+import Edges, { Tape } from "./components/Edges.jsx";
 import News from "./components/News.jsx";
 import Bot from "./components/Bot.jsx";
 import { soundOn, unlockSound } from "./botSound.js";
@@ -23,6 +23,10 @@ export default function Terminal() {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
   const [now, setNow] = useState(Date.now());
+  const go = (k) => {
+    window.history.replaceState(null, "", k === "edges" ? "/terminal" : `/terminal#${k}`);
+    setTab(k);
+  };
 
   useEffect(() => {
     const onHash = () => setTab(fromHash());
@@ -31,8 +35,15 @@ export default function Terminal() {
     const arm = () => soundOn() && unlockSound();         // the bot's chime needs a click first
     document.addEventListener("pointerdown", arm, { once: true });
     document.title = "Analytix · Terminal";
+    const onKey = (e) => {                                 // 1, 2, 3 switch tabs (not while typing)
+      if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+      const k = TABS[Number(e.key) - 1]?.[0];
+      if (k) go(k);
+    };
+    window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("keydown", onKey);
       clearInterval(t);
       document.removeEventListener("pointerdown", arm);
     };
@@ -61,10 +72,6 @@ export default function Terminal() {
     };
   }, [tab]);
 
-  const go = (k) => {
-    window.history.replaceState(null, "", k === "edges" ? "/terminal" : `/terminal#${k}`);
-    setTab(k);
-  };
 
   return (
     <div className="app term">
@@ -90,9 +97,14 @@ export default function Terminal() {
           <span className="clock num" title="Your local time">{fmtTime(now)}</span>
         </div>
       </header>
-      {tab === "edges" && <Edges d={d} error={error} />}
+      <Tape d={d} />
+      {tab === "edges" && <Edges d={d} error={error} now={now} />}
       {tab === "news" && <News inline coins={d?.coins} />}
       {tab === "bot" && <Bot inline />}
+      <footer className="term-foot muted">
+        <span>keys <b>1</b> <b>2</b> <b>3</b> switch tabs</span>
+        <span>{d ? `prices ${Math.max(0, Math.round((now - d.now_ms) / 1000))}s old · ` : ""}times in your time zone</span>
+      </footer>
     </div>
   );
 }
