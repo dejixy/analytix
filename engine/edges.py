@@ -123,6 +123,25 @@ def session_state(name: str, t_ms: float) -> dict:
             "next_long_close_ms": nxt_weekend[0] if nxt_weekend else None}
 
 
+def open_intervals(name: str, start_ms: float, end_ms: float) -> list[tuple[int, int]]:
+    """When the real market is open between start and end: [(from, to)], clipped to the span."""
+    bs = boundaries(name, ny_date(start_ms) - timedelta(days=1), int((end_ms - start_ms) // DAY) + 3)
+    past = [b for b in bs if b[0] <= start_ms]
+    cur = int(start_ms) if not past or past[-1][1] == "open" else None
+    out = []
+    for t, kind, _ in bs:
+        if t <= start_ms or t >= end_ms:
+            continue
+        if kind == "close" and cur is not None:
+            out.append((cur, t))
+            cur = None
+        elif kind == "open" and cur is None:
+            cur = t
+    if cur is not None:
+        out.append((cur, int(end_ms)))
+    return out
+
+
 def weekends(name: str, start_ms: float, end_ms: float) -> list[tuple[int, int]]:
     """(Friday close, Sunday reopen) of every whole weekend closure between start and end, holiday weekends out."""
     out = []

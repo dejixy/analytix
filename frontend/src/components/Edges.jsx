@@ -1,3 +1,4 @@
+import { useEffect, useId, useRef, useState } from "react";
 import { fmtPct, fmtUsd } from "../format.js";
 
 /* The edge terminal's main view (/api/edges): trade.xyz's commodities and currencies on Hyperliquid, the weekend
@@ -18,8 +19,156 @@ const span = (ms) => {
   const h = Math.floor(m / 60);
   return h < 48 ? `${h}h ${String(Math.round(m % 60)).padStart(2, "0")}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
 };
+const pad2 = (n) => String(n).padStart(2, "0");
+/** A ticking countdown: "06:21:13", or "2d 06:21:13" past a day. */
+const hms = (ms) => {
+  const t = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(t / 86400);
+  const core = `${pad2(Math.floor((t % 86400) / 3600))}:${pad2(Math.floor((t % 3600) / 60))}:${pad2(t % 60)}`;
+  return d ? `${d}d ${core}` : core;
+};
+const SHORT = { CL: "WTI", BRENTOIL: "BRENT" };
+const short = (m) => (m.kind === "fx" ? m.label : SHORT[m.ticker] || m.ticker);
+const SHAPE = { CL: "circle", BRENTOIL: "square", GOLD: "triangle", SILVER: "diamond" };
 const GROUP = { oil: "Oil", macro: "Macro", session: "Market hours", crypto: "Crypto" };
 const STATUS = { testing: "Testing", watching: "Watching", planned: "Planned" };
+
+/* A number that flashes green or red for a moment when it changes: you see the market tick. */
+export function Flash({ value, children, className = "" }) {
+  const prev = useRef(value);
+  const [f, setF] = useState(null);
+  useEffect(() => {
+    if (value != null && prev.current != null && value !== prev.current) {
+      const dir = value > prev.current ? "up" : "down";
+      setF((x) => ({ dir, n: (x?.n || 0) + 1 }));
+    }
+    prev.current = value;
+  }, [value]);
+  return <span key={f?.n || 0} className={`${className} ${f ? `flash-${f.dir}` : ""}`}>{children}</span>;
+}
+
+/* The last 48 hours, hourly, ending at the live price. */
+function Spark({ v, w = 88, h = 22 }) {
+  const id = useId();
+  const pts = (v || []).filter((x) => x != null);
+  if (pts.length < 3) return <span className="muted">-</span>;
+  const lo = Math.min(...pts);
+  const r = Math.max(...pts) - lo || 1;
+  const xy = pts.map((p, i) => [2 + (i / (pts.length - 1)) * (w - 6), h - 3 - ((p - lo) / r) * (h - 6)]);
+  const line = xy.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const up = pts.at(-1) >= pts[0];
+  return (
+    <svg className={`term-spark ${up ? "up" : "down"}`} width={w} height={h} viewBox={`0 0 ${w} ${h}`}
+      role="img" aria-label={`48 hours: ${up ? "up" : "down"} ${fmtPct((pts.at(-1) / pts[0] - 1) * 100)}`}>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" className="term-spark-top" />
+          <stop offset="1" className="term-spark-bottom" />
+        </linearGradient>
+      </defs>
+      <polygon points={`${xy[0][0]},${h} ${line} ${xy.at(-1)[0]},${h}`} fill={`url(#${id})`} />
+      <polyline points={line} />
+      <circle cx={xy.at(-1)[0]} cy={xy.at(-1)[1]} r="2" />
+    </svg>
+  );
+}
+
+/* Scrolling prices across the top of every tab; hover to stop it. Marks the markets Hyperliquid is pricing alone. */
+export function Tape({ d }) {
+  const items = [...(d?.markets || []), ...(d?.fx || [])].filter((m) => m.price != null);
+  if (!items.length) return null;
+  const row = items.map((m) => (
+    <span key={m.name} className="term-tape-item">
+      <b>{short(m)}</b>
+      <Flash value={m.price} className="num">{px(m.price)}</Flash>
+      <span className={tone(m.change_24h_pct)}>{m.change_24h_pct == null ? "" : m.change_24h_pct >= 0 ? "▲" : "▼"} {fmtPct(m.change_24h_pct)}</span>
+      {m.session && !m.session.open && m.session.why !== "break" && <span className="term-tape-alone">HL only</span>}
+    </span>
+  ));
+  return (
+    <div className="term-tape" aria-label="Prices">
+      <div className="term-tape-track">
+        <div className="term-tape-group">{row}</div>
+        <div className="term-tape-group" aria-hidden="true">{row}</div>
+      </div>
+    </div>
+  );
+}
+
+/* The week of the real market (CME, ICE): filled when it's open, gaps when Hyperliquid prices alone; a line at now. */
+function Week({ d, now }) {
+  const { from_ms: a, to_ms: b, open } = d.hours;
+  const pct = (t) => Math.min(100, Math.max(0, ((t - a) / (b - a)) * 100));
+  const mids = [];
+  const t = new Date(a);
+  t.setHours(24, 0, 0, 0);
+  for (; t.getTime() < b; t.setDate(t.getDate() + 1)) mids.push(t.getTime());
+  return (
+    <div className="term-week">
+      <div className="term-week-bar">
+        {open.map(([x, y]) => (
+          <span key={x} className="term-week-open" style={{ left: `${pct(x)}%`, width: `${pct(y) - pct(x)}%` }}
+            title={`Real market open ${dayTime(x)} to ${dayTime(y)}`} />
+        ))}
+        {mids.map((m) => <span key={m} className="term-week-tick" style={{ left: `${pct(m)}%` }} />)}
+        <span className="term-week-now" style={{ left: `${pct(now)}%` }} title="Now" />
+      </div>
+      <div className="term-week-days">
+        {mids.map((m) => (
+          <span key={m} style={{ left: `${pct(m + 43_200_000)}%` }}>
+            {new Date(m).toLocaleDateString([], { weekday: "short" })}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* The market clock: are the real markets open, the countdown to the next change, the week, and what's next. */
+function Clock({ d, now }) {
+  const cl = d.markets.find((m) => m.ticker === "CL") || d.markets[0];
+  const s = cl?.session;
+  if (!s) return null;
+  const brk = !s.open && s.why === "break";
+  const target = s.open ? s.next_long_close_ms : s.next_change_ms;
+  const timed = d.events.filter((e) => !e.all_day && e.t_ms > now);
+  const [next, ...after] = timed;
+  return (
+    <section className={`panel term-wide term-hero ${s.open ? "is-open" : brk ? "is-break" : "is-shut"}`}>
+      <div className="term-hero-state">
+        <div className="stat-label">Real markets · {d.hours.market}</div>
+        <div className="term-big">{s.open ? "Open" : brk ? "Daily break" : "Shut"}</div>
+        <div className="term-count">
+          {s.open ? "shuts for the weekend in" : "reopens in"} <b className="num">{hms(target - now)}</b>
+        </div>
+        {!s.open && !brk && <span className="term-alone">Hyperliquid is the only market</span>}
+        {s.open && <span className="muted term-hero-note">daily break {clock(s.next_close_ms)} to {clock(s.next_close_ms + 3_600_000)}</span>}
+      </div>
+      <Week d={d} now={now} />
+      <div className="term-hero-next">
+        <div className="stat-label">Next up</div>
+        {next ? (
+          <>
+            <div className="term-next-title">{next.title}</div>
+            <div className="term-count">in <b className="num">{hms(next.t_ms - now)}</b> <span className="muted">· {dayTime(next.t_ms)}</span></div>
+            {after.slice(0, 2).map((e) => (
+              <div key={`${e.t_ms}-${e.title}`} className="muted term-next-more">{dayTime(e.t_ms)} · {e.title}</div>
+            ))}
+          </>
+        ) : (
+          <div className="muted">Nothing scheduled this week.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function Shape({ k, x, y, className }) {
+  if (k === "square") return <rect x={x - 2.4} y={y - 2.4} width="4.8" height="4.8" className={className} />;
+  if (k === "triangle") return <polygon points={`${x},${y - 3.2} ${x + 3},${y + 2.4} ${x - 3},${y + 2.4}`} className={className} />;
+  if (k === "diamond") return <polygon points={`${x},${y - 3.3} ${x + 3.3},${y} ${x},${y + 3.3} ${x - 3.3},${y}`} className={className} />;
+  return <circle cx={x} cy={y} r="2.7" className={className} />;
+}
 
 function RealMarket({ m, now }) {
   const s = m.session;
@@ -50,7 +199,7 @@ function Markets({ d }) {
         <table className="plan-table term-table">
           <thead>
             <tr>
-              <th>Market</th><th>Real market</th><th>Price</th><th>24h</th>
+              <th>Market</th><th>Real market</th><th>Price</th><th>24h</th><th>48h</th>
               <th title="Hyperliquid's price against trade.xyz's oracle (the real market's price while it's open)">vs oracle</th>
               <th>Funding / yr</th><th>Open interest</th><th>24h volume</th>
             </tr>
@@ -58,10 +207,11 @@ function Markets({ d }) {
           <tbody>
             {d.markets.map((m) => [
               <tr key={m.name}>
-                <td><b>{m.label}</b> <span className="muted">{m.ticker}</span></td>
+                <td><b>{m.label}</b> <span className="muted">{short(m)}</span></td>
                 <td><RealMarket m={m} now={d.now_ms} /></td>
-                <td className="num">{px(m.price)}</td>
+                <td className="num"><Flash value={m.price}>{px(m.price)}</Flash></td>
                 <td className={`num ${tone(m.change_24h_pct)}`}>{fmtPct(m.change_24h_pct)}</td>
+                <td><Spark v={m.spark} /></td>
                 <td className="num">{bps(m.basis_bps, 1)}</td>
                 <td className="num">{m.funding_apr == null ? "-" : fmtPct(m.funding_apr, 1)}</td>
                 <td className="num">{fmtUsd(m.oi_usd)}</td>
@@ -69,7 +219,7 @@ function Markets({ d }) {
               </tr>,
               m.closed && (
                 <tr key={`${m.name}-closed`} className="term-closed">
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <ClosedLine c={m.closed} />
                   </td>
                 </tr>
@@ -109,27 +259,50 @@ function ClosedLine({ c }) {
   );
 }
 
-function Scatter({ rows, fit }) {
+function Scatter({ rows, fit, live }) {
   const pts = rows.filter((r) => r.w_bps != null && r.r_bps != null);
   if (pts.length < 3) return null;
-  const lim = Math.max(50, ...pts.map((r) => Math.max(Math.abs(r.w_bps), Math.abs(r.r_bps)))) * 1.1;
+  const lim = Math.max(50, ...pts.map((r) => Math.max(Math.abs(r.w_bps), Math.abs(r.r_bps))),
+    ...live.map((l) => Math.abs(l.w) * 1.05)) * 1.1;
   const W = 260, H = 190, pad = 26;
   const x = (v) => pad + ((v + lim) / (2 * lim)) * (W - 2 * pad);
   const y = (v) => H - pad - ((v + lim) / (2 * lim)) * (H - 2 * pad);
+  const kinds = [...new Set(pts.map((r) => r.tk))];
   return (
-    <svg className="term-scatter" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Weekend move against the move at the reopen">
-      <line x1={x(-lim)} y1={y(0)} x2={x(lim)} y2={y(0)} className="term-axis" />
-      <line x1={x(0)} y1={y(-lim)} x2={x(0)} y2={y(lim)} className="term-axis" />
-      <line x1={x(-lim)} y1={y(-lim)} x2={x(lim)} y2={y(lim)} className="term-same" />
-      {fit && <line x1={x(-lim)} y1={y(fit.a - fit.b * lim)} x2={x(lim)} y2={y(fit.a + fit.b * lim)} className="term-fit" />}
-      {pts.map((r) => (
-        <circle key={`${r.market}-${r.close_ms}`} cx={x(r.w_bps)} cy={y(r.r_bps)} r="2.6" className="term-pt">
-          <title>{`${r.market} · ${dayLabel(r.close_ms)}: weekend ${bps(r.w_bps)}, reopen ${bps(r.r_bps)}`}</title>
-        </circle>
-      ))}
-      <text x={W - pad} y={y(0) - 4} textAnchor="end" className="term-ax-label">weekend move</text>
-      <text x={x(0) + 4} y={pad - 8} className="term-ax-label">at the reopen</text>
-    </svg>
+    <div>
+      <svg className="term-scatter" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Weekend move against the move at the reopen">
+        <line x1={x(-lim)} y1={y(0)} x2={x(lim)} y2={y(0)} className="term-axis" />
+        <line x1={x(0)} y1={y(-lim)} x2={x(0)} y2={y(lim)} className="term-axis" />
+        <line x1={x(-lim)} y1={y(-lim)} x2={x(lim)} y2={y(lim)} className="term-same" />
+        {fit && <line x1={x(-lim)} y1={y(fit.a - fit.b * lim)} x2={x(lim)} y2={y(fit.a + fit.b * lim)} className="term-fit" />}
+        {pts.map((r) => (
+          <g key={`${r.tk}-${r.close_ms}`}>
+            <Shape k={SHAPE[r.tk]} x={x(r.w_bps)} y={y(r.r_bps)} className="term-pt" />
+            <title>{`${r.market} · ${dayLabel(r.close_ms)}: weekend ${bps(r.w_bps)}, reopen ${bps(r.r_bps)}`}</title>
+          </g>
+        ))}
+        {live.map((l) => (
+          <g key={l.tk}>
+            <circle cx={x(l.w)} cy={y(l.w + l.snap)} r="5" className="term-live" />
+            <Shape k={SHAPE[l.tk]} x={x(l.w)} y={y(l.w + l.snap)} className="term-live-pt" />
+            <title>{`${l.label} this weekend so far: ${bps(l.w)}; expected at the reopen ${bps(l.w + l.snap)}`}</title>
+          </g>
+        ))}
+        <text x={W - pad} y={y(0) - 4} textAnchor="end" className="term-ax-label">weekend move</text>
+        <text x={x(0) + 4} y={pad - 8} className="term-ax-label">at the reopen</text>
+      </svg>
+      <div className="term-legend">
+        {kinds.map((k) => (
+          <span key={k}>
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><Shape k={SHAPE[k]} x={5} y={5} className="term-pt" /></svg>
+            {pts.find((r) => r.tk === k)?.market}
+          </span>
+        ))}
+        {live.length > 0 && <span><i className="term-legend-live" />this weekend</span>}
+        <span><i className="term-legend-fit" />fit</span>
+        <span><i className="term-legend-same" />kept it all</span>
+      </div>
+    </div>
   );
 }
 
@@ -137,7 +310,10 @@ function Record({ d }) {
   const w = d.weekend;
   const p = w.pooled;
   const label = Object.fromEntries(d.markets.map((m) => [m.name, m.label]));
-  const all = Object.entries(w.markets).flatMap(([name, x]) => x.rows.map((r) => ({ ...r, market: label[name] || name })));
+  const tick = Object.fromEntries(d.markets.map((m) => [m.name, m.ticker]));
+  const all = Object.entries(w.markets).flatMap(([name, x]) => x.rows.map((r) => ({ ...r, market: label[name] || name, tk: tick[name] })));
+  const live = d.markets.filter((m) => m.closed?.w_bps != null && m.closed?.expect)
+    .map((m) => ({ tk: m.ticker, label: m.label, w: m.closed.w_bps, snap: m.closed.expect.snap_bps }));
   const latest = [...all].sort((a, b) => b.close_ms - a.close_ms).slice(0, 8);
   const f = p.fade;
   return (
@@ -160,7 +336,7 @@ function Record({ d }) {
               {f.n ? <> <b className={tone(f.avg_bps)}>{bps(f.avg_bps)}</b> a trade after a {w.cost_bps} bps round trip over {f.n}, {(f.win * 100).toFixed(0)}% won{f.t != null && <span className="muted"> (t {f.t})</span>}.</> : " none that big yet."}
             </p>
             <div className="term-split">
-              <Scatter rows={all} fit={p.fit} />
+              <Scatter rows={all} fit={p.fit} live={live} />
               <table className="plan-table">
                 <thead><tr><th>Market</th><th>Weekends</th><th title="Share of the weekend move still there an hour after the reopen">Kept</th><th>Fades</th><th>Each</th></tr></thead>
                 <tbody>
@@ -262,7 +438,7 @@ function Currencies({ d }) {
           <p className="plan-note muted">No currency markets set (ANALYTIX_EDGE_COINS).</p>
         ) : (
           <table className="plan-table">
-            <thead><tr><th>Pair</th><th>Price</th><th>1h</th><th>24h</th><th /></tr></thead>
+            <thead><tr><th>Pair</th><th>Price</th><th>1h</th><th>24h</th><th>48h</th><th /></tr></thead>
             <tbody>
               {d.fx.map((m) => {
                 const yen = m.ticker === "JPY";
@@ -271,9 +447,10 @@ function Currencies({ d }) {
                 return (
                   <tr key={m.name}>
                     <td><b>{m.label}</b></td>
-                    <td className="num">{px(m.price)}</td>
+                    <td className="num"><Flash value={m.price}>{px(m.price)}</Flash></td>
                     <td className="num">{fmtPct(m.change_1h_pct)}</td>
                     <td className="num">{fmtPct(c)}</td>
+                    <td><Spark v={m.spark} w={70} /></td>
                     <td className="muted">{c == null || Math.abs(c) < 0.05 ? "" : yen ? (c < 0 ? "yen stronger" : "yen weaker") : dollarUp ? "dollar stronger" : "dollar weaker"}</td>
                   </tr>
                 );
@@ -352,12 +529,25 @@ function Board({ d }) {
   );
 }
 
-export default function Edges({ d, error }) {
-  if (!d) return <p className="plan-note muted term-pad">{error || "Loading…"}</p>;
+function Boot({ error }) {
+  return (
+    <div className="term-boot" role="status">
+      <div>&gt; connecting to the Analytix server</div>
+      <div>&gt; reading trade.xyz markets on Hyperliquid</div>
+      <div>&gt; loading the weekend record and the calendar</div>
+      <div>&gt; {error || "almost there"}<span className="cursor" aria-hidden="true" /></div>
+    </div>
+  );
+}
+
+export default function Edges({ d, error, now }) {
+  if (!d) return <Boot error={error} />;
+  now = now || d.now_ms;
   const down = Object.entries(d.status || {}).filter(([, s]) => !s.ok);
   return (
     <div className="term-grid">
       {error && <div className="plan-error term-wide">{error}</div>}
+      <Clock d={d} now={now} />
       <Markets d={d} />
       <div className="term-col">
         <Record d={d} />

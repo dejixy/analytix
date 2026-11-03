@@ -108,8 +108,16 @@ def test_service_shows_the_live_weekend(monkeypatch):
     assert d["fx"][0]["label"] == "USD/JPY" and d["yen_watch"]                       # down 1.3% in a day
     assert [c["key"] for c in d["board"]][:2] == ["weekend", "roll"]
     assert d["recording"] == {"on": True, "markets": ["xyz:GOLD"]}
+    assert gold["spark"][-1] == 4100.0 and len(gold["spark"]) <= 49 and d["hours"]["open"]
 
 
 def test_wti_answers_to_both_names():
     assert E.bare("xyz:CL") == E.bare("xyz:WTIOIL") == "CL"
     assert E.roll_state("WTIOIL", ny(2026, 11, 10, 12))["symbols"][0] == "CLZ26.NYM"
+
+
+def test_open_intervals_across_a_weekend():
+    got = E.open_intervals("CL", ny(2026, 11, 5, 12), ny(2026, 11, 9, 12))
+    assert got == [(ny(2026, 11, 5, 12), ny(2026, 11, 5, 17)), (ny(2026, 11, 5, 18), ny(2026, 11, 6, 17)),
+                   (ny(2026, 11, 8, 18), ny(2026, 11, 9, 12))]
+    assert E.open_intervals("CL", ny(2026, 11, 7, 12), ny(2026, 11, 7, 13)) == []        # Saturday: shut throughout
