@@ -160,7 +160,8 @@ def test_live_trades_merge_fills_into_orders():
     got = svc.trades_public()["orders"]
     assert [(o["coin"], o["side"], o["usd"], o["fills"]) for o in got] == [("xyz:GOLD", 1, 80010, 2), ("xyz:CL", -1, 30000, 1)]
     assert got[0]["px"] == round((4000 * 40000 + 4001 * 40010) / 80010, 6) and "_taker" not in got[0]
-    assert svc.trades_public(since_ms=now)["orders"] == []                    # nothing newer than the last one
+    assert len(svc.trades_public(since_ms=now)["orders"]) == 2                # the same millisecond is sent again
+    assert svc.trades_public(since_ms=now + 1)["orders"] == []
     f = svc.trades_public()["flow"]
     assert f["xyz:GOLD"][15] == {"net": 80010 - 400, "buy": 80010, "sell": 400, "n": 2}   # flow counts every order
     assert f["xyz:CL"][5]["net"] == -30000
@@ -175,3 +176,22 @@ def test_longtail_hands_edge_messages_to_the_terminal(tmp_path):
     rec._on_message({"channel": "trades", "data": [{"coin": "xyz:GOLD"}]})
     rec._on_message({"channel": "trades", "data": [{"coin": "DOGE"}]})
     assert seen == [{"channel": "trades", "data": [{"coin": "xyz:GOLD"}]}]
+
+
+def test_activity_by_hour_and_the_light_reply():
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None), coins=["xyz:GOLD"])
+    base = (ny(2026, 11, 4, 12) // E.HOUR) * E.HOUR
+    hours = [base - k * E.HOUR for k in range(100, -1, -1)]
+    px = 4000.0
+    rows = []
+    for t in hours:
+        rows.append((t, px))
+        px *= 1.01 if (t // E.HOUR) % 24 == 14 else 1.0001      # the 14:00 UTC hour moves 1%
+    svc.candles["xyz:GOLD"] = rows
+    a = svc.activity()
+    assert a["names"] == ["xyz:GOLD"] and a["m"][0][14] > 90 and a["m"][0][3] < 2
+    svc.heavy_v = 3
+    full = svc.public(base)
+    assert full["weekend"] is not None and full["activity"] is not None and full["heavy_v"] == 3
+    light = svc.public(base, have=3)
+    assert light["light"] and light["weekend"] is None and light["compare"] is None and light["markets"]

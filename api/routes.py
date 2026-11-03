@@ -216,9 +216,10 @@ async def news(request: Request, hours: float = 24, coin: str | None = None):
 
 
 @router.get("/edges")
-async def edges(request: Request):
-    """The edge terminal: trade.xyz commodities and currencies, the weekend record, the oil roll, what's coming up."""
-    return _rt(request).edges.public()
+async def edges(request: Request, have: int | None = None):
+    """The edge terminal: trade.xyz commodities and currencies, the weekend record, the oil roll, what's coming up.
+    `have`: the hourly-history version the page already holds; its slow parts are left out if unchanged."""
+    return _rt(request).edges.public(have=have)
 
 
 @router.get("/edges/trades")

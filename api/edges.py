@@ -42,6 +42,7 @@ TRADES_MIN_USD = 1_000      # smaller orders aren't kept
 TRADES_MAX_SEND = 800
 OWN_FEED_AFTER_S = 90       # no trades from the long-tail socket by then: open a socket of our own
 COMP_HOURS = 168            # the compare chart: a week of hourly closes on one grid
+ACTIVITY_DAYS = 30          # the heat grid: average hourly move by hour of day over this many days
 CORR_MIN = 24               # hourly returns two markets need in common before their link is shown
 LABELS = {"JPY": "USD/JPY", "EUR": "EUR/USD", "GBP": "GBP/USD", "DXY": "Dollar index"}
 YEN_WATCH_1H_PCT = 0.5      # USD/JPY down this much in an hour, or YEN_WATCH_24H_PCT in a day: a fast yen rally
@@ -135,6 +136,7 @@ class EdgeService:
         self.status: dict[str, dict] = {}
         self._tasks: list[asyncio.Task] = []
         self._cache: tuple[int, dict] | None = None        # (when, weekend record): candles change every 30 min
+        self.heavy_v = 0                                     # bumps when the hourly history changes
         self.orders: deque = deque(maxlen=20_000)            # live taker orders, oldest first
         self.trade_source: str | None = None
         self.last_trade_ms: int | None = None
@@ -198,6 +200,7 @@ class EdgeService:
                     rows = await fetch_candles(c, "1h", 5000)
                     self.candles[c] = [(int(r["t"]), float(r["c"])) for r in rows if r.get("c")]
                     self._cache = None
+                    self.heavy_v += 1
                     self._ok("Hourly candles")
                 except asyncio.CancelledError:
                     raise
@@ -266,7 +269,8 @@ class EdgeService:
         flow and the "key order" size (the biggest fifth) over 5, 15 and 60 minutes."""
         now = int(time.time() * 1000)
         lo = max(since_ms or 0, now - TRADES_KEEP_MS)
-        got = [o for o in self.orders if o["t"] > lo and o["usd"] >= min_usd]
+        # from `since` on, the same millisecond included (more of that block can arrive later; the page drops repeats)
+        got = [o for o in self.orders if (o["t"] >= lo if since_ms else o["t"] > lo) and o["usd"] >= min_usd]
         if len(got) > TRADES_MAX_SEND:
             got = sorted(sorted(got, key=lambda o: -o["usd"])[:TRADES_MAX_SEND], key=lambda o: o["t"])
         flow, cut = {}, {}
@@ -316,6 +320,24 @@ class EdgeService:
                "published": E.PUBLISHED_FIT, "fade_min_bps": E.FADE_MIN_BPS, "cost_bps": 2 * E.TAKER_BPS}
         self._cache = (now_ms, out)
         return out
+
+    def activity(self, days: int = ACTIVITY_DAYS) -> dict:
+        """How much each market usually moves in each hour of the day (UTC), from its hourly closes over the last
+        `days`: the average size of the hour's move, bps. The heat grid turns it to local time."""
+        names, rows = [], []
+        for c in self.coins:
+            closes = self.candles.get(c, [])[-(days * 24 + 1):]
+            if len(closes) < 48:
+                continue
+            sums, counts = [0.0] * 24, [0] * 24
+            for (t0, a), (t1, b) in zip(closes, closes[1:]):
+                if a and b and t1 - t0 == E.HOUR:
+                    h = int(t0 // E.HOUR) % 24                # the hour (UTC) the move happened in
+                    sums[h] += abs(math.log(b / a)) * 1e4
+                    counts[h] += 1
+            names.append(c)
+            rows.append([round(sums[h] / counts[h], 1) if counts[h] else None for h in range(24)])
+        return {"names": names, "m": rows, "days": days}
 
     def compare(self, now_ms: int) -> dict:
         """Every market's hourly closes on one grid for the last week (the live price as the last point), how they
@@ -426,8 +448,11 @@ class EdgeService:
             out.append(c)
         return out
 
-    def public(self, now_ms: int | None = None) -> dict:
+    def public(self, now_ms: int | None = None, have: int | None = None) -> dict:
+        """Everything the terminal shows. The slow parts (the weekend record, the hourly history and what's built on
+        it) are left out when the caller already has this version of them (`have`)."""
         now = int(now_ms or time.time() * 1000)
+        light = have is not None and have == self.heavy_v and self.heavy_v > 0
         rec = self.record(now)
         markets = [self._market(c, now, rec) for c in self.coins]
         rolls = [self._roll(c, now) for c in self.coins if E.bare(c) in E.ACTIVE]
@@ -441,7 +466,9 @@ class EdgeService:
         longtail = getattr(self.rt, "longtail", None)
         return {"now_ms": now, "enabled": self.enabled, "mode": self.rt.mode, "coins": list(getattr(self.rt, "coins", [])),
                 "markets": [m for m in markets if m["kind"] != "fx"], "fx": fx, "yen_watch": watch,
-                "weekend": rec, "roll": rolls, "compare": self.compare(now), "events": self._events(now), "board": self._board(rec, rolls),
+                "heavy_v": self.heavy_v, "light": light,
+                "weekend": None if light else rec, "roll": rolls, "compare": None if light else self.compare(now),
+                "activity": None if light else self.activity(), "events": self._events(now), "board": self._board(rec, rolls),
                 "recording": {"on": bool(longtail and longtail.client), "markets": getattr(longtail, "edge_coins", [])},
                 "fees": {"taker_bps": E.TAKER_BPS, "maker_bps": E.MAKER_BPS},
                 "hours": {"from_ms": now - E.DAY, "to_ms": now + 6 * E.DAY, "market": "WTI, gold and silver",

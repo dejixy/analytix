@@ -1,8 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { fmtPct, fmtUsd } from "../format.js";
 import { ChangeLog } from "./TermChrome.jsx";
-import Compare from "./Compare.jsx";
-import { Head, Pill, SourcePill, fresh } from "./TermPanel.jsx";
+import Compare, { useOrders } from "./Compare.jsx";
+import World from "./World.jsx";
+import Charts from "./Charts.jsx";
+import Heat from "./Heat.jsx";
+import { Flash, Head, Pill, SourcePill, fresh } from "./TermPanel.jsx";
+
+export { Flash };
 
 /* The edge terminal's main view (/api/edges): trade.xyz's commodities and currencies on Hyperliquid, the weekend
    record, the oil roll, what's coming up and the board of edges being worked on. Times are in your time zone. */
@@ -39,20 +44,6 @@ const short = (m) => (m.kind === "fx" ? m.label : SHORT[m.ticker] || m.ticker);
 const SHAPE = { CL: "circle", BRENTOIL: "square", GOLD: "triangle", SILVER: "diamond" };
 const GROUP = { oil: "Oil", macro: "Macro", session: "Market hours", crypto: "Crypto" };
 const STATUS = { testing: "Testing", watching: "Watching", planned: "Planned" };
-
-/* A number that flashes green or red for a moment when it changes: you see the market tick. */
-export function Flash({ value, children, className = "" }) {
-  const prev = useRef(value);
-  const [f, setF] = useState(null);
-  useEffect(() => {
-    if (value != null && prev.current != null && value !== prev.current) {
-      const dir = value > prev.current ? "up" : "down";
-      setF((x) => ({ dir, n: (x?.n || 0) + 1 }));
-    }
-    prev.current = value;
-  }, [value]);
-  return <span key={f?.n || 0} className={`${className} ${f ? `flash-${f.dir}` : ""}`}>{children}</span>;
-}
 
 /* The last 48 hours, hourly, ending at the live price. */
 function Spark({ v, w = 88, h = 22 }) {
@@ -99,74 +90,6 @@ export function Tape({ d }) {
         <div className="term-tape-group" aria-hidden="true">{row}</div>
       </div>
     </div>
-  );
-}
-
-/* The week of the real market (CME, ICE): filled when it's open, gaps when Hyperliquid prices alone; a line at now. */
-function Week({ d, now }) {
-  const { from_ms: a, to_ms: b, open } = d.hours;
-  const pct = (t) => Math.min(100, Math.max(0, ((t - a) / (b - a)) * 100));
-  const mids = [];
-  const t = new Date(a);
-  t.setHours(24, 0, 0, 0);
-  for (; t.getTime() < b; t.setDate(t.getDate() + 1)) mids.push(t.getTime());
-  return (
-    <div className="term-week">
-      <div className="term-week-bar">
-        {open.map(([x, y]) => (
-          <span key={x} className="term-week-open" style={{ left: `${pct(x)}%`, width: `${pct(y) - pct(x)}%` }}
-            title={`Real market open ${dayTime(x)} to ${dayTime(y)}`} />
-        ))}
-        {mids.map((m) => <span key={m} className="term-week-tick" style={{ left: `${pct(m)}%` }} />)}
-        <span className="term-week-now" style={{ left: `${pct(now)}%` }} title="Now" />
-      </div>
-      <div className="term-week-days">
-        {mids.map((m) => (
-          <span key={m} style={{ left: `${pct(m + 43_200_000)}%` }}>
-            {new Date(m).toLocaleDateString([], { weekday: "short" })}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* The market clock: are the real markets open, the countdown to the next change, the week, and what's next. */
-function Clock({ d, now }) {
-  const cl = d.markets.find((m) => m.ticker === "CL") || d.markets[0];
-  const s = cl?.session;
-  if (!s) return null;
-  const brk = !s.open && s.why === "break";
-  const target = s.open ? s.next_long_close_ms : s.next_change_ms;
-  const timed = d.events.filter((e) => !e.all_day && e.t_ms > now);
-  const [next, ...after] = timed;
-  return (
-    <section id="p-CLK" className={`panel term-wide term-hero ${s.open ? "is-open" : brk ? "is-break" : "is-shut"}`}>
-      <div className="term-hero-state">
-        <div className="tp-kicker"><span className="term-code">CLK</span>Real markets: {d.hours.market}</div>
-        <div className="term-big">{s.open ? "Open" : brk ? "Daily break" : "Shut"}</div>
-        <div className="term-count">
-          {s.open ? "shuts for the weekend in" : "reopens in"} <b className="num">{hms(target - now)}</b>
-        </div>
-        {!s.open && !brk && <span className="term-alone">Hyperliquid is the only market</span>}
-        {s.open && <span className="muted term-hero-note">daily break {clock(s.next_close_ms)} to {clock(s.next_close_ms + 3_600_000)}</span>}
-      </div>
-      <Week d={d} now={now} />
-      <div className="term-hero-next">
-        <div className="tp-kicker">Next up</div>
-        {next ? (
-          <>
-            <div className="term-next-title">{next.title}</div>
-            <div className="term-count">in <b className="num">{hms(next.t_ms - now)}</b> <span className="muted">· {dayTime(next.t_ms)}</span></div>
-            {after.slice(0, 2).map((e) => (
-              <div key={`${e.t_ms}-${e.title}`} className="muted term-next-more">{dayTime(e.t_ms)} · {e.title}</div>
-            ))}
-          </>
-        ) : (
-          <div className="muted">Nothing scheduled this week.</div>
-        )}
-      </div>
-    </section>
   );
 }
 
@@ -545,76 +468,66 @@ function Board({ d }) {
   );
 }
 
-/* A tile's day: the last 24 hours against the price 24 hours ago (the dashed line, the same reference as the tile's
-   % and tint), green above it and red below, so the shape and the number always agree. */
-function DaySpark({ m }) {
-  const id = useId();
-  const pts = (m.spark || []).slice(-25).filter((x) => x != null);
-  if (pts.length < 3 || m.price == null) return <span className="term-tile-spark muted">-</span>;
-  const base = m.change_24h_pct != null ? m.price / (1 + m.change_24h_pct / 100) : pts[0];
-  const W = 140, H = 34;
-  const lo = Math.min(base, ...pts);
-  const r = Math.max(base, ...pts) - lo || 1;
-  const X = (i) => 1 + (i / (pts.length - 1)) * (W - 2);
-  const Y = (p) => 3 + (1 - (p - lo) / r) * (H - 6);
-  const by = Y(base);
-  const line = pts.map((p, i) => `${X(i).toFixed(1)},${Y(p).toFixed(1)}`).join(" ");
-  const area = `${X(0)},${by} ${line} ${X(pts.length - 1)},${by}`;
-  return (
-    <svg className="term-tile-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
-      aria-label={`24 hours: ${fmtPct(m.change_24h_pct)} against yesterday's price`}>
-      <clipPath id={`${id}a`}><rect x="0" y="0" width={W} height={by} /></clipPath>
-      <clipPath id={`${id}b`}><rect x="0" y={by} width={W} height={H - by} /></clipPath>
-      <polygon points={area} className="term-ds-up-fill" clipPath={`url(#${id}a)`} />
-      <polygon points={area} className="term-ds-down-fill" clipPath={`url(#${id}b)`} />
-      <line x1="0" x2={W} y1={by} y2={by} className="term-ds-base" />
-      <polyline points={line} className="term-ds-up" clipPath={`url(#${id}a)`} />
-      <polyline points={line} className="term-ds-down" clipPath={`url(#${id}b)`} />
-    </svg>
-  );
-}
-
-/* One tile per market, tinted by the day's move (stronger tint, bigger move); click to jump to its row. */
-function Monitor({ d, onPick, now }) {
-  const all = [...d.markets, ...d.fx];
-  const f = fresh(d, "Hyperliquid xyz", now, 60_000);
-  return (
-    <section id="p-MON" className="panel">
-      <Head code="MON" title="Market monitor" meta={[["Tint", "24h move"], ["Click", "detail"]]} pills={[<SourcePill key="s" f={f} />]} />
-      <div className="term-tiles">
-        {all.map((m) => {
-          const c = m.change_24h_pct;
-          const heat = c == null ? 0 : Math.min(1, Math.abs(c) / (m.kind === "fx" ? 1 : 3));
-          const bg = c == null || Math.abs(c) < 0.01 ? undefined
-            : c > 0 ? `rgba(31, 166, 122, ${0.05 + 0.27 * heat})` : `rgba(229, 83, 95, ${0.05 + 0.25 * heat})`;
-          const shut = m.session && !m.session.open && m.session.why !== "break";
-          return (
-            <button key={m.name} className="term-tile" style={{ background: bg }} onClick={() => onPick(m)}
-              title={`${m.label}: open ${m.kind === "fx" ? "Currencies" : "Commodities"}`}>
-              <span className="term-tile-top"><b>{short(m)}</b>{shut ? <span className="term-tape-alone">HL only</span> : <span className="term-tile-24">24h</span>}</span>
-              <Flash value={m.price} className="term-tile-px num">{px(m.price)}</Flash>
-              <span className="term-tile-ch">
-                <span className={tone(c)}>{fmtPct(c)}</span>
-                <span className="muted"> · 1h {fmtPct(m.change_1h_pct)}</span>
-              </span>
-              <DaySpark m={m} />
-              <span className="term-tile-foot">
-                <span><em>OI</em> {fmtUsd(m.oi_usd)}</span>
-                <span><em>Fund</em> {m.funding_apr == null ? "-" : fmtPct(m.funding_apr, 1)}</span>
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function Log({ log }) {
+/* What changed since the page opened, or the latest headlines with how the market moved after each. */
+function Log({ log, coins }) {
+  const [tab, setTab] = useState("changes");
+  const [news, setNews] = useState(null);
+  useEffect(() => {
+    if (tab !== "news") return undefined;
+    let live = true;
+    let timer;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/news?hours=24");
+        const j = await r.json();
+        if (live && r.ok) setNews(j);
+      } catch {
+        /* tried again in a minute */
+      }
+      if (live) timer = setTimeout(load, 60_000);
+    };
+    load();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [tab]);
+  const items = (news?.recent || []).slice(0, 30);
+  const first = coins?.[0];
   return (
     <section id="p-LOG" className="panel">
-      <Head code="LOG" title="What changed" meta={[["Since", "page opened"]]} pills={[<Pill key="n">{log.length} lines</Pill>]} />
-      <ChangeLog log={log} />
+      <Head code="LOG" title={tab === "changes" ? "What changed" : "Headlines"}
+        meta={tab === "changes" ? [["Since", "page opened"]] : [["Range", "24 h"]]}
+        pills={[<Pill key="n">{tab === "changes" ? `${log.length} lines` : `${items.length} items`}</Pill>]}>
+        <span className="tp-tabs" role="tablist">
+          {[["changes", "Changes"], ["news", "Headlines"]].map(([k, t]) => (
+            <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{t}</button>
+          ))}
+        </span>
+      </Head>
+      {tab === "changes" ? <ChangeLog log={log} /> : (
+        <div className="term-log lg-news">
+          {!news && <div className="muted">Loading the headlines…</div>}
+          {news && !items.length && <div className="muted">{news.enabled ? "No headlines in the last 24 hours." : "Headlines are read in live mode only."}</div>}
+          {items.map((it) => {
+            const r = it.reaction?.[first] || Object.values(it.reaction || {})[0];
+            const mins = Math.max(0, Math.round((Date.now() - it.t_ms) / 60000));
+            return (
+              <div key={it.id} className="lg-item">
+                <span className="muted num">{mins < 60 ? `${mins}m` : `${Math.round(mins / 60)}h`}</span>
+                <span className="lg-title">
+                  {it.url ? <a href={it.url} target="_blank" rel="noreferrer">{it.title}</a> : it.title}
+                  <span className="muted"> {it.source}{it.coins?.length ? ` · ${it.coins.join(" ")}` : ""}</span>
+                </span>
+                <span className={`num lg-r ${r?.after_bps > 0 ? "up" : r?.after_bps < 0 ? "down" : "muted"}`}
+                  title={r ? `${first || ""} after it: ${r.after_bps} bps${r.done ? " in 30 min" : " so far"}` : "no reaction measured"}>
+                  {r?.after_bps == null ? "" : `${r.after_bps > 0 ? "+" : ""}${Math.round(r.after_bps)}`}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -631,16 +544,18 @@ function Boot({ error }) {
 }
 
 export default function Edges({ d, error, now, log = [], onPick = () => {} }) {
+  const { orders, info } = useOrders(Boolean(d));
   if (!d) return <Boot error={error} />;
   now = now || d.now_ms;
   const down = Object.entries(d.status || {}).filter(([, s]) => !s.ok);
   return (
     <div className="term-grid">
       {error && <div className="plan-error term-wide">{error}</div>}
-      <Clock d={d} now={now} />
-      <div className="tw-8"><Monitor d={d} onPick={onPick} now={now} /></div>
-      <div className="tw-4"><Log log={log} /></div>
-      <Compare d={d} now={now} />
+      <div className="tw-8"><World d={d} now={now} orders={orders} info={info} /></div>
+      <div className="tw-4"><Log log={log} coins={d.coins} /></div>
+      <Charts d={d} onPick={onPick} />
+      <div className="tw-8"><Compare d={d} now={now} orders={orders} info={info} /></div>
+      <div className="tw-4"><Heat d={d} now={now} /></div>
       <Markets d={d} now={now} />
       <div className="tw-7"><Record d={d} /></div>
       <div className="tw-5 term-col">

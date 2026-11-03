@@ -28,34 +28,37 @@ const jitter = (id) => {
 };
 
 /* The orders, kept in the page: the last hour on open, then whatever is new every 2 seconds. */
-function useOrders(enabled) {
+export function useOrders(enabled) {
   const [orders, setOrders] = useState([]);
   const [info, setInfo] = useState(null);
   const last = useRef(null);
   useEffect(() => {
     if (!enabled) return undefined;
     let live = true;
+    let timer;
     const load = async () => {
       try {
         const r = await fetch(`/api/edges/trades${last.current ? `?since=${last.current}` : ""}`);
         const j = await r.json();
-        if (!live || !r.ok) return;
-        setInfo(j);
-        if (j.orders.length) last.current = j.orders.at(-1).t;
-        setOrders((old) => {
-          const seen = new Set(old.map((o) => o.id));
-          const keep = old.filter((o) => j.now_ms - o.t <= j.keep_ms);
-          return [...keep, ...j.orders.filter((o) => !seen.has(o.id)).map((o) => ({ ...o, seen_ms: Date.now() }))];
-        });
+        if (!live) return;
+        if (r.ok) {
+          setInfo(j);
+          if (j.orders.length) last.current = j.orders.at(-1).t;
+          setOrders((old) => {
+            const seen = new Set(old.map((o) => o.id));
+            const keep = old.filter((o) => j.now_ms - o.t <= j.keep_ms);
+            return [...keep, ...j.orders.filter((o) => !seen.has(o.id)).map((o) => ({ ...o, seen_ms: Date.now() }))];
+          });
+        }
       } catch {
         /* the next poll tries again */
       }
+      if (live) timer = setTimeout(load, POLL_MS);          // after the reply, never on top of it
     };
     load();
-    const t = setInterval(load, POLL_MS);
     return () => {
       live = false;
-      clearInterval(t);
+      clearTimeout(timer);
     };
   }, [enabled]);
   return { orders, info };
@@ -224,9 +227,8 @@ function Links({ c }) {
   );
 }
 
-export default function Compare({ d, now }) {
+export default function Compare({ d, now, orders, info }) {
   const [view, setView] = useState("flow");
-  const { orders, info } = useOrders(Boolean(d));
   if (!d) return null;
   const last = info?.last_ms;
   const live = last != null && now - last < 60_000;
