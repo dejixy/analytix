@@ -42,6 +42,7 @@ from config import (
 )
 from api.alerts import AlertService
 from api.baskets import Bot
+from api.edges import EdgeService
 from api.longtail import LongTailRecorder
 from api.news import NewsService
 from api.regime import RegimeService
@@ -124,6 +125,7 @@ class Runtime:
         self.longtail = LongTailRecorder(self)          # mid-volume coins, recorded only, for a study
         self.regime = RegimeService(self)               # quiet / middle / loud for the next 30 minutes
         self.news = NewsService(self)                   # economic calendar and headlines, with each coin's reaction
+        self.edges = EdgeService(self)                  # the edge terminal: trade.xyz commodities, roll, yen, events
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -194,6 +196,7 @@ class Runtime:
         await self.longtail.start()
         await self.regime.start()
         await self.news.start()
+        await self.edges.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
@@ -208,6 +211,7 @@ class Runtime:
         await self.longtail.stop()
         await self.regime.stop()
         await self.news.stop()
+        await self.edges.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:

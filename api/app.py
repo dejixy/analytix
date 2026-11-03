@@ -4,7 +4,7 @@ FastAPI app.
     uvicorn api.app:app                         # live Hyperliquid feed, every coin in ANALYTIX_COINS
     ANALYTIX_MODE=replay uvicorn api.app:app    # replay data/sampleSession.jsonl
 
-If frontend/dist exists (npm run build), the dashboard is served at / too.
+If frontend/dist exists (npm run build), the dashboard is served at / and the edge terminal at /terminal.
 """
 import logging
 from contextlib import asynccontextmanager
@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routes import router as rest_router
@@ -38,6 +39,11 @@ def create_app(mode: str = MODE, replay_file: Path = REPLAY_FILE, speed: float =
     app.include_router(rest_router)
     app.include_router(ws_router)
     if serve_frontend and FRONTEND_DIST.exists():
+        @app.get("/terminal", include_in_schema=False)
+        async def terminal():
+            """The edge terminal: the same build, which picks the page from the address."""
+            return FileResponse(FRONTEND_DIST / "index.html")
+
         app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
     return app
 

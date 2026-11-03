@@ -103,3 +103,9 @@ def test_alert_settings_round_trip_and_telegram_needs_a_bot(client):
     assert client.post("/api/alerts/telegram/discover").status_code == 400      # no bot connected yet
     assert client.post("/api/alerts/telegram/token", json={"token": "nonsense"}).status_code == 400
     assert "alerts" in client.get("/api/snapshot").json()
+
+
+def test_edges_shows_the_schedule_even_in_replay(client):
+    d = client.get("/api/edges").json()
+    assert d["enabled"] is False and d["events"] and len(d["roll"]) == 2
+    assert {m["ticker"] for m in d["markets"]} >= {"WTIOIL", "GOLD"} and d["board"][0]["key"] == "weekend"

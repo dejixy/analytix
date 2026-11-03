@@ -215,6 +215,12 @@ async def news(request: Request, hours: float = 24, coin: str | None = None):
     return _rt(request).news.public(min(max(hours, 1), 168), coin)
 
 
+@router.get("/edges")
+async def edges(request: Request):
+    """The edge terminal: trade.xyz commodities and currencies, the weekend record, the oil roll, what's coming up."""
+    return _rt(request).edges.public()
+
+
 @router.get("/regime")
 async def regime(request: Request):
     """Each coin's loud-market gauge: quiet / middle / loud and the move to expect over the next 30 minutes."""

@@ -291,6 +291,19 @@ The **Bot** button is a trading bot in **shadow mode**: it trades your rules on 
 
 Rules live in `data/bot.json`, closed trades in the bars SQLite file (`engine/bot.py`, `api/bot.py`, `GET /api/bot`, `POST /api/bot/rules`, `DELETE /api/bot/rules/{id}`, `POST /api/bot/rules/{id}/reset`). Live trading, through a Hyperliquid API wallet that can trade but not withdraw, comes next.
 
+### The edge terminal (/terminal)
+
+A second page on the same server (the **Terminal ›** link on the dashboard), for event edges rather than order flow, with **News** and the **Bot** as its other tabs (they've moved off the dashboard).
+
+- **Commodities on Hyperliquid:** trade.xyz's WTI, Brent, gold and silver, with whether the real market behind each is open. CME and ICE shut from Friday evening to Sunday evening New York time (and 5 to 6pm Monday to Thursday); Hyperliquid keeps trading them, its own order book sets the price inside a band of ±1/max leverage, and at the reopen the price snaps back to the real market. While shut, each market shows its move since Friday's close and what past weekends say the reopen does from here.
+- **Weekend record:** every past weekend from Hyperliquid's hourly candles (about 7 months): the weekend's move against the move an hour after the reopen, the fitted share kept, and fading moves of 100+ bps after a taker round trip (9 bps a side on trade.xyz). Until a market has 8 weekends of its own, the live estimate uses Blockworks Research's published fit (68 markets, Mar to Jul 2026). Holiday weekends are left out.
+- **Oil roll:** from the 5th to the 10th business day trade.xyz moves the oracle 20% a day from the front futures contract to the next; with Yahoo's futures prices it shows how far the oracle still drifts from the roll alone, next to Hyperliquid's price against the oracle and funding.
+- **Currencies:** USD/JPY and EUR/USD from trade.xyz, with a note when the yen rallies fast (the August 2024 carry-trade unwind).
+- **Coming up:** the next 7 days: oil reports, closes and reopens, roll days, options expiry, and the US and Japan calendar.
+- **Edge board:** each edge being worked on, with its status and next step.
+
+The markets are recorded on the long-tail socket (`ANALYTIX_EDGE_COINS`) for studies at finer resolution later.
+
 ### Position watch
 
 The **Positions** button opens position watch. Paste a wallet address (and a name if you like) and it shows that wallet's open Hyperliquid positions, refreshed every 20 seconds. It's read-only: Hyperliquid shows every wallet's positions publicly, so it needs no keys and can't trade. Up to 10 wallets; they're kept in `data/watch.json` on the machine running Analytix.
@@ -441,6 +454,8 @@ Thresholds live in `config.py`.
 | `GET /api/alerts` · `PUT /api/alerts` · `POST /api/alerts/levels` · `POST /api/alerts/telegram/{token,discover,test}` | alert settings (never the token), price alerts, Telegram connection and the latest alerts. |
 | `GET /api/outcomes` · `GET /api/outcomes/{id}?range=12h\|2w` · `GET /api/outcomes/questions/{id}?range=12h\|2w` | every prediction market with live odds, fair odds and the add-up check; one market's page (book, trades, who is trading, why the odds moved, odds history) |
 | `GET /api/hold?coin=BTC&side=long&leverage=800&target_pct=50&entry=&bust=` | the hold clock: survival odds by hold time (overall and like now), fill drift, the target-vs-bust race, the tape right now, and a live position read |
+| `GET /api/edges` | the edge terminal: trade.xyz's oil, gold, silver, yen and euro on Hyperliquid (price, oracle, funding, open interest, whether the real market is open), the live weekend when it's shut, the weekend record and fits, the oil roll, what's coming up, and the edge board |
+| `GET /api/news?hours=24&coin=BTC` | US and Japan releases coming up, and the latest headlines with each coin's reaction |
 | `WS /ws?coin=BTC` | a snapshot on connect, then 2× per second; send `{"coin": "SOL"}` to switch |
 
 `coin` defaults to `ANALYTIX_COIN` everywhere.

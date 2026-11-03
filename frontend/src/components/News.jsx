@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Drawer from "./Drawer.jsx";
 
 /* News: the US releases coming up (their times are known days ahead) and the latest crypto headlines and releases,
    each with how the coins it concerns actually moved and traded around it, from the server's own minute bars.
@@ -38,7 +39,7 @@ function Reaction({ r }) {
   );
 }
 
-export default function News({ coins, onClose }) {
+export default function News({ coins, onClose, inline = false }) {
   const [coin, setCoin] = useState(null);
   const [hours, setHours] = useState(24);
   const [d, setD] = useState(null);
@@ -69,11 +70,10 @@ export default function News({ coins, onClose }) {
 
   const down = d && Object.entries(d.status || {}).filter(([, s]) => !s.ok);
   return (
-    <div className="planner-scrim" onClick={onClose}>
-      <aside className="planner news" role="dialog" aria-label="News" onClick={(e) => e.stopPropagation()}>
+    <Drawer inline={inline} className="news" label="News" onClose={onClose}>
         <div className="panel-head">
           <h2 className="panel-title">News</h2>
-          <button className="plan-close" onClick={onClose} aria-label="Close">✕</button>
+          {!inline && <button className="plan-close" onClick={onClose} aria-label="Close">✕</button>}
         </div>
         <section className="plan-sec">
           <div className="plan-holds" role="group" aria-label="Coin">
@@ -93,7 +93,7 @@ export default function News({ coins, onClose }) {
           <>
             {!d.enabled && <p className="plan-note muted" style={{ padding: "0 12px" }}>News is read in live mode only.</p>}
             <section className="plan-sec">
-              <h3>Coming up · US releases</h3>
+              <h3>Coming up · US and Japan releases</h3>
               {!d.upcoming.length ? (
                 <p className="plan-note muted" style={{ margin: 0 }}>Nothing High or Medium impact in the next 7 days (or the calendar hasn't loaded yet).</p>
               ) : (
@@ -103,7 +103,7 @@ export default function News({ coins, onClose }) {
                       <span className="muted news-when">{until(it.t_ms, d.now_ms)}</span>
                       <span>
                         <b className={it.impact === "High" ? "" : "muted"}>{it.title}</b>
-                        <span className="muted"> · {it.impact}{it.forecast ? ` · forecast ${it.forecast}` : ""}{it.previous ? ` · previous ${it.previous}` : ""}</span>
+                        <span className="muted"> · {it.country === "JPY" ? "Japan · " : ""}{it.impact}{it.forecast ? ` · forecast ${it.forecast}` : ""}{it.previous ? ` · previous ${it.previous}` : ""}</span>
                       </span>
                     </div>
                   ))}
@@ -139,7 +139,6 @@ export default function News({ coins, onClose }) {
             )}
           </>
         )}
-      </aside>
-    </div>
+    </Drawer>
   );
 }

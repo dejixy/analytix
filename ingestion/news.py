@@ -2,8 +2,9 @@
 News for the followed coins: scheduled US economic releases and crypto headlines, each kept with when it was
 published (or is due) and when the server first saw it, tagged by coin and category.
 
-    calendar    Forex Factory's weekly calendar (this week and next): US releases of High or Medium impact, with
-                the forecast and previous values; their times are known days ahead
+    calendar    Forex Factory's weekly calendar (this week and next): US releases of High or Medium impact and
+                Japan's High-impact ones (the Bank of Japan, for the yen), with the forecast and previous values;
+                their times are known days ahead
     headlines   CoinDesk, Cointelegraph, The Block and Decrypt RSS (free, minutes behind the market: they explain
                 moves, they don't front-run them)
     tags        coins by name or ticker in the title or summary; a category from keywords (fed, inflation, jobs,
@@ -13,7 +14,8 @@ published (or is due) and when the server first saw it, tagged by coin and categ
 
 Item:
     {"id", "kind": "scheduled"|"headline", "source", "title", "url", "t_ms" (published or due), "seen_ms",
-     "coins": [...], "category", "impact" (scheduled: High|Medium), "forecast", "previous"}
+     "coins": [...], "category", "impact" (scheduled: High|Medium), "country" (scheduled: USD|JPY), "forecast",
+     "previous"}
 """
 import email.utils
 import json
@@ -126,6 +128,7 @@ def parse_calendar(payload, seen_ms: int, countries=("USD",), impacts=("High", "
         _, category = tag(title)
         t = _ms(dt)
         out.append({"id": f"cal:{ev.get('country')}:{title}:{t}", "kind": "scheduled", "source": "Calendar",
+                    "country": ev.get("country"),
                     "title": title, "url": "", "t_ms": t, "seen_ms": seen_ms, "coins": [],
                     "category": category if category != "other" else "macro", "impact": ev.get("impact"),
                     "forecast": ev.get("forecast") or None, "previous": ev.get("previous") or None})
