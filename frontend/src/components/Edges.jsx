@@ -267,13 +267,14 @@ function Currencies({ d }) {
               {d.fx.map((m) => {
                 const yen = m.ticker === "JPY";
                 const c = m.change_24h_pct;
+                const dollarUp = m.ticker === "DXY" ? c > 0 : c < 0;     // EUR/USD and GBP/USD rise as the dollar falls
                 return (
                   <tr key={m.name}>
                     <td><b>{m.label}</b></td>
                     <td className="num">{px(m.price)}</td>
                     <td className="num">{fmtPct(m.change_1h_pct)}</td>
                     <td className="num">{fmtPct(c)}</td>
-                    <td className="muted">{c == null || Math.abs(c) < 0.05 ? "" : yen ? (c < 0 ? "yen stronger" : "yen weaker") : c > 0 ? "dollar weaker" : "dollar stronger"}</td>
+                    <td className="muted">{c == null || Math.abs(c) < 0.05 ? "" : yen ? (c < 0 ? "yen stronger" : "yen weaker") : dollarUp ? "dollar stronger" : "dollar weaker"}</td>
                   </tr>
                 );
               })}

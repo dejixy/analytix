@@ -46,7 +46,7 @@ class Session:
 
 
 SESSIONS = {
-    "WTIOIL": Session("WTIOIL", "WTI oil", "oil", 17, 0.05),
+    "CL": Session("CL", "WTI oil", "oil", 17, 0.05),          # WTIOIL on trade.xyz's screens, CL in the API
     "BRENTOIL": Session("BRENTOIL", "Brent oil", "oil", 18, 0.05),
     "GOLD": Session("GOLD", "Gold", "metal", 17, 0.04),
     "SILVER": Session("SILVER", "Silver", "metal", 17, 0.04),
@@ -63,9 +63,13 @@ US_HOLIDAYS = {
 }
 
 
+ALIASES = {"WTIOIL": "CL"}                                # trade.xyz's display name → its API name
+
+
 def bare(name: str) -> str:
-    """"xyz:GOLD" → "GOLD"."""
-    return name.split(":", 1)[1] if ":" in name else name
+    """"xyz:GOLD" → "GOLD" (and the display name "WTIOIL" → "CL")."""
+    b = name.split(":", 1)[1] if ":" in name else name
+    return ALIASES.get(b, b)
 
 
 def _ms(dt: datetime) -> int:
@@ -203,8 +207,8 @@ def expected_snap(w_bps: float, f: dict | None) -> dict:
 
 # ── oil roll ──────────────────────────────────────────────────────────────
 CODES = "FGHJKMNQUVXZ"                                     # futures month codes, January to December
-ACTIVE = {"WTIOIL": "GHJKMNQUVXZF", "BRENTOIL": "HJKMNQUVXZFG"}   # contract live at the start of each month
-YAHOO_ROOT = {"WTIOIL": "CL", "BRENTOIL": "BZ"}           # NYMEX symbols (Brent's NYMEX look-alike)
+ACTIVE = {"CL": "GHJKMNQUVXZF", "BRENTOIL": "HJKMNQUVXZFG"}   # contract live at the start of each month
+YAHOO_ROOT = {"CL": "CL", "BRENTOIL": "BZ"}           # NYMEX symbols (Brent's NYMEX look-alike)
 
 
 def business_days(year: int, month: int) -> list[date]:
@@ -294,7 +298,7 @@ def recurring(t_ms: float, days: int = 7) -> list[dict]:
             out.append((_ny(d, 18), "Brent closes", "session", "Hyperliquid keeps trading it alone"))
         if wd == 6:
             out.append((_ny(d, 18), "Oil, gold and silver reopen", "session", "prices snap back to the real market"))
-    for name in ("WTIOIL", "BRENTOIL"):
+    for name in ("CL", "BRENTOIL"):
         r = roll_state(name, t_ms)
         for key, what in (("start", "starts"), ("end", "ends")):
             d = date.fromisoformat(r[key])

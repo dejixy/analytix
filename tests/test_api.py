@@ -108,4 +108,4 @@ def test_alert_settings_round_trip_and_telegram_needs_a_bot(client):
 def test_edges_shows_the_schedule_even_in_replay(client):
     d = client.get("/api/edges").json()
     assert d["enabled"] is False and d["events"] and len(d["roll"]) == 2
-    assert {m["ticker"] for m in d["markets"]} >= {"WTIOIL", "GOLD"} and d["board"][0]["key"] == "weekend"
+    assert {m["ticker"] for m in d["markets"]} >= {"CL", "GOLD"} and d["board"][0]["key"] == "weekend"
