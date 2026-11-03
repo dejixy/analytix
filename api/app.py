@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -36,6 +37,7 @@ def create_app(mode: str = MODE, replay_file: Path = REPLAY_FILE, speed: float =
     app = FastAPI(title="Analytix", description="Why did this price move?", lifespan=lifespan)
     app.state.runtime = runtime
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
+    app.add_middleware(GZipMiddleware, minimum_size=1024)         # JSON replies shrink ~8x: a slow tunnel matters
     app.include_router(rest_router)
     app.include_router(ws_router)
     if serve_frontend and FRONTEND_DIST.exists():

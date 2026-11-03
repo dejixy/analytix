@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+
 /* The terminal's panel chrome, the same on every panel: a header bar with the panel's command code, its title, what
    the data is and how fresh (key / value segments), and status pills. Colour carries meaning: green and red for
    direction, cyan for system state (live, active, selected), grey for everything else. */
@@ -46,3 +48,18 @@ export function SourcePill({ f, label = "Live" }) {
   if (f.state === "stale") return <Pill kind="warn">Stale</Pill>;
   return <Pill>Waiting</Pill>;
 }
+
+/* A number that flashes green or red for a moment when it changes: you see the market tick. */
+export function Flash({ value, children, className = "" }) {
+  const prev = useRef(value);
+  const [f, setF] = useState(null);
+  useEffect(() => {
+    if (value != null && prev.current != null && value !== prev.current) {
+      const dir = value > prev.current ? "up" : "down";
+      setF((x) => ({ dir, n: (x?.n || 0) + 1 }));
+    }
+    prev.current = value;
+  }, [value]);
+  return <span key={f?.n || 0} className={`${className} ${f ? `flash-${f.dir}` : ""}`}>{children}</span>;
+}
+

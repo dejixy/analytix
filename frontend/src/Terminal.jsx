@@ -92,29 +92,40 @@ export default function Terminal() {
     };
   }, []);
 
+  // One request at a time: the next waits for this reply (a slow link can't pile them up). The slow parts (weekend
+  // record, hourly history) only come when they've changed: the page says which version it holds.
+  const heavy = useRef(null);
   useEffect(() => {
     let live = true;
+    let timer;
+    const every = tab === "edges" ? EDGES_EVERY_MS : 60000;
     const load = async () => {
       const t0 = performance.now();
       try {
-        const r = await fetch("/api/edges");
+        const have = heavy.current?.heavy_v;
+        const r = await fetch(`/api/edges${have ? `?have=${have}` : ""}`);
         const j = await r.json();
         if (!live) return;
-        setLatency(performance.now() - t0);
+        const ms = performance.now() - t0;
+        setLatency(ms);
         setLastFetch(Date.now());
         if (r.ok) {
+          if (j.light && heavy.current) Object.assign(j, { weekend: heavy.current.weekend, compare: heavy.current.compare, activity: heavy.current.activity });
+          else heavy.current = { heavy_v: j.heavy_v, weekend: j.weekend, compare: j.compare, activity: j.activity };
           setD(j);
           setError(null);
         } else setError(j.detail || "Couldn't read the edges.");
+        timer = setTimeout(load, Math.max(every - ms, 1000));
       } catch {
-        if (live) setError("Couldn't reach the server.");
+        if (!live) return;
+        setError("Couldn't reach the server.");
+        timer = setTimeout(load, every);
       }
     };
     load();
-    const t = setInterval(load, tab === "edges" ? EDGES_EVERY_MS : 60000);
     return () => {
       live = false;
-      clearInterval(t);
+      clearTimeout(timer);
     };
   }, [tab]);
 
