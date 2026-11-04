@@ -1165,6 +1165,9 @@ kbd {
 .term .term-card { border: 0; border-radius: 0; background: var(--t-panel); padding: 10px 12px 12px; font-size: 12px; }
 .term .term-card:hover { transform: none; }
 .term .term-card.testing { box-shadow: inset 2px 0 0 var(--t-cyan); }
+.term .term-card.failed { opacity: 0.62; }
+.term .term-card.failed .term-card-line { color: var(--t-ink2); }
+.term .term-pill.failed { color: var(--t-mute); border-color: var(--t-edge); }
 .term .term-card-top b { font-size: 13px; font-weight: 600; }
 .term .term-card p { font-size: 12px; line-height: 1.45; }
 .term .term-pill { border-radius: 1px; font-family: var(--mono); font-size: 9px; }
