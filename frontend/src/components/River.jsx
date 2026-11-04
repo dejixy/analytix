@@ -98,8 +98,8 @@ function series(data, mode) {
 
 function River({ data, mode, W, hi, setHi }) {
   const [hover, setHover] = useState(null);
-  const H = W < 640 ? 240 : 320;
-  const PADT = 22, PADB = 20, PADL = 4, PADR = W < 640 ? 40 : 58;
+  const H = W < 640 ? 250 : 340;
+  const PADT = 26, PADB = 24, PADL = 0, PADR = W < 640 ? 46 : 62;
   const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
   const mid = PADT + plotH / 2;
   const t0 = data.from_ms, t1 = data.now_ms;
@@ -116,7 +116,8 @@ function River({ data, mode, W, hi, setHi }) {
   const top = peaks.at(-1) || 1;
   const q90 = peaks[Math.floor(peaks.length * 0.9)] || top;
   const ymax = top > 3.2 * q90 ? 3.2 * q90 : top;
-  const S = (v) => (Math.min(v, ymax) / ymax) * (plotH / 2 - 2);
+  const S = (v) => (Math.min(v, ymax) / ymax) * (plotH / 2 - 4);
+  const crisp = (y) => Math.round(y) + 0.5;                 // 1px lines on whole pixels
   const xs = t.map((ms) => X(ms));
 
   const layers = [];
@@ -132,13 +133,13 @@ function River({ data, mode, W, hi, setHi }) {
     let best = -1, bk = 0, side = 1;
     for (let k = 1; k < n - 1; k++) {
       const a = loU[k][1] - hiU[k][1], b = hiD[k][1] - loD[k][1];
-      if (xs[k] < PADL + 26 || xs[k] > PADL + plotW - 40) continue;
+      if (xs[k] < PADL + 70 || xs[k] > PADL + plotW - 44) continue;
       if (a > best) { best = a; bk = k; side = 1; }
       if (b > best) { best = b; bk = k; side = -1; }
     }
-    const tag = best >= 13 ? { x: xs[bk], y: side > 0 ? (loU[bk][1] + hiU[bk][1]) / 2 : (loD[bk][1] + hiD[bk][1]) / 2,
+    const tag = best >= 15 ? { x: xs[bk], y: side > 0 ? (loU[bk][1] + hiU[bk][1]) / 2 : (loD[bk][1] + hiD[bk][1]) / 2,
       v: side > 0 ? m.up[bk] : m.dn[bk] } : null;
-    const w = (label(m.coin).length + (mode === "pace" ? 5 : 0)) * 6.5;
+    const w = (label(m.coin).length + (mode === "pace" ? 5 : 0)) * 7;
     const clash = tag && layers.some((l) => l.tag && Math.abs(l.tag.x - tag.x) < (l.tag.w + w) / 2 + 6 && Math.abs(l.tag.y - tag.y) < 12);
     layers.push({ m, up: band(loU, hiU), dn: band(loD, hiD), tag: tag && !clash ? { ...tag, w } : null });
   }
@@ -189,29 +190,26 @@ function River({ data, mode, W, hi, setHi }) {
           <pattern id="rv-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="6" className="rv-hatch" />
           </pattern>
-          <linearGradient id="rv-fade" x1="0" x2="1">
-            <stop offset="0" stopColor="#060a09" stopOpacity="0.9" />
-            <stop offset="0.04" stopColor="#060a09" stopOpacity="0" />
-          </linearGradient>
         </defs>
         {yTicks.map((v) => (
           <g key={v}>
-            <line className="rv-gl" x1={PADL} x2={PADL + plotW} y1={mid - S(v)} y2={mid - S(v)} />
-            <line className="rv-gl" x1={PADL} x2={PADL + plotW} y1={mid + S(v)} y2={mid + S(v)} />
-            {mode === "usd" && <text className="rv-ax" x={PADL + plotW + 6} y={mid - S(v) + 3}>{usd(v)}</text>}
-            {mode === "usd" && <text className="rv-ax" x={PADL + plotW + 6} y={mid + S(v) + 3}>{usd(v)}</text>}
+            <line className="rv-gl" x1={PADL} x2={PADL + plotW} y1={crisp(mid - S(v))} y2={crisp(mid - S(v))} />
+            <line className="rv-gl" x1={PADL} x2={PADL + plotW} y1={crisp(mid + S(v))} y2={crisp(mid + S(v))} />
+            {mode === "usd" && <text className="rv-ax" x={PADL + plotW + 10} y={mid - S(v) + 3.5}>{usd(v)}</text>}
+            {mode === "usd" && <text className="rv-ax" x={PADL + plotW + 10} y={mid + S(v) + 3.5}>{usd(v)}</text>}
           </g>
         ))}
         {tTicks.map((ms) => (
           <g key={ms}>
-            <line className="rv-gl" x1={X(ms)} x2={X(ms)} y1={PADT} y2={PADT + plotH} />
-            <text className="rv-ax" x={X(ms)} y={H - 5} textAnchor="middle">{hhmm(ms)}</text>
+            <line className="rv-gl" x1={crisp(X(ms))} x2={crisp(X(ms))} y1={PADT} y2={PADT + plotH} />
+            <text className="rv-ax" x={X(ms)} y={H - 7} textAnchor="middle">{hhmm(ms)}</text>
           </g>
         ))}
-        <text className="rv-ax rv-now" x={PADL + plotW} y={H - 5} textAnchor="end">now</text>
-        {mode === "usd" && <text className="rv-ax" x={PADL + plotW + 6} y={PADT - 8}>a min</text>}
-        <text className="rv-side up" x={PADL + 6} y={PADT + 11}>BOUGHT</text>
-        <text className="rv-side down" x={PADL + 6} y={PADT + plotH - 4}>SOLD</text>
+        <line className="rv-base" x1={PADL} x2={PADL + plotW} y1={crisp(PADT + plotH)} y2={crisp(PADT + plotH)} />
+        <text className="rv-ax rv-now" x={PADL + plotW} y={H - 7} textAnchor="end">Now</text>
+        <text className="rv-ax rv-unit" x={PADL + plotW + 10} y={mid + 3.5}>{mode === "usd" ? "$/min" : "× norm"}</text>
+        <text className="rv-side up" x={PADL + 12} y={PADT + 14}>↑ Bought</text>
+        <text className="rv-side down" x={PADL + 12} y={PADT + plotH - 8}>↓ Sold</text>
         {gap != null && gap > t0 && (
           <g>
             <rect x={PADL} y={PADT} width={Math.max(0, X(gap) - PADL)} height={plotH} fill="url(#rv-hatch)" />
@@ -230,9 +228,9 @@ function River({ data, mode, W, hi, setHi }) {
         })}
         <path d={edgeU} className="rv-edge up" />
         <path d={edgeD} className="rv-edge down" />
-        <line className="rv-mid" x1={PADL} x2={PADL + plotW} y1={mid} y2={mid} />
+        <line className="rv-mid" x1={PADL} x2={PADL + plotW} y1={crisp(mid) - 0.5} y2={crisp(mid) - 0.5} />
         {net && <path d={net} className="rv-net" />}
-        {net && <text className="rv-netlab" x={PADL + plotW - 4} y={mid - Math.sign(totUp[n - 1] - totDn[n - 1]) * S(Math.abs(totUp[n - 1] - totDn[n - 1])) - 5} textAnchor="end">net</text>}
+        {net && <text className="rv-netlab" x={PADL + plotW - 4} y={mid - Math.sign(totUp[n - 1] - totDn[n - 1]) * S(Math.abs(totUp[n - 1] - totDn[n - 1])) - 6} textAnchor="end">Net</text>}
         {clipped.map(([u, d2], k) => (
           <g key={k}>
             {u && <path className="rv-clip" d={`M${xs[k] - 4},${PADT + 5}L${xs[k]},${PADT}L${xs[k] + 4},${PADT + 5}`} />}
@@ -240,28 +238,28 @@ function River({ data, mode, W, hi, setHi }) {
           </g>
         ))}
         {layers.map(({ m, tag }) => tag && (!hi || hi === m.coin) && (
-          <text key={m.coin} className="rv-tag" x={tag.x} y={tag.y + 3.5} textAnchor="middle">
-            {label(m.coin)}{mode === "pace" ? ` ${fmtV(tag.v)}` : ""}
+          <text key={m.coin} className="rv-tag" x={tag.x} y={tag.y + 4} textAnchor="middle">
+            {label(m.coin)}{mode === "pace" && <tspan className="rv-tag-v"> {fmtV(tag.v)}</tspan>}
           </text>
         ))}
         {evs.map((e) => (
           <g key={`${e.t_ms}-${e.title}`} className="rv-ev">
-            <line x1={e.x} x2={e.x} y1={PADT - 6} y2={PADT + plotH} />
-            <path d={`M${e.x - 3.5},${PADT - 10}L${e.x + 3.5},${PADT - 10}L${e.x},${PADT - 5}Z`} />
-            {e.show && <text x={e.x + 6} y={PADT - 6}>{e.title}</text>}
+            <line x1={crisp(e.x)} x2={crisp(e.x)} y1={PADT - 8} y2={PADT + plotH} />
+            <circle cx={e.x} cy={PADT - 11} r={2.6} />
+            {e.show && <text x={e.x + 7} y={PADT - 7.5}>{e.title} <tspan className="rv-ev-t">{hhmm(e.t_ms)}</tspan></text>}
           </g>
         ))}
-        <rect x={PADL} y={PADT} width={plotW} height={plotH} fill="url(#rv-fade)" pointerEvents="none" />
-        {hover && <line className="rv-cross" x1={hover.mx} x2={hover.mx} y1={PADT} y2={PADT + plotH} />}
+        {hover && <line className="rv-cross" x1={crisp(hover.mx)} x2={crisp(hover.mx)} y1={PADT} y2={PADT + plotH} />}
       </svg>
       {hover && (
-        <div className="rv-tip" style={{ left: hover.mx, top: Math.min(hover.my, H - 40),
+        <div className="rv-tip" style={{ left: hover.mx, top: Math.max(70, Math.min(hover.my, H - 70)),
           transform: `translate(${hover.mx > W * 0.62 ? "calc(-100% - 12px)" : "12px"}, -50%)` }}>
           <div className="rv-tip-h">
             {hk === n - 1 ? `last ${STEP_NAME[data.step_ms] || "step"} to now` : `${hhmm(t[hk] - data.step_ms / 2)}–${hhmm(t[hk] + data.step_ms / 2)}`}
-            <span className="muted"> · {mode === "pace" ? "vs normal" : "a minute"}</span>
+            <span className="muted">{mode === "pace" ? "vs normal" : "per minute"}</span>
           </div>
           <table>
+            <thead><tr><th /><th className="up">Bought</th><th className="down">Sold</th><th>Pace</th></tr></thead>
             <tbody>
               {mk.filter((m) => m.b[hk] + m.s[hk] > 0).map((m) => (
                 <tr key={m.coin} className={hi === m.coin ? "on" : ""}>
@@ -292,48 +290,68 @@ function Gauge({ x }) {
   return (
     <span className={`rv-gauge ${x >= 2 ? "hot" : ""}`} aria-hidden="true">
       <i style={{ width: `${v * 100}%` }} />
-      <b style={{ left: "25%" }} />
+      <b />
     </span>
   );
 }
 
-function Pace({ data, hi, setHi, pinned, setPinned }) {
+function Pace({ data, hi, setHi, pinned, setPinned, win }) {
   const mk = series(data, "usd");
-  const step = data.step_ms / 60_000;
   return (
     <div className="rv-list">
-      <div className="rv-row rv-row-h muted">
-        <span>Market</span><span title="The last 15 minutes against this market's normal for this weekday and hour">Pace 15m</span>
-        <span className="num">Net</span>
+      <div className="rv-row rv-row-h">
+        <span>Market</span>
+        <span title="The last 15 minutes against this market's normal for this weekday and hour (median of 8 weeks)">Pace · 15m</span>
+        <span>Net · {win}</span>
       </div>
       {mk.map((m) => {
         const netW = m.bought - m.sold;
         const tot = m.bought + m.sold;
         return (
           <button key={m.coin} className={`rv-row ${hi === m.coin ? "on" : ""} ${pinned === m.coin ? "pinned" : ""}`} data-mk={tk(m.coin)}
+            style={{ "--key": BUY[m.i % BUY.length], "--key2": SELL[m.i % SELL.length] }}
             onPointerEnter={() => setHi(m.coin)} onPointerLeave={() => setHi(null)}
             onClick={() => setPinned(pinned === m.coin ? null : m.coin)}
-            title={`${label(m.coin)}: bought ${usd(m.bought)}, sold ${usd(m.sold)} in the window${m.pace != null ? `; the last 15 minutes ran at ${m.pace}× its normal pace` : ""}`}>
-            <span className="rv-name">
-              <i className="rv-sw" style={{ background: `linear-gradient(${BUY[m.i % BUY.length]} 50%, ${SELL[m.i % SELL.length]} 50%)` }} />
-              {label(m.coin)}
-            </span>
+            title={`${label(m.coin)}: bought ${usd(m.bought)}, sold ${usd(m.sold)} in the window${m.pace != null ? `; the last 15 minutes ran at ${m.pace}× its normal pace` : ""}. Click to keep it lit.`}>
+            <span className="rv-name"><i className="rv-sw" />{label(m.coin)}</span>
             <span className="rv-pace">
-              <Gauge x={m.pace} />
               <b className={`num ${m.pace >= 2 ? "hot" : ""}`}>{m.pace == null ? "–" : `${m.pace.toFixed(1)}×`}</b>
+              <Gauge x={m.pace} />
             </span>
-            <span className="rv-net">
-              <b className={`num ${netW > 0 ? "up" : netW < 0 ? "down" : "muted"}`}>{tot ? signed(netW) : "–"}</b>
-              <span className="rv-split" aria-hidden="true"><i style={{ width: `${tot ? (m.bought / tot) * 100 : 50}%` }} /></span>
-            </span>
+            <span className={`rv-netv num ${netW > 0 ? "up" : netW < 0 ? "down" : "muted"}`}>{tot ? signed(netW) : "–"}</span>
           </button>
         );
       })}
-      <p className="plan-note muted rv-note">
-        Takers' dollars, {STEP_NAME[data.step_ms] || `${step} min`} steps. Pace: the last 15 minutes against the market's
-        normal for this weekday and hour (median of 8 weeks of hourly volume); 2× and up is lit.
-      </p>
+      <p className="rv-note">Pace compares the last 15 minutes with this weekday and hour's usual volume. 2× and up is lit.</p>
     </div>
+  );
+}
+
+/* The window's totals across every market, and the one running hottest against its normal. */
+function Summary({ data }) {
+  const b = data.markets.reduce((a, m) => a + m.bought, 0);
+  const s2 = data.markets.reduce((a, m) => a + m.sold, 0);
+  const hot = [...data.markets].filter((m) => m.pace != null).sort((x, y) => y.pace - x.pace)[0];
+  const share = b + s2 ? Math.round((b / (b + s2)) * 100) : null;
+  return (
+    <div className="rv-kpis">
+      <div><span>Bought</span><b className="num up">{usd(b)}</b></div>
+      <div><span>Sold</span><b className="num down">{usd(s2)}</b></div>
+      <div><span>Net</span><b className={`num ${b - s2 > 0 ? "up" : b - s2 < 0 ? "down" : ""}`}>{signed(b - s2)}</b>
+        {share != null && <em className="num">{share}% bought</em>}</div>
+      <div><span>Hottest vs normal</span>
+        <b className={`num ${hot?.pace >= 2 ? "hot" : ""}`}>{hot ? <>{label(hot.coin)} <small>{hot.pace.toFixed(1)}×</small></> : "–"}</b></div>
+    </div>
+  );
+}
+
+function Seg({ value, set, opts }) {
+  return (
+    <span className="rv-seg" role="group">
+      {opts.map(([k, t, tip]) => (
+        <button key={k} className={value === k ? "on" : ""} aria-pressed={value === k} onClick={() => set(k)} title={tip}>{t}</button>
+      ))}
+    </span>
   );
 }
 
@@ -370,25 +388,20 @@ export default function Flow({ d, now }) {
       </Head>
       {tab === "river" && (
         <>
-          <div className="term-comp-legend rv-bar">
-            {WINDOWS.map(([k, t]) => (
-              <button key={k} className={`plan-chip ${minutes === k ? "on" : ""}`} onClick={() => setMinutes(k)}>{t}</button>
-            ))}
-            <span className="rv-sep" />
-            {[["usd", "Dollars"], ["pace", "vs normal"]].map(([k, t]) => (
-              <button key={k} className={`plan-chip ${mode === k ? "on" : ""}`} onClick={() => setMode(k)}
-                title={k === "pace" ? "Each band against that market's usual pace for this weekday and hour" : "Dollars a minute"}>{t}</button>
-            ))}
-            <span className="news-gap" />
-            <span className="muted term-comp-note rv-key">
-              <i className="rv-k up" />bought <i className="rv-k down" />sold <i className="rv-k net" />net <i className="rv-k ev" />scheduled event
-            </span>
+          <div className="rv-bar">
+            {data ? <Summary data={data} /> : <div className="rv-kpis" />}
+            <div className="rv-ctl">
+              <Seg value={minutes} set={setMinutes} opts={WINDOWS.map(([k, t]) => [k, t])} />
+              <Seg value={mode} set={setMode} opts={[["usd", "Dollars", "Dollars a minute"],
+                ["pace", "vs normal", "Each band against that market's usual pace for this weekday and hour"]]} />
+            </div>
           </div>
           <div className="rv-body">
             {!data ? <div className="rv-empty muted">Loading the river…</div>
               : empty ? <div className="rv-empty muted">{data.enabled ? "No trades yet: the river fills as they come in." : "The river runs in live mode only."}</div>
               : <Measured>{(w) => <River data={data} mode={mode} W={w} hi={hi} setHi={setHiHover} />}</Measured>}
-            {data && <Pace data={data} hi={hi} setHi={setHiHover} pinned={pinned} setPinned={setPinned} />}
+            {data && <Pace data={data} hi={hi} setHi={setHiHover} pinned={pinned} setPinned={setPinned}
+              win={WINDOWS.find(([k]) => k === minutes)?.[1]} />}
           </div>
         </>
       )}
