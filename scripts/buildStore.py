@@ -7,8 +7,9 @@ Build the fast store from the recordings: one compressed numpy file per coin per
 
 Run it once to convert the history, then again whenever you like (a daily scheduled run is ideal): finished days are
 skipped, and today is rebuilt from its finished hours. Studies that support the store read it instead of the gzipped
-JSON, in seconds instead of minutes. The long-tail recordings build into the same store:
-    python -m scripts.buildStore data/recordings_longtail
+JSON, in seconds instead of minutes. The long-tail recordings build into the same store, one folder at a time (never both in one run), a few coins at a
+time so a day fits in memory:
+    python -m scripts.buildStore data/recordings_longtail --jobs 1 --parts 8
 
 On the server, from /opt/analytix (the store must be somewhere you can write; data/ belongs to the analytix user):
     ANALYTIX_STORE_DIR=~/analytix-store nice -n 19 .venv/bin/python -m scripts.buildStore
@@ -24,9 +25,9 @@ from config import RECORD_DIR, STORE_DIR
 from storage.tickStore import hours_by_day, is_built, sources_of, write_day
 
 
-def _build(store: str, day: str, paths: list[str]) -> tuple[str, list[str], float]:
+def _build(store: str, day: str, paths: list[str], parts: int = 1) -> tuple[str, list[str], float]:
     t0 = time.time()
-    written = write_day(Path(store), day, [Path(p) for p in paths])
+    written = write_day(Path(store), day, [Path(p) for p in paths], parts=parts)
     return day, written, time.time() - t0
 
 
@@ -36,6 +37,8 @@ def main() -> None:
     ap.add_argument("--out", default=str(STORE_DIR), help="defaults to ANALYTIX_STORE_DIR or data/store")
     ap.add_argument("--days", type=int, default=0, help="only the newest N days (0 = all)")
     ap.add_argument("--jobs", type=int, default=2, help="days built in parallel")
+    ap.add_argument("--parts", type=int, default=1,
+                    help="read each day this many times, a group of coins each time (less memory; the long tail needs ~8)")
     ap.add_argument("--rebuild", action="store_true")
     args = ap.parse_args()
 
@@ -54,7 +57,7 @@ def main() -> None:
     print(f"{len(by_day)} days of recordings, {len(todo)} to build into {store}", file=sys.stderr)
     t0 = time.time()
     with ProcessPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        jobs = [pool.submit(_build, str(store), d, [str(p) for p in by_day[d]]) for d in todo]
+        jobs = [pool.submit(_build, str(store), d, [str(p) for p in by_day[d]], args.parts) for d in todo]
         for fut in as_completed(jobs):
             day, written, secs = fut.result()
             print(f"  {day}: {len(by_day[day])} hours -> {', '.join(written) or 'nothing'} ({secs:.0f}s)",

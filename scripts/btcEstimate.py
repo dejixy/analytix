@@ -109,6 +109,7 @@ async def gather(args, log=sys.stderr) -> dict:
 
 
 def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)            # lines show as they're printed, even through tee
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lam", type=float, default=0.1, help="ridge shrinkage (more = coefficients nearer zero)")
     ap.add_argument("--terms", default=",".join(M.TERMS))

@@ -142,6 +142,7 @@ def halves(g: dict, idx: np.ndarray, d: np.ndarray, test: np.ndarray):
 
 
 def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)            # lines show as they're printed, even through tee
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--coins", default=",".join(MAIN), help="coins measured")
     ap.add_argument("--seen-coins", default="all", help="coins whose wallets count as known: all (every coin in the "

@@ -183,6 +183,7 @@ def report(wallets: list[H.Wallet], supply: float | None, closes: dict[int, floa
 
 
 async def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)            # lines show as they're printed, even through tee
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--genesis", type=int, default=1500, help="biggest genesis balances to check")
     ap.add_argument("--traders", type=int, default=1000, help="busiest HYPE traders in the recordings to check")
