@@ -10,7 +10,8 @@ On the server (a few minutes; reads the fast store for the order-book terms):
     cd ~/analytix && git pull && ANALYTIX_STORE_DIR=~/analytix-store nice -n 19 \\
         /opt/analytix/.venv/bin/python -m scripts.btcEstimate > /tmp/btc_est.txt 2> /tmp/btc_est.log; cat /tmp/btc_est.txt
 
-If Farside turns the script away, save https://farside.co.uk/btc/ from a browser (Ctrl+S) and pass --etf-file.
+ETF flows come from TFTC's open data (credit: TFTC Bitcoin ETF Flows, CC BY 4.0); --etf-file reads a saved Farside
+page or a CSV instead.
 If the SEC refuses, set ANALYTIX_SEC_UA="your name your@email" (the SEC asks scripts to say who they are).
 Other treasury companies: --dat-csv with columns date,company,btc (the day each purchase was announced).
 """
@@ -80,13 +81,21 @@ HEAD = f"  {'model':<26}{'days':>5}{'corr (t)':>15}{'sign':>8}{'R² vs 0':>9}{'b
 async def gather(args, log=sys.stderr) -> dict:
     cache = Path(args.cache)
     cache.mkdir(parents=True, exist_ok=True)
+    etf, src = [], ""
     if args.etf_file:
-        etf = F.read_etf_file(args.etf_file)
+        etf, src = F.read_etf_file(args.etf_file), args.etf_file
     else:
-        html = await F.fetch_farside()
-        (cache / "farside.html").write_text(html)
-        etf = F.parse_farside(html)
-    print(f"ETF flows: {len(etf)} days, {etf[0]['date'] if etf else '–'} to {etf[-1]['date'] if etf else '–'}", file=log)
+        try:
+            etf, src = await F.fetch_tftc(), "TFTC Bitcoin ETF Flows (CC BY 4.0)"
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"TFTC ETF flows: {type(exc).__name__}: {exc}; trying Farside", file=log)
+            try:
+                html = await F.fetch_farside()
+                (cache / "farside.html").write_text(html)
+                etf, src = F.parse_farside(html), "Farside"
+            except Exception as exc2:                             # noqa: BLE001
+                print(f"Farside: {type(exc2).__name__}: {exc2}", file=log)
+    print(f"ETF flows: {len(etf)} days from {src or 'nowhere'}", file=log)
     dat = []
     try:
         dat = await F.fetch_strategy(args.since, cache=cache / "strategy_8k.json", log=log)
@@ -112,7 +121,7 @@ async def gather(args, log=sys.stderr) -> dict:
         except Exception as exc2:                                 # noqa: BLE001
             print(f"Stooq MSTR: {exc2}; the Strategy-premium term is left out this run", file=log)
     book = {} if args.no_book else book_hours(log=log)
-    return {"etf": etf, "dat": dat, "btc": sorted(btc), "mstr": mstr, "book": book}
+    return {"etf": etf, "etf_src": src, "dat": dat, "btc": sorted(btc), "mstr": mstr, "book": book}
 
 
 def main() -> None:
@@ -136,11 +145,30 @@ def main() -> None:
         terms = tuple(t for t in terms if t != "prem")
         MODELS = [(n, tuple(t for t in ts if t != "prem")) for n, ts in MODELS]
     if not d["etf"]:
-        sys.exit("no ETF flows: save https://farside.co.uk/btc/ and pass --etf-file")
+        sys.exit("no ETF flows: TFTC and Farside both failed (see the log); save https://farside.co.uk/btc/ and pass --etf-file")
     rows = M.build_rows(d["etf"], d["dat"], d["btc"], d["mstr"], d["book"], horizon_h=args.horizon)
     done = M.usable(rows, [t for t in terms if t not in ("taker", "book")])
     tune, held = M.split(done, args.final)
     book_days = sum(1 for r in done if r["z"].get("taker") is not None)
+    day = lambda ms: time.strftime("%d %b %Y", time.gmtime(ms / 1000))
+    e, b, m = d["etf"], d["btc"], d["mstr"]
+    print("Data")
+    print(f"  ETF flows      {len(e):>5} US days" + (f", {e[0]['date']} to {e[-1]['date']} ({d['etf_src']})" if e else "")
+          + ("   ← only a few weeks: save Farside's all-data page instead" if 0 < len(e) < 60 else ""))
+    print(f"  BTC prices     {len(b):>5} hours" + (f", {day(b[0][0])} to {day(b[-1][0])}" if b else ""))
+    print(f"  Strategy price {len(m):>5} days" + (f", {day(m[0][0])} to {day(m[-1][0])}" if m else " (premium term left out)"))
+    print(f"  Treasury buys  {len(d['dat']):>5} filings with purchases or holdings"
+          + (f", latest {d['dat'][-1]['filed']}: {d['dat'][-1]['bought']:,.0f} BTC bought, {d['dat'][-1].get('held') or 0:,.0f} held" if d["dat"] else ""))
+    print(f"  Order book     {len(d['book']):>5} hours from our recordings\n")
+    if not done:
+        priced = [r for r in rows if r["move"] is not None]
+        print(f"No usable rows: {len(rows)} flow days had a BTC price at 14:00 UTC the next day, {len(priced)} a finished move.")
+        for k in terms:
+            if k in ("taker", "book"):
+                continue
+            print(f"  {M.NAMES[k]:<26} known on {sum(1 for r in priced if r['z'].get(k) is not None)} of them")
+        print("Every term needs 20 earlier days for its z-score, so fewer than ~25 ETF days can't produce a row.")
+        sys.exit(0)
     print(f"BTC estimate · rows measured at {M.ENTRY_H}:00 UTC the day after each US flow day, move over the next "
           f"{args.horizon} h · {len(done)} usable rows ({done[0]['day'] if done else '–'} to {done[-1]['day'] if done else '–'}), "
           f"{len(held) if args.final else int(len(done) * M.HOLD_FRAC)} held back · order book on {book_days} of them")
