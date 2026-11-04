@@ -124,7 +124,8 @@ def fmt(x: float) -> str:
     return f"{x / 1e6:,.2f}M" if a >= 1e6 else f"{x / 1e3:,.1f}k" if a >= 1e3 else f"{x:,.0f}"
 
 
-def report(wallets: list[H.Wallet], supply: float | None, closes: dict[int, float], now_ms: int, price: float | None) -> dict:
+def report(wallets: list[H.Wallet], supply: float | None, closes: dict[int, float], now_ms: int, price: float | None,
+           queue: dict | None = None) -> dict:
     found = sum(w.total for w in wallets)
     groups = H.groups(wallets, supply)
     conc = H.concentration(wallets, supply)
@@ -159,6 +160,14 @@ def report(wallets: list[H.Wallet], supply: float | None, closes: dict[int, floa
     for d, amt in unl:
         print(f"  {'date unknown' if d is None else time.strftime('%a %d %b', time.gmtime(d / 1000)):<14}{fmt(amt):>10} HYPE unlocks"
               + (f"  (${amt * price / 1e6:,.1f}M)" if price else ""))
+    if queue and queue.get("n"):
+        print(f"\n   Hypurrscan's whole unstaking queue: {queue['n']:,} withdrawals, {fmt(queue['hype'])} HYPE"
+              + (f" (${queue['hype'] * price / 1e6:,.0f}M)" if price else "")
+              + f"; its times read as {'when each was asked for' if queue['times_are'] == 'asked' else 'unlock times'}")
+        for d, amt in queue["by_day"][:8]:
+            print(f"  {time.strftime('%a %d %b', time.gmtime(d / 1000)):<14}{fmt(amt):>10} HYPE unlocks")
+        for u, t, amt in queue.get("biggest", [])[:3]:
+            print(f"  biggest: {u[:10]}… {fmt(amt)} HYPE, {time.strftime('%d %b %H:%M', time.gmtime(t / 1000))}")
     recent = list(flows.items())[-14:]
     if recent:
         print("\n4. Staking flows, last 14 days (HYPE): staked in / withdrawals started / finished")
@@ -185,10 +194,11 @@ def report(wallets: list[H.Wallet], supply: float | None, closes: dict[int, floa
 async def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)            # lines show as they're printed, even through tee
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--genesis", type=int, default=1500, help="biggest genesis balances to check")
-    ap.add_argument("--traders", type=int, default=1000, help="busiest HYPE traders in the recordings to check")
+    ap.add_argument("--genesis", type=int, default=500, help="biggest genesis balances to check")
+    ap.add_argument("--traders", type=int, default=300, help="busiest HYPE traders in the recordings to check")
+    ap.add_argument("--holders", type=int, default=3000, help="biggest wallets from Hypurrscan's holder list to check")
     ap.add_argument("--history-min", type=float, default=10_000, help="HYPE staked or leaving to read a wallet's history")
-    ap.add_argument("--budget", type=int, default=400, help="info weight a minute (Hyperliquid allows 1200 per IP)")
+    ap.add_argument("--budget", type=int, default=600, help="info weight a minute (Hyperliquid allows 1200 per IP)")
     ap.add_argument("--labels", default="", help="JSON {address: label}")
     ap.add_argument("--third-party", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--out-dir", default=str(Path.home() / "hype-holders"))
@@ -212,20 +222,23 @@ async def main() -> None:
     universe = [H.ASSISTANCE_FUND, *reserves, *(a for a, _ in genesis[:args.genesis]), *labels]
     traders = busiest_traders(args.traders)
     universe += traders
+    queue = {"n": 0}
     if args.third_party:
         try:
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.get(THIRD_PARTY[0])
                 if r.status_code == 200:
-                    j = r.json()
-                    rows = j.get("holders", j) if isinstance(j, dict) else j
-                    if isinstance(rows, dict):
-                        rows = sorted(rows.items(), key=lambda kv: -H.num(kv[1]))
-                    got = [str(x[0] if isinstance(x, (list, tuple)) else x.get("address", "")) for x in rows][:3000]
-                    universe += [a for a in got if a.startswith("0x")]
-                    print(f"Hypurrscan holder list: {len(got)} wallets added", file=sys.stderr)
+                    got = H.parse_holders(r.json())[:args.holders]
+                    universe += [a for a, _ in got]
+                    print(f"Hypurrscan holder list: {len(got)} wallets added (biggest {got[0][1]:,.0f})" if got
+                          else "Hypurrscan holder list: empty", file=sys.stderr)
+                r = await c.get(THIRD_PARTY[1])
+                if r.status_code == 200:
+                    queue = H.parse_queue(r.json(), now)
+                    universe += queue["users"]                     # whoever is leaving staking is worth a look
+                    print(f"Hypurrscan unstaking queue: {queue['n']} withdrawals, {queue['hype']:,.0f} HYPE", file=sys.stderr)
         except Exception as exc:                                   # noqa: BLE001 - optional
-            print(f"Hypurrscan holder list: not used ({exc})", file=sys.stderr)
+            print(f"Hypurrscan: not used ({type(exc).__name__}: {exc})", file=sys.stderr)
     universe = list(dict.fromkeys(a.lower() for a in universe if a))
     print(f"{len(universe):,} wallets to check (genesis {min(args.genesis, len(genesis))}, reserves {len(reserves)}, "
           f"traders {len(traders)}, labels {len(labels)})", file=sys.stderr)
@@ -237,9 +250,9 @@ async def main() -> None:
         w.label = labels.get(a)
         w.not_circulating = a in reserves
         w.traded_usd = 10_000.0 if a in seen_trading else 0.0
-    rows = await fetch_candles("HYPE", "1d", 400)
+    rows = await fetch_candles("HYPE", "1d", 1000)                # since HYPE launched (staking history goes back to Dec 2024)
     closes = {int(r["t"]) // H.DAY_MS * H.DAY_MS: float(r["c"]) for r in rows if r.get("c")}
-    res = report(list(found.values()), supply, closes, now, price)
+    res = report(list(found.values()), supply, closes, now, price, queue)
     snap = {"t_ms": now, "supply": supply, "price": price,
             "wallets": {a: {"spot": w.spot, "staked": w.staked, "pending": w.pending, "group": H.group_of(w)}
                         for a, w in found.items() if w.total > 0},

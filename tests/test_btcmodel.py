@@ -106,3 +106,32 @@ def test_book_terms_count_only_when_recorded_and_reactive_reads_same_day():
     rc = M.reactive(etf, btc)
     assert set(rc) == {"day before", "same day", "next day"}
     assert np.isfinite(list(rc.values())).all()
+
+
+def test_yahoo_retries_falls_back_to_its_cache_and_stooq_parses(tmp_path, monkeypatch):
+    import asyncio
+    import httpx
+    calls = []
+    good = {"chart": {"result": [{"timestamp": [1_700_000_000], "indicators": {"quote": [{"close": [42.0]}]}}]}}
+
+    def handler(req):
+        calls.append(str(req.url))
+        if "stooq" in str(req.url):
+            return httpx.Response(200, text="Date,Open,High,Low,Close,Volume\n2026-11-02,1,2,0.5,300.5,10\n")
+        return httpx.Response(429) if len(calls) == 1 else httpx.Response(200, json=good)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": httpx.MockTransport(handler)}))
+    from ingestion import flows as FL
+    monkeypatch.setattr(FL.asyncio, "sleep", _nosleep)
+    rows = asyncio.run(FL.fetch_yahoo("MSTR", cache=tmp_path))
+    assert rows == [(1_700_000_000_000, 42.0)] and "query2" in calls[1]       # retried on the second host
+    calls.clear()
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": httpx.MockTransport(lambda r: httpx.Response(429))}))
+    assert asyncio.run(FL.fetch_yahoo("MSTR", cache=tmp_path)) == [(1_700_000_000_000, 42.0)]   # the cached reply
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": httpx.MockTransport(handler)}))
+    assert asyncio.run(FL.fetch_stooq("mstr.us")) == [(M.ms_of("2026-11-02"), 300.5)]
+
+
+async def _nosleep(_s):
+    return None

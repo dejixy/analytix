@@ -95,15 +95,22 @@ async def gather(args, log=sys.stderr) -> dict:
     if args.dat_csv:
         dat += F.read_dat_csv(args.dat_csv)
     try:
-        btc = [(t + M.HOUR, c) for t, c in await F.fetch_yahoo("BTC-USD", "730d", "1h")]   # stamped at the bar's open
+        btc = [(t + M.HOUR, c) for t, c in await F.fetch_yahoo("BTC-USD", "730d", "1h", cache)]   # stamped at the bar's open
     except Exception as exc:                                      # noqa: BLE001
-        print(f"Yahoo BTC hourly: {exc}; using Hyperliquid's hourly candles", file=log)
+        print(f"Yahoo BTC hourly: {exc}; using Hyperliquid's hourly candles (about 7 months)", file=log)
         btc = []
     hl = await fetch_candles("BTC", "1h", 5000)
     seen = {t for t, _ in btc}
     btc += [(int(r["t"]) + M.HOUR, float(r["c"])) for r in hl if r.get("c") and int(r["t"]) + M.HOUR not in seen]
-    mstr = await F.fetch_yahoo("MSTR", "5y", "1d")
-    mstr = [(t + 7 * M.HOUR + 30 * 60_000, c) for t, c in mstr]      # stamped at the open; known by the close, 6.5 h on (7.5 to be safe)
+    mstr = []
+    try:
+        mstr = [(t + 7 * M.HOUR + 30 * 60_000, c) for t, c in await F.fetch_yahoo("MSTR", "5y", "1d", cache)]
+    except Exception as exc:                                      # noqa: BLE001
+        print(f"Yahoo MSTR: {exc}; trying Stooq", file=log)        # stamped at the open; known by the close (+7.5 h)
+        try:
+            mstr = [(t + 21 * M.HOUR, c) for t, c in await F.fetch_stooq("mstr.us")]   # midnight stamps: the close is ~21:00
+        except Exception as exc2:                                 # noqa: BLE001
+            print(f"Stooq MSTR: {exc2}; the Strategy-premium term is left out this run", file=log)
     book = {} if args.no_book else book_hours(log=log)
     return {"etf": etf, "dat": dat, "btc": sorted(btc), "mstr": mstr, "book": book}
 
@@ -124,6 +131,10 @@ def main() -> None:
     args = ap.parse_args()
     terms = tuple(t for t in args.terms.split(",") if t in M.TERMS)
     d = asyncio.run(gather(args))
+    global MODELS
+    if not d["mstr"]:                                            # no Strategy prices: run without that term
+        terms = tuple(t for t in terms if t != "prem")
+        MODELS = [(n, tuple(t for t in ts if t != "prem")) for n, ts in MODELS]
     if not d["etf"]:
         sys.exit("no ETF flows: save https://farside.co.uk/btc/ and pass --etf-file")
     rows = M.build_rows(d["etf"], d["dat"], d["btc"], d["mstr"], d["book"], horizon_h=args.horizon)
