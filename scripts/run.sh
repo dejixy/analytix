@@ -3,6 +3,7 @@
 #
 #   bash ~/analytix/scripts/run.sh status    what's running, how far each got, which results are ready
 #   bash ~/analytix/scripts/run.sh btc       the BTC estimate (a few minutes), printed and kept in /tmp/btc_est.txt
+#                                            (extra options pass through: run.sh btc --lam 0.3 --terms etf,mom)
 #   bash ~/analytix/scripts/run.sh map       (re)start the HYPE map in the background (keeps what it already read)
 #   bash ~/analytix/scripts/run.sh fresh     (re)start fresh money in the background (store build, then the study)
 #   bash ~/analytix/scripts/run.sh show      every finished result
@@ -15,7 +16,7 @@ cd "$(dirname "$0")/.."
 export ANALYTIX_STORE_DIR="${ANALYTIX_STORE_DIR:-$HOME/analytix-store}"
 PY="${PY:-/opt/analytix/.venv/bin/python}"
 [ -f "$HOME/.analytix-env" ] && . "$HOME/.analytix-env"
-ETF_FILE="${ETF_FILE:-$HOME/farside.html}"
+ETF_FILE="${ETF_FILE:-}"                                # set it to use a saved Farside page instead of TFTC
 
 running() { pgrep -f "scripts.$1" >/dev/null && echo "running" || echo "not running"; }
 last() { [ -s "$1" ] && tail -n "${2:-2}" "$1" | sed 's/^/    /' || echo "    (nothing yet)"; }
@@ -32,7 +33,7 @@ case "${1:-status}" in
     ;;
   btc)
     pkill -f scripts.btcEstimate 2>/dev/null; sleep 1
-    [ -f "$ETF_FILE" ] && etf=(--etf-file "$ETF_FILE") || etf=()
+    [ -n "$ETF_FILE" ] && [ -f "$ETF_FILE" ] && etf=(--etf-file "$ETF_FILE") || etf=()
     nice -n 19 "$PY" -m scripts.btcEstimate "${etf[@]}" "${@:2}" > /tmp/btc_est.txt 2> /tmp/btc_est.log
     cat /tmp/btc_est.txt; echo; echo "(log:)"; tail -n 5 /tmp/btc_est.log
     ;;

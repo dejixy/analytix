@@ -135,3 +135,27 @@ def test_yahoo_retries_falls_back_to_its_cache_and_stooq_parses(tmp_path, monkey
 
 async def _nosleep(_s):
     return None
+
+
+def test_tftc_days_in_millions_without_holidays():
+    j = {"units": "USD", "days": [
+        {"date": "2024-01-12", "netFlowUsd": 203000000, "perEtfUsd": {"IBIT": 386000000, "GBTC": -484100000.00000006}},
+        {"date": "2024-01-11", "netFlowUsd": 655300000, "perEtfUsd": {"IBIT": 111700000}},
+        {"date": "2024-11-28", "netFlowUsd": 0, "perEtfUsd": None},
+        {"date": "2024-11-29", "netFlowUsd": 320000000, "perEtfUsd": None}]}
+    rows = F.parse_tftc(j)
+    assert [r["date"] for r in rows] == ["2024-01-11", "2024-01-12", "2024-11-29"]
+    assert rows[1]["total"] == 203.0 and rows[1]["funds"] == {"IBIT": 386.0, "GBTC": -484.1} and rows[2]["funds"] == {}
+
+
+def test_strategy_2026_table_with_spelled_out_periods_and_dashes():
+    t = F.html_text(
+        "<p>Strategy announced updates with respect to its bitcoin holdings during the periods and as of the dates indicated below</p>"
+        "<table><tr><td>Period</td><td>BTC Acquired</td><td>Aggregate Purchase Price (in millions)</td><td>Average Purchase Price</td>"
+        "<td>Aggregate BTC Holdings (1)</td><td>Aggregate Purchase Price (in billions)</td><td>Average Purchase Price</td></tr>"
+        "<tr><td>March 30, 2026 to March 31, 2026</td><td>—</td><td>$</td><td>—</td><td>$</td><td>—</td><td>762,099</td>"
+        "<td>$</td><td>57.69</td><td>$</td><td>75,694</td></tr>"
+        "<tr><td>April 1, 2026 to April 5, 2026</td><td>4,871</td><td>$</td><td>329.9</td><td>$</td><td>67,718</td><td>766,970</td>"
+        "<td>$</td><td>58.02</td><td>$</td><td>75,644</td></tr></table>"
+        "<p>ATM sales during the period from April 1, 2026 to April 5, 2026: 1,234,567 shares for $400.1 million</p>")
+    assert F.parse_purchase(t) == {"bought": 4871.0, "held": 766970.0, "period_end": "2026-04-05"}
