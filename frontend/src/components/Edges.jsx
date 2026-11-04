@@ -558,8 +558,8 @@ export default function Edges({ d, error, now, onPick = () => {} }) {
       <div className="tw-4"><Log log={d.log || []} since={d.log_since} coins={d.coins} /></div>
       <Charts d={d} onPick={onPick} />
       <Flow d={d} now={now} data={flow} minutes={flowMin} setMinutes={setFlowMin} />
-      <div className="tw-7"><Constellation d={d} flow={flow} /></div>
-      <div className="tw-5"><Radar flow={flow} /></div>
+      <div className="tw-6"><Constellation d={d} flow={flow} /></div>
+      <div className="tw-6"><Radar flow={flow} /></div>
       <Markets d={d} now={now} />
       <div className="tw-7"><Record d={d} /></div>
       <div className="tw-5 term-col">
