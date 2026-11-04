@@ -9,7 +9,9 @@ Slow money into BTC, from public sources (for scripts/btcEstimate.py):
                    (when the market learned of it). SEC asks scripts to name themselves: set ANALYTIX_SEC_UA to
                    "your name your@email" if it refuses the default
     other DATs     treasury companies' purchases from a CSV kept by hand (date,company,btc)
-    prices         daily and hourly closes from Yahoo Finance's chart endpoint (MSTR, BTC-USD)
+    prices         BTC hourly closes from Binance's or Coinbase's public candles (kept in a cache file, topped up each
+                   run), MSTR daily closes from Nasdaq's quote history; Yahoo and Stooq as fallbacks (Yahoo
+                   rate-limits busy servers)
 """
 import asyncio
 import csv
@@ -31,6 +33,10 @@ SEC_INDEX = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/index.json"
 STRATEGY_CIK = 1050446
 YAHOO = ("https://query1.finance.yahoo.com/v8/finance/chart/{symbol}", "https://query2.finance.yahoo.com/v8/finance/chart/{symbol}")
 STOOQ = "https://stooq.com/q/d/l/?s={symbol}&i=d"
+BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
+COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/{product}/candles"
+NASDAQ_HISTORY = "https://api.nasdaq.com/api/quote/{symbol}/historical"
+HOUR_MS = 3_600_000
 BROWSER = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"}
 
 
@@ -346,3 +352,79 @@ async def fetch_stooq(symbol: str) -> list[tuple[int, float]]:
 
 def utc_day(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date().isoformat()
+
+async def fetch_hourly_btc(start_ms: int, cache: Path | None = None, log=None) -> tuple[list[tuple[int, float]], str]:
+    """BTC/USD hourly closes from `start_ms` to now, stamped at each hour's end: from the cache, topped up from
+    Binance (BTCUSDT), or Coinbase (BTC-USD) when Binance refuses this server."""
+    key = cache / "btc_hourly.json" if cache else None
+    have = [tuple(x) for x in json.loads(key.read_text())] if key and key.exists() else []
+    have = [x for x in have if x[0] >= start_ms]
+    since = have[-1][0] if have and have[0][0] <= start_ms + 2 * HOUR_MS else start_ms   # top up, or start over
+    now = int(time_ms())
+    new, src = [], ""
+    try:
+        async with httpx.AsyncClient(timeout=30, headers=BROWSER) as c:
+            t = since - HOUR_MS
+            while t < now - HOUR_MS:
+                r = await c.get(BINANCE_KLINES, params={"symbol": "BTCUSDT", "interval": "1h", "startTime": t, "limit": 1000})
+                r.raise_for_status()
+                rows = r.json()
+                if not rows:
+                    break
+                new += [(int(k[0]) + HOUR_MS, float(k[4])) for k in rows]
+                t = int(rows[-1][0]) + HOUR_MS
+                await asyncio.sleep(0.2)
+        src = "Binance BTCUSDT"
+    except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
+        if log:
+            print(f"Binance hourly: {type(exc).__name__}: {exc}; trying Coinbase", file=log)
+        new = []
+        try:
+            async with httpx.AsyncClient(timeout=30, headers=BROWSER) as c:
+                t = since - HOUR_MS
+                while t < now - HOUR_MS:
+                    end = min(t + 300 * HOUR_MS, now)
+                    iso = lambda ms: datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    r = await c.get(COINBASE_CANDLES.format(product="BTC-USD"),
+                                    params={"granularity": 3600, "start": iso(t), "end": iso(end)})
+                    r.raise_for_status()
+                    new += [(int(k[0]) * 1000 + HOUR_MS, float(k[4])) for k in r.json()]
+                    t = end
+                    await asyncio.sleep(0.4)
+            src = "Coinbase BTC-USD"
+        except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc2:
+            if log:
+                print(f"Coinbase hourly: {type(exc2).__name__}: {exc2}", file=log)
+            new, src = [], "cache only" if have else ""
+    by = dict(have)
+    by.update(new)
+    out = sorted(by.items())
+    if key and out:
+        key.write_text(json.dumps(out))
+    return out, src
+
+
+async def fetch_nasdaq_daily(symbol: str, start: str = "2023-12-01") -> list[tuple[int, float]]:
+    """Daily closes from Nasdaq's public quote history, stamped at 21:00 UTC (just after the US close)."""
+    headers = {**BROWSER, "Accept": "application/json, text/plain, */*", "Origin": "https://www.nasdaq.com",
+               "Referer": "https://www.nasdaq.com/"}
+    today = datetime.now(timezone.utc).date().isoformat()
+    async with httpx.AsyncClient(timeout=30, headers=headers, follow_redirects=True) as c:
+        r = await c.get(NASDAQ_HISTORY.format(symbol=symbol),
+                        params={"assetclass": "stocks", "fromdate": start, "todate": today, "limit": 9999})
+        r.raise_for_status()
+        rows = (((r.json() or {}).get("data") or {}).get("tradesTable") or {}).get("rows") or []
+    out = []
+    for x in rows:
+        try:
+            d = datetime.strptime(x["date"], "%m/%d/%Y").replace(tzinfo=timezone.utc)
+            out.append((int(d.timestamp() * 1000) + 21 * HOUR_MS, float(str(x["close"]).replace("$", "").replace(",", ""))))
+        except (KeyError, ValueError):
+            continue
+    if not out:
+        raise RuntimeError(f"Nasdaq {symbol}: no rows")
+    return sorted(out)
+
+
+def time_ms() -> float:
+    return datetime.now(timezone.utc).timestamp() * 1000

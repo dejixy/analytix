@@ -159,3 +159,42 @@ def test_strategy_2026_table_with_spelled_out_periods_and_dashes():
         "<td>$</td><td>58.02</td><td>$</td><td>75,644</td></tr></table>"
         "<p>ATM sales during the period from April 1, 2026 to April 5, 2026: 1,234,567 shares for $400.1 million</p>")
     assert F.parse_purchase(t) == {"bought": 4871.0, "held": 766970.0, "period_end": "2026-04-05"}
+
+
+def test_btc_hourly_pages_binance_falls_back_to_coinbase_and_caches(tmp_path, monkeypatch):
+    import asyncio
+    import httpx
+    from ingestion import flows as FL
+    H = 3_600_000
+    now = 1_790_000_000_000 // H * H
+    monkeypatch.setattr(FL, "time_ms", lambda: now)
+    monkeypatch.setattr(FL.asyncio, "sleep", _nosleep)
+    start = now - 2500 * H
+
+    def binance(req):
+        t = int(req.url.params["startTime"])
+        rows = [[k, "0", "0", "0", str(100 + k // H % 7), "0", k + H - 1] for k in range(t, min(t + 1000 * H, now - H), H)]
+        return httpx.Response(200, json=rows)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": httpx.MockTransport(binance)}))
+    rows, src = asyncio.run(FL.fetch_hourly_btc(start, tmp_path))
+    assert src == "Binance BTCUSDT" and rows[0][0] == start and rows[-1][0] == now - H and len(rows) == 2500
+    assert (tmp_path / "btc_hourly.json").exists()
+
+    def coinbase(req):
+        if "binance" in str(req.url):
+            return httpx.Response(451)
+        return httpx.Response(200, json=[[(now - 2 * H) // 1000, 1, 2, 1, 105.5, 9]])
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": httpx.MockTransport(coinbase)}))
+    rows2, src2 = asyncio.run(FL.fetch_hourly_btc(start, tmp_path))
+    assert src2 == "Coinbase BTC-USD" and rows2[-1] == (now - H, 105.5) and len(rows2) == len(rows)   # cache + top-up
+
+    def nasdaq(req):
+        return httpx.Response(200, json={"data": {"tradesTable": {"rows": [
+            {"date": "11/03/2026", "close": "$312.40"}, {"date": "11/02/2026", "close": "$1,305.00"}, {"date": "x", "close": "1"}]}}})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": httpx.MockTransport(nasdaq)}))
+    got = asyncio.run(FL.fetch_nasdaq_daily("MSTR"))
+    assert got == [(M.ms_of("2026-11-02", 21), 1305.0), (M.ms_of("2026-11-03", 21), 312.4)]
