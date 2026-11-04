@@ -44,7 +44,7 @@ const SHORT = { CL: "WTI", BRENTOIL: "BRENT" };
 const short = (m) => (m.kind === "fx" ? m.label : SHORT[m.ticker] || m.ticker);
 const SHAPE = { CL: "circle", BRENTOIL: "square", GOLD: "triangle", SILVER: "diamond" };
 const GROUP = { oil: "Oil", macro: "Macro", session: "Market hours", crypto: "Crypto" };
-const STATUS = { testing: "Testing", watching: "Watching", planned: "Planned" };
+const STATUS = { testing: "Testing", watching: "Watching", planned: "Planned", failed: "Failed" };
 
 /* The last 48 hours, hourly, ending at the live price. */
 function Spark({ v, w = 88, h = 22 }) {
@@ -447,7 +447,7 @@ function Board({ d }) {
     <section id="p-EDGE" className="panel term-wide">
       <Head code="EDGE" title="Edge board"
         meta={[["Recording", rec.on && rec.markets.length ? rec.markets.map((m) => m.split(":").pop()).join(" ") : "off"]]}
-        pills={["testing", "watching", "planned"].map((k) => {
+        pills={["testing", "watching", "planned", "failed"].map((k) => {
           const n = d.board.filter((c) => c.status === k).length;
           return n ? <Pill key={k} kind={k === "testing" ? "good" : k === "watching" ? "state" : "mute"}>{n} {STATUS[k].toLowerCase()}</Pill> : null;
         })} />

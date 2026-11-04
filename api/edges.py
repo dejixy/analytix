@@ -152,8 +152,7 @@ BOARD = [
     {"key": "fresh", "name": "Fresh money", "markets": "BTC, ETH, SOL, HYPE",
      "idea": "A metric, not a person: the share of trading and new positions from wallets never seen here before, "
              "and money bridged in. A spike is the footprint (October 2025's crash short came from fresh money).",
-     "next": "Run scripts/freshMoney.py on the server: does a spike in the first-seen share lead big moves, beyond "
-             "plain volume spikes?"},
+     "next": "Rerun on new days only, same rule, once a month of fresh data has built up; drop it if it fails again."},
     {"key": "listings", "name": "Listing footprints", "markets": "Long-tail coins",
      "idea": "A token reaching an exchange's wallets, or deposits opening, before the listing notice.",
      "next": "Line up past listing notices with on-chain transfers (Dune)."},
@@ -772,8 +771,9 @@ class EdgeService:
                 c["status"] = "testing"
                 c["line"] = "Probe and first map written, pass rule fixed in advance; waiting for the server run."
             elif card["key"] == "fresh":
-                c["status"] = "testing"
-                c["line"] = "Study written, pass rule fixed in advance; waiting for the run on our recordings."
+                c["status"] = "failed"
+                c["line"] = ("Tested 4 Nov on 16 days (27 spikes): 4-hour moves after a spike were 0.96x normal (t -0.2) "
+                             "and +1 bp in its direction. Most spikes were one new wallet (69-88% of the fresh dollars).")
             out.append(c)
         return out
 
