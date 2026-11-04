@@ -1,0 +1,245 @@
+"""
+Slow money into BTC, from public sources (for scripts/btcEstimate.py):
+
+    ETF flows      US spot bitcoin ETFs' daily net flows in US$m, per fund and in total, from Farside Investors'
+                   table (farside.co.uk/btc/): parsed from its HTML, or from a copy saved by hand (--etf-file) if
+                   the site turns the script away
+    Strategy       every 8-K Strategy (MicroStrategy) filed with the SEC: BTC bought and total held, by filing date
+                   (when the market learned of it). SEC asks scripts to name themselves: set ANALYTIX_SEC_UA to
+                   "your name your@email" if it refuses the default
+    other DATs     treasury companies' purchases from a CSV kept by hand (date,company,btc)
+    prices         daily and hourly closes from Yahoo Finance's chart endpoint (MSTR, BTC-USD)
+"""
+import asyncio
+import csv
+import json
+import os
+import re
+from datetime import datetime, timezone
+from html import unescape
+from html.parser import HTMLParser
+from pathlib import Path
+
+import httpx
+
+FARSIDE_URL = "https://farside.co.uk/btc/"
+SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+SEC_ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
+SEC_INDEX = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/index.json"
+STRATEGY_CIK = 1050446
+YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+BROWSER = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"}
+
+
+def sec_headers() -> dict:
+    return {"User-Agent": os.getenv("ANALYTIX_SEC_UA", "Analytix research script"), "Accept-Encoding": "gzip, deflate"}
+
+
+# ── HTML to rows / text ───────────────────────────────────────────────────────
+class _Rows(HTMLParser):
+    """Every table row's cells as text."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows, self.row, self.cell, self.in_cell = [], None, [], False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.row = []
+        elif tag in ("td", "th") and self.row is not None:
+            self.in_cell, self.cell = True, []
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self.row is not None and self.in_cell:
+            self.row.append(" ".join("".join(self.cell).split()))
+            self.in_cell = False
+        elif tag == "tr" and self.row is not None:
+            if self.row:
+                self.rows.append(self.row)
+            self.row = None
+
+    def handle_data(self, data):
+        if self.in_cell:
+            self.cell.append(data)
+
+
+def table_rows(html: str) -> list[list[str]]:
+    p = _Rows()
+    p.feed(html)
+    return p.rows
+
+
+def html_text(html: str) -> str:
+    """The visible text of a page, one space between everything."""
+    html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    return " ".join(unescape(re.sub(r"(?s)<[^>]+>", " ", html)).replace("\xa0", " ").split())
+
+
+# ── ETF flows ─────────────────────────────────────────────────────────────────
+def _usd_m(cell: str) -> float | None:
+    """Farside's numbers: "12.3", "(45.6)" negative, "-" or blank none."""
+    c = cell.replace(",", "").strip()
+    if c in ("", "-", "–"):
+        return None
+    neg = c.startswith("(") and c.endswith(")")
+    try:
+        v = float(c.strip("()"))
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def parse_farside(html: str) -> list[dict]:
+    """[{"date": "2024-01-11", "total": $m, "funds": {ticker: $m}}] in date order, from the flow table. The header row
+    is the one starting "Date"; summary rows (Total, Average, Maximum, Minimum) and days with no total are skipped."""
+    rows = table_rows(html)
+    head = next((r for r in rows if r and r[0].strip().lower() == "date"), None)
+    out = []
+    for r in rows:
+        if not r:
+            continue
+        try:
+            d = datetime.strptime(r[0].strip(), "%d %b %Y").date()
+        except ValueError:
+            continue
+        vals = [_usd_m(c) for c in r[1:]]
+        total = vals[-1] if vals else None
+        if total is None:
+            continue
+        names = head[1:] if head and len(head) == len(r) else [f"col{i}" for i in range(1, len(r))]
+        out.append({"date": d.isoformat(), "total": total,
+                    "funds": {n: v for n, v in zip(names[:-1], vals[:-1]) if v is not None}})
+    by = {x["date"]: x for x in out}
+    return [by[k] for k in sorted(by)]
+
+
+async def fetch_farside(url: str = FARSIDE_URL) -> str:
+    async with httpx.AsyncClient(timeout=30, headers=BROWSER, follow_redirects=True) as c:
+        r = await c.get(url)
+        r.raise_for_status()
+        return r.text
+
+
+def read_etf_file(path: str | Path) -> list[dict]:
+    """A saved copy of the Farside page (.html), or a CSV with date and total columns (US$m)."""
+    p = Path(path)
+    text = p.read_text(errors="replace")
+    if p.suffix.lower() in (".htm", ".html") or "<table" in text[:200_000].lower():
+        return parse_farside(text)
+    out = []
+    for row in csv.DictReader(text.splitlines()):
+        k = {x.lower().strip(): v for x, v in row.items() if x}
+        d, t = k.get("date"), k.get("total")
+        if not d or t is None:
+            continue
+        for fmt in ("%Y-%m-%d", "%d %b %Y", "%m/%d/%Y"):
+            try:
+                day = datetime.strptime(d.strip(), fmt).date().isoformat()
+                break
+            except ValueError:
+                day = None
+        v = _usd_m(t)
+        if day and v is not None:
+            out.append({"date": day, "total": v, "funds": {}})
+    return sorted(out, key=lambda x: x["date"])
+
+
+# ── Strategy's 8-K filings ────────────────────────────────────────────────────
+MONTH_DAY_YEAR = r"([A-Z][a-z]+ \d{1,2}, \d{4})"
+_OLD_BOUGHT = re.compile(r"acquired (?:an aggregate of )?approximately ([\d,]+) (?:additional )?(?:bitcoins?|BTC)\b", re.I)
+_OLD_HELD = re.compile(r"held (?:an aggregate of )?approximately ([\d,]+) (?:bitcoins?|BTC)\b", re.I)
+_TABLE_ROW = re.compile(r"(\d{1,2}/\d{1,2}/\d{4})\s*[-–]\s*(\d{1,2}/\d{1,2}/\d{4})\s+([\d,]+)\s+\$\s?([\d.,]+)\s+\$\s?([\d,]+)\s+([\d,]+)")
+_NONE = re.compile(r"did not (?:acquire|purchase) any (?:bitcoin|BTC)", re.I)
+
+
+def parse_purchase(text: str) -> dict | None:
+    """{"bought": BTC, "held": BTC or None, "period_end": date or None} from one filing's text, or None if it says
+    nothing about buying. Reads the table Strategy has used since 2025 and the sentences it used before."""
+    m = _TABLE_ROW.search(text)
+    if m and "BTC Acquired" in text:
+        end = datetime.strptime(m.group(2), "%m/%d/%Y").date().isoformat()
+        return {"bought": float(m.group(3).replace(",", "")), "held": float(m.group(6).replace(",", "")), "period_end": end}
+    b = _OLD_BOUGHT.search(text)
+    h = _OLD_HELD.search(text)
+    if b or (h and _NONE.search(text)):
+        end = None
+        mm = re.search(r"between " + MONTH_DAY_YEAR + r" and " + MONTH_DAY_YEAR, text)
+        if mm:
+            try:
+                end = datetime.strptime(mm.group(2), "%B %d, %Y").date().isoformat()
+            except ValueError:
+                end = None
+        return {"bought": float(b.group(1).replace(",", "")) if b else 0.0,
+                "held": float(h.group(1).replace(",", "")) if h else None, "period_end": end}
+    return None
+
+
+async def fetch_strategy(since: str = "2024-01-01", cik: int = STRATEGY_CIK, cache: Path | None = None, log=None) -> list[dict]:
+    """[{"filed": date, "bought", "held", "period_end", "accession"}] for every 8-K since `since` that reports buying
+    (or a week without). Documents already read are kept in `cache` (a JSON file), so reruns only fetch new ones."""
+    seen = json.loads(cache.read_text()) if cache and cache.exists() else {}
+    async with httpx.AsyncClient(timeout=30, headers=sec_headers(), follow_redirects=True) as c:
+        r = await c.get(SEC_SUBMISSIONS.format(cik=cik))
+        r.raise_for_status()
+        recent = r.json()["filings"]["recent"]
+        out = []
+        for form, filed, acc, doc in zip(recent["form"], recent["filingDate"], recent["accessionNumber"], recent["primaryDocument"]):
+            if form != "8-K" or filed < since:
+                continue
+            key = acc
+            if key not in seen:
+                acc_dir = acc.replace("-", "")
+                docs = [doc]
+                try:
+                    ix = await c.get(SEC_INDEX.format(cik=cik, acc=acc_dir))
+                    if ix.status_code == 200:
+                        docs += [x["name"] for x in ix.json().get("directory", {}).get("item", [])
+                                 if x["name"].lower().endswith(".htm") and x["name"] != doc and "ex99" in x["name"].lower()]
+                except (httpx.HTTPError, ValueError):
+                    pass
+                found = None
+                for d in docs:
+                    await asyncio.sleep(0.25)                           # SEC allows 10 a second; stay far under
+                    try:
+                        page = await c.get(SEC_ARCHIVE.format(cik=cik, acc=acc_dir, doc=d))
+                    except httpx.HTTPError:
+                        continue
+                    if page.status_code != 200:
+                        continue
+                    found = parse_purchase(html_text(page.text))
+                    if found:
+                        break
+                seen[key] = found
+                if cache:
+                    cache.write_text(json.dumps(seen))
+                if log:
+                    print(f"  8-K {filed}: {found}", file=log)
+            if seen.get(key):
+                out.append({"filed": filed, "accession": acc, **seen[key]})
+    return sorted(out, key=lambda x: x["filed"])
+
+
+def read_dat_csv(path: str | Path) -> list[dict]:
+    """Other treasury companies' purchases, by hand: date (the day it was announced), company, btc."""
+    out = []
+    for row in csv.DictReader(Path(path).read_text().splitlines()):
+        try:
+            out.append({"filed": row["date"].strip(), "company": row.get("company", "").strip(), "bought": float(row["btc"])})
+        except (KeyError, ValueError):
+            continue
+    return out
+
+
+# ── prices ────────────────────────────────────────────────────────────────────
+async def fetch_yahoo(symbol: str, rng: str = "5y", interval: str = "1d") -> list[tuple[int, float]]:
+    """[(time ms, close)] from Yahoo's chart endpoint (hourly goes back 730 days at most)."""
+    async with httpx.AsyncClient(timeout=30, headers=BROWSER, follow_redirects=True) as c:
+        r = await c.get(YAHOO.format(symbol=symbol), params={"range": rng, "interval": interval})
+        r.raise_for_status()
+        res = r.json()["chart"]["result"][0]
+    ts, closes = res.get("timestamp") or [], res["indicators"]["quote"][0].get("close") or []
+    return [(int(t) * 1000, float(c)) for t, c in zip(ts, closes) if c is not None]
+
+
+def utc_day(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date().isoformat()
