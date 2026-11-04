@@ -92,3 +92,16 @@ def test_the_crawl_paces_caches_and_reads_history(tmp_path):
     assert len(calls) == 5 and again["0xa"].spot == 50_000                  # all from the cache the second time
     res = M.report(list(got.values()), 1e6, {T0 + i * D: 30.0 for i in range(10)}, T0 + 5 * D, 30.0)
     assert res["staked"] == 20_000 and res["groups"][0]["group"] in ("Stakers", "Holders")
+
+
+def test_hypurrscan_holders_and_queue_in_their_shapes():
+    assert H.parse_holders({"holders": {"0xA": "5", "0xb": 9, "bad": 100}}) == [("0xb", 9.0), ("0xa", 5.0)]
+    assert H.parse_holders([["0xa", "1"], {"user": "0xC", "balance": "3"}]) == [("0xc", 3.0), ("0xa", 1.0)]
+    now = T0 + 3 * D
+    rows = [{"time": now - 2 * D, "user": "0xA", "wei": 5_000 * 10 ** 8}, {"time": now - D, "user": "0xb", "wei": 10 ** 8}]
+    q = H.parse_queue(rows, now)
+    assert q["n"] == 2 and q["hype"] == 5_001 and q["times_are"] == "asked" and q["users"] == ["0xa", "0xb"]
+    assert q["by_day"] == [((now - 2 * D + 7 * D) // D * D, 5_000.0), ((now - D + 7 * D) // D * D, 1.0)]
+    later = H.parse_queue([{"time": now + D, "user": "0xa", "wei": 10 ** 8}], now)
+    assert later["times_are"] == "unlock" and later["by_day"] == [((now + D) // D * D, 1.0)]
+    assert H.parse_queue([], now)["n"] == 0

@@ -27,7 +27,8 @@ SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 SEC_ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
 SEC_INDEX = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/index.json"
 STRATEGY_CIK = 1050446
-YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+YAHOO = ("https://query1.finance.yahoo.com/v8/finance/chart/{symbol}", "https://query2.finance.yahoo.com/v8/finance/chart/{symbol}")
+STOOQ = "https://stooq.com/q/d/l/?s={symbol}&i=d"
 BROWSER = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"}
 
 
@@ -231,14 +232,51 @@ def read_dat_csv(path: str | Path) -> list[dict]:
 
 
 # ── prices ────────────────────────────────────────────────────────────────────
-async def fetch_yahoo(symbol: str, rng: str = "5y", interval: str = "1d") -> list[tuple[int, float]]:
-    """[(time ms, close)] from Yahoo's chart endpoint (hourly goes back 730 days at most)."""
+async def fetch_yahoo(symbol: str, rng: str = "5y", interval: str = "1d", cache: Path | None = None) -> list[tuple[int, float]]:
+    """[(time ms, close)] from Yahoo's chart endpoint (hourly goes back 730 days at most). Yahoo rate-limits busy
+    server addresses (429), so it waits and retries, tries its second host, and keeps the last good reply in `cache`
+    (a folder) to fall back on."""
+    key = cache / f"yahoo_{symbol}_{rng}_{interval}.json" if cache else None
+    last = None
     async with httpx.AsyncClient(timeout=30, headers=BROWSER, follow_redirects=True) as c:
-        r = await c.get(YAHOO.format(symbol=symbol), params={"range": rng, "interval": interval})
+        for attempt in range(4):
+            url = YAHOO[attempt % 2].format(symbol=symbol)
+            try:
+                r = await c.get(url, params={"range": rng, "interval": interval})
+                if r.status_code == 429 or r.status_code >= 500:
+                    last = f"HTTP {r.status_code}"
+                    await asyncio.sleep(15 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                res = r.json()["chart"]["result"][0]
+                ts, closes = res.get("timestamp") or [], res["indicators"]["quote"][0].get("close") or []
+                rows = [(int(t) * 1000, float(x)) for t, x in zip(ts, closes) if x is not None]
+                if key:
+                    key.write_text(json.dumps(rows))
+                return rows
+            except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+                last = f"{type(exc).__name__}: {exc}"
+                await asyncio.sleep(5)
+    if key and key.exists():
+        return [tuple(x) for x in json.loads(key.read_text())]
+    raise RuntimeError(f"Yahoo {symbol}: {last}")
+
+
+async def fetch_stooq(symbol: str) -> list[tuple[int, float]]:
+    """Daily closes from Stooq's free CSV (symbol like "mstr.us"), stamped at midnight UTC of each trading day."""
+    async with httpx.AsyncClient(timeout=30, headers=BROWSER, follow_redirects=True) as c:
+        r = await c.get(STOOQ.format(symbol=symbol))
         r.raise_for_status()
-        res = r.json()["chart"]["result"][0]
-    ts, closes = res.get("timestamp") or [], res["indicators"]["quote"][0].get("close") or []
-    return [(int(t) * 1000, float(c)) for t, c in zip(ts, closes) if c is not None]
+    out = []
+    for row in csv.DictReader(r.text.splitlines()):
+        try:
+            d = datetime.strptime(row["Date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            out.append((int(d.timestamp() * 1000), float(row["Close"])))
+        except (KeyError, ValueError):
+            continue
+    if not out:
+        raise RuntimeError(f"Stooq {symbol}: no rows ({r.text[:80]!r})")
+    return out
 
 
 def utc_day(ms: int) -> str:

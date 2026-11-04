@@ -220,3 +220,46 @@ def spike_test(flows: dict[int, dict[str, float]], closes: dict[int, float], kin
     out["passes"] = bool(h and h["spike"] < h["other"] and h["t"] <= -2
                          and all(x < 0 for x in out.get("halves_7d", [float("nan")])))
     return out
+
+
+def parse_holders(j) -> list[tuple[str, float]]:
+    """Hypurrscan's holder list, biggest first, whatever its shape: {"holders": {address: amount}} or a list of
+    [address, amount] or of {"address"|"user"|"holder": …, "amount"|"balance"|"total"|"value": …}."""
+    rows = j.get("holders", j) if isinstance(j, dict) else j
+    out = []
+    if isinstance(rows, dict):
+        out = [(str(a), num(v)) for a, v in rows.items()]
+    elif isinstance(rows, list):
+        for x in rows:
+            if isinstance(x, (list, tuple)) and x:
+                out.append((str(x[0]), num(x[1]) if len(x) > 1 else 0.0))
+            elif isinstance(x, dict):
+                a = x.get("address") or x.get("user") or x.get("holder") or ""
+                v = next((x[k] for k in ("amount", "balance", "total", "value") if k in x), 0)
+                out.append((str(a), num(v)))
+    return sorted(((a.lower(), v) for a, v in out if a.startswith("0x")), key=lambda r: -r[1])
+
+
+def parse_queue(rows, now_ms: int, decimals: int = 8) -> dict:
+    """Hypurrscan's unstaking queue ([{time, user, wei}]): each withdrawal's HYPE (wei / 10^decimals, staking's
+    units) and the day it becomes spendable. Its times are taken as when each was asked for (7 days to go) when they
+    are in the past, and as the unlock itself when they are in the future."""
+    items = []
+    for x in rows or []:
+        try:
+            t, amt = int(num(x["time"])), num(x["wei"]) / 10 ** decimals
+        except (KeyError, TypeError):
+            continue
+        items.append((str(x.get("user", "")).lower(), t, amt))
+    if not items:
+        return {"n": 0, "hype": 0.0, "by_day": [], "users": [], "times_are": None}
+    past = sum(1 for _, t, _ in items if t <= now_ms) / len(items)
+    started = past >= 0.5
+    by_day = defaultdict(float)
+    for _, t, amt in items:
+        unlock = t + UNSTAKE_DAYS * DAY_MS if started else t
+        by_day[max(unlock, now_ms) // DAY_MS * DAY_MS] += amt
+    return {"n": len(items), "hype": sum(a for _, _, a in items), "by_day": sorted(by_day.items()),
+            "users": sorted({u for u, _, _ in items if u.startswith("0x")}), "times_are": "asked" if started else "unlock",
+            "biggest": sorted(items, key=lambda r: -r[2])[:5]}
+
