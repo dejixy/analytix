@@ -1416,67 +1416,71 @@ kbd {
 }
 
 
-/* ── CNST and PRES: the market constellation and the pressure radar ─────────────────────────────────
-   Data in two muted colours only (green #4a9e7f, red #c4646b), flat fills, hairline structure, no glow or motion. */
-.cn-panel, .pr-panel { display: flex; flex-direction: column; height: 100%; }
-.cn-panel .term-comp-chart, .pr-panel .term-comp-chart { padding: 0; flex: 1; }
-.cn-bar { padding: 12px 14px; }
-.cn-kpis { gap: 8px 30px; }
-.cn-kpis b { font-size: 15px; letter-spacing: -0.01em; font-weight: 500; }
-.cn-kpis b small { font-family: var(--mono); font-size: 12px; margin-left: 4px; }
-.cn-stage { position: relative; margin: 0 10px; border: 1px solid var(--t-line); border-radius: 3px; background: #050908; overflow: hidden; }
-.cn-wrap { position: relative; }
-.cn-sky, .pr-scope { display: block; }
-.cn-link { transition: opacity 0.2s; }
-.cn-chip { fill: #050908; stroke: #18221f; stroke-width: 1; }
-.cn-r { font-family: var(--mono); font-size: 10px; font-weight: 500; }
-.cn-node { cursor: default; transition: opacity 0.2s; }
-.cn-plate { fill: rgba(5, 9, 8, 0.82); }
-.cn-name { fill: #d9e2de; font-family: var(--t-sans); font-size: 12px; font-weight: 500; letter-spacing: 0.01em; }
-.cn-sub { fill: #8b9a94; font-family: var(--mono); font-size: 10px; }
-.cn-dim { fill: #65746f; }
-.cn-tip { position: absolute; top: 10px; right: 10px; min-width: 170px; padding: 9px 11px; border: 1px solid #1b2724; border-radius: 3px;
-  background: rgba(7, 12, 11, 0.96); font-size: 11.5px; pointer-events: none; }
-.cn-tip-h { margin-bottom: 6px; color: var(--t-ink); font-size: 12.5px; font-weight: 600; }
-.cn-tip dl { display: grid; grid-template-columns: auto auto; gap: 3px 14px; margin: 0; }
-.cn-tip dt { color: var(--t-mute); }
-.cn-tip dd { margin: 0; text-align: right; color: var(--t-ink2); }
-.cn-tip-l { margin-top: 7px; padding-top: 6px; border-top: 1px solid #17221f; display: grid; gap: 2px; }
-.cn-tip-l div { display: flex; justify-content: space-between; gap: 12px; color: var(--t-ink2); }
-.cn-tip-l b { font-weight: 500; }
-.cn-key { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 0; padding: 10px 14px 12px; font-size: 11px; color: var(--t-mute); }
-.cn-key > span { display: inline-flex; align-items: center; white-space: nowrap; }
-.cn-key > span:last-child:not(.cn-size) { white-space: normal; }
-.cn-k { display: inline-block; width: 16px; height: 0; border-top: 1.5px solid; margin-right: 6px; }
-.cn-k.g { border-color: #4a9e7f; }
-.cn-k.r { border-color: #c4646b; }
-.cn-k.dash { border-top-style: dashed; }
-.cn-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-.cn-dot.g { background: #4a9e7f; }
-.cn-dot.r { background: #c4646b; }
-.cn-sq { display: inline-block; width: 7px; height: 7px; margin-right: 6px; }
-.cn-sq.r { background: #c4646b; }
-.cn-size { gap: 6px; }
-.cn-size svg { display: block; }
-.cn-size-c { fill: none; stroke: #6b7a74; stroke-width: 1; }
-.cn-size em { font-style: normal; font-size: 10px; color: var(--t-mute); }
-.cn-badge { padding: 2px 6px; border: 1px solid #1d2b27; border-radius: 1px; font: 500 9px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--t-ink2); }
-.cn-badge.hot { color: #7fc2a7; border-color: rgba(74, 158, 127, 0.45); }
-.pr-body.side { display: grid; grid-template-columns: minmax(0, 1fr) 252px; align-items: center; }
-.pr-ring { fill: none; stroke: #172220; stroke-width: 1; }
-.pr-ring.norm { stroke: #33433e; stroke-dasharray: 3 3; }
-.pr-rl { fill: #5d6c66; font-family: var(--mono); font-size: 9.5px; }
-.pr-spoke { stroke: #141e1b; stroke-width: 1; }
-.pr-spoke.on { stroke: #3a4a45; }
-.pr-poly { stroke-width: 1.5; stroke-linejoin: round; fill-opacity: 0.12; }
-.pr-name { fill: #b9c5c0; font-family: var(--t-sans); font-size: 11.5px; font-weight: 500; cursor: default; }
-.pr-name.on { fill: #eef4f1; }
-.pr-name.hot { font-weight: 600; fill: #e3ebe7; }
-.pr-table { width: 100%; border-collapse: collapse; align-self: stretch; border-left: 1px solid var(--t-line); font-size: 12px; }
-.pr-body:not(.side) .pr-table { border-left: 0; border-top: 1px solid var(--t-line); }
-.pr-table th { padding: 9px 8px 7px; text-align: right; font: 500 11px var(--t-sans); color: var(--t-mute); border-bottom: 1px solid var(--t-line); }
-.pr-table th:first-child, .pr-table td:first-child { text-align: left; padding-left: 12px; }
-.pr-table th:last-child, .pr-table td:last-child { padding-right: 12px; }
-.pr-table td { padding: 0 8px; height: 34px; font-size: 11.5px; text-align: right; color: var(--t-ink2); border-bottom: 1px solid #0d1513; }
-.pr-table td:first-child { font-family: var(--t-sans); font-weight: 500; color: var(--t-ink); }
-.pr-table tr.on td { background: #0a1210; }
+/* ── CNST and PRES: market links and the pressure rose ──────────────────────────────────────────────
+   Data in two muted colours only (green #4a9e7f, red #c4646b), flat, on hairline neutral structure. */
+.lk-panel { display: flex; flex-direction: column; height: 100%; }
+.lk-panel .term-comp-chart { padding: 0; flex: 1; }
+.lk-kpis { gap: 8px 30px; }
+.lk-kpis b { font-size: 15px; letter-spacing: -0.01em; font-weight: 500; }
+.lk-kpis b small { font-family: var(--mono); font-size: 12px; margin-left: 4px; color: var(--t-mute); }
+.lk-clear { margin-left: 6px; padding: 1px 6px; border: 1px solid var(--t-edge); border-radius: 3px; background: none; color: var(--t-ink2);
+  font: 500 11px var(--t-sans); cursor: pointer; }
+.lk-clear:hover { color: var(--t-ink); border-color: #2a3a35; }
+.lk-stage { margin: 0 10px; border: 1px solid var(--t-line); border-radius: 3px; background: #050908; overflow: hidden; }
+.lk-stage svg { display: block; }
+.lk-split, .lk-lines { border-top: 1px solid var(--t-line); }
+.lk-lines { position: relative; }
+.lk-arc, .lk-line, .lk-node { cursor: pointer; }
+.lk-arc path, .lk-line path, .lk-node, .rs-petal { transition: opacity 0.2s, stroke-opacity 0.2s; }
+.lk-chip { fill: #050908; stroke: #18221f; }
+.lk-v { font-family: var(--mono); font-size: 10.5px; font-weight: 500; }
+.lk-ink { fill: #c9d4cf; }
+.lk-base { stroke: #1c2825; }
+.lk-name { fill: #d9e2de; font-family: var(--t-sans); font-size: 12px; font-weight: 500; }
+.lk-sub { fill: #8b9a94; font-family: var(--mono); font-size: 10px; }
+.lk-title { fill: #6b7a74; font-family: var(--t-sans); font-size: 11px; font-weight: 500; }
+.lk-ax { fill: #5d6c66; font-family: var(--mono); font-size: 9.5px; }
+.lk-gl { stroke: #111a17; }
+.lk-zero { stroke: #2a3a35; }
+.lk-shut { fill: #0b1211; }
+.lk-note { fill: #8b9a94; font-family: var(--t-sans); font-size: 9.5px; }
+.lk-zone { font-family: var(--t-sans); font-size: 10px; }
+.lk-zone.g { fill: #4f7f6c; }
+.lk-zone.r { fill: #8a5a5e; }
+.lk-ev { stroke: #3a4a45; stroke-dasharray: 2 3; }
+.lk-lead { stroke: #2a3a35; }
+.lk-end { fill: #c9d4cf; font-family: var(--t-sans); font-size: 11px; font-weight: 500; }
+.lk-verdict { fill: #6b7a74; font-weight: 400; font-size: 10px; }
+.lk-call { fill: rgba(7, 12, 11, 0.96); stroke: #1b2724; }
+.lk-call-h { fill: #e6efeb; font-family: var(--t-sans); font-size: 12px; font-weight: 600; }
+.lk-call-t { fill: #8b9a94; font-family: var(--t-sans); font-size: 11px; }
+.lk-cross { stroke: rgba(236, 248, 243, 0.3); pointer-events: none; }
+.lk-tip { position: absolute; z-index: 3; pointer-events: none; min-width: 170px; padding: 8px 10px; border: 1px solid #1b2724; border-radius: 3px;
+  background: rgba(7, 12, 11, 0.96); font-size: 11.5px; display: grid; gap: 2px; }
+.lk-tip-h { color: var(--t-ink); font-weight: 600; margin-bottom: 3px; }
+.lk-tip div:not(.lk-tip-h) { display: flex; justify-content: space-between; gap: 14px; color: var(--t-ink2); }
+.lk-tip div.dim { opacity: 0.4; }
+.lk-tip b { font-weight: 500; }
+.lk-key { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 10px 14px 12px; font-size: 11px; color: var(--t-mute); }
+.lk-key > span { display: inline-flex; align-items: center; gap: 6px; }
+.lk-k { display: inline-block; width: 16px; height: 0; border-top: 1.5px solid; }
+.lk-k.g { border-color: #4a9e7f; }
+.lk-k.r { border-color: #c4646b; }
+.lk-k.dash { border-top-style: dashed; }
+.lk-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.lk-dot.g { background: #4a9e7f; }
+.lk-sq { display: inline-block; width: 7px; height: 7px; }
+.lk-sq.r { background: #c4646b; }
+.rs-ring { fill: none; stroke: #141e1b; }
+.rs-ring.norm { stroke: #3a4a45; stroke-dasharray: 3 3; }
+.rs-rl { fill: #6b7a74; font-family: var(--mono); font-size: 9.5px; paint-order: stroke; stroke: #050908; stroke-width: 3px; stroke-linejoin: round; }
+.rs-name { fill: #d9e2de; font-family: var(--t-sans); font-size: 11.5px; font-weight: 500; }
+.rs-sub { fill: #8b9a94; font-family: var(--mono); font-size: 9.5px; }
+.rs-hub { fill: #050908; stroke: #1d2b27; }
+.rs-k { fill: #5d6c66; font-family: var(--t-sans); font-size: 11px; font-weight: 500; }
+.rs-big { fill: #e6efeb; font-family: var(--t-sans); font-size: 24px; font-weight: 500; letter-spacing: -0.02em; }
+.rs-t { fill: #8b9a94; font-family: var(--t-sans); font-size: 11px; }
+.rs-norm { stroke: #33433e; stroke-dasharray: 3 3; }
+.rs-end { font-family: var(--t-sans); font-size: 11px; font-weight: 500; }
+.rs-end.g { fill: #4a9e7f; }
+.rs-end.r { fill: #c4646b; }

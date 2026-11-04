@@ -110,8 +110,8 @@ export default function Terminal() {
         setLatency(ms);
         setLastFetch(Date.now());
         if (r.ok) {
-          if (j.light && heavy.current) Object.assign(j, { weekend: heavy.current.weekend, compare: heavy.current.compare, activity: heavy.current.activity });
-          else heavy.current = { heavy_v: j.heavy_v, weekend: j.weekend, compare: j.compare, activity: j.activity };
+          if (j.light && heavy.current) Object.assign(j, { weekend: heavy.current.weekend, compare: heavy.current.compare, activity: heavy.current.activity, links: heavy.current.links });
+          else heavy.current = { heavy_v: j.heavy_v, weekend: j.weekend, compare: j.compare, activity: j.activity, links: j.links };
           setD(j);
           setError(null);
         } else setError(j.detail || "Couldn't read the edges.");

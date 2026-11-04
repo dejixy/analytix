@@ -3,7 +3,7 @@ import { fmtPct, fmtUsd } from "../format.js";
 import { ChangeLog } from "./TermChrome.jsx";
 import { useOrders } from "./Compare.jsx";
 import Flow, { useFlow } from "./River.jsx";
-import Constellation, { Radar } from "./Constellation.jsx";
+import MarketLinks, { PressureRose, samePick } from "./LinkRose.jsx";
 import World from "./World.jsx";
 import Charts from "./Charts.jsx";
 import { Flash, Head, Pill, SourcePill, fresh } from "./TermPanel.jsx";
@@ -547,7 +547,11 @@ function Boot({ error }) {
 export default function Edges({ d, error, now, onPick = () => {} }) {
   const { orders, info } = useOrders(Boolean(d));
   const [flowMin, setFlowMin] = useState(60);
-  const flow = useFlow(flowMin, Boolean(d));             // one poll for the river, the constellation and the radar
+  const flow = useFlow(flowMin, Boolean(d));             // one poll for the river, the links and the rose
+  const [pickHover, setPickHover] = useState(null);       // a pair or market picked in the links: both panels follow
+  const [pickPin, setPickPin] = useState(null);
+  const pick = pickHover || pickPin;
+  const pin = (p) => setPickPin((cur) => (p == null || samePick(cur, p) ? null : p));
   if (!d) return <Boot error={error} />;
   now = now || d.now_ms;
   const down = Object.entries(d.status || {}).filter(([, s]) => !s.ok);
@@ -558,8 +562,8 @@ export default function Edges({ d, error, now, onPick = () => {} }) {
       <div className="tw-4"><Log log={d.log || []} since={d.log_since} coins={d.coins} /></div>
       <Charts d={d} onPick={onPick} />
       <Flow d={d} now={now} data={flow} minutes={flowMin} setMinutes={setFlowMin} />
-      <div className="tw-6"><Constellation d={d} flow={flow} /></div>
-      <div className="tw-6"><Radar flow={flow} /></div>
+      <div className="tw-6"><MarketLinks d={d} flow={flow} pick={pick} hover={setPickHover} pin={pin} pinned={pickPin} /></div>
+      <div className="tw-6"><PressureRose flow={flow} pick={pick} /></div>
       <Markets d={d} now={now} />
       <div className="tw-7"><Record d={d} /></div>
       <div className="tw-5 term-col">
