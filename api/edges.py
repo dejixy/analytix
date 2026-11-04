@@ -145,6 +145,10 @@ BOARD = [
      "idea": "Who holds HYPE and how each group behaves. The 7-day unstaking queue is the warning a holder may sell.",
      "next": "Run scripts/hypeProbe.py then scripts/hypeMap.py on the server: groups, what unlocks this week, and "
              "whether waves of unstaking come before weak HYPE."},
+    {"key": "btc_est", "name": "BTC estimate", "markets": "BTC",
+     "idea": "ETF flows, treasury-company buying, Strategy's premium and the order book in one equation for BTC's "
+             "next 24 hours, fitted walk-forward.",
+     "next": "Run scripts/btcEstimate.py on the server; tune on the first 80% of days, check the last 20% once."},
     {"key": "fresh", "name": "Fresh money", "markets": "BTC, ETH, SOL, HYPE",
      "idea": "A metric, not a person: the share of trading and new positions from wallets never seen here before, "
              "and money bridged in. A spike is the footprint (October 2025's crash short came from fresh money).",
@@ -761,6 +765,9 @@ class EdgeService:
                 jpy = [x for x in recording if E.bare(x) == "JPY"]
                 c["status"] = "watching" if jpy else "planned"
                 c["line"] = "Recording USD/JPY from Hyperliquid." if jpy else ""
+            elif card["key"] == "btc_est":
+                c["status"] = "testing"
+                c["line"] = "Equation written; waiting for the first fit on the server."
             elif card["key"] == "holders":
                 c["status"] = "testing"
                 c["line"] = "Probe and first map written, pass rule fixed in advance; waiting for the server run."
