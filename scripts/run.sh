@@ -4,6 +4,8 @@
 #   bash ~/analytix/scripts/run.sh status    what's running, how far each got, which results are ready
 #   bash ~/analytix/scripts/run.sh btc       the BTC estimate (a few minutes), printed and kept in /tmp/btc_est.txt
 #                                            (extra options pass through: run.sh btc --lam 0.3 --terms etf,mom)
+#   bash ~/analytix/scripts/run.sh moves     BTC estimate v2: the size of the next day's move, extreme ETF-flow days
+#                                            and Strategy's biggest buys (a few minutes), kept in /tmp/btc_moves.txt
 #   bash ~/analytix/scripts/run.sh map       (re)start the HYPE map in the background (keeps what it already read)
 #   bash ~/analytix/scripts/run.sh fresh     (re)start fresh money in the background (store build, then the study)
 #   bash ~/analytix/scripts/run.sh show      every finished result
@@ -30,12 +32,20 @@ case "${1:-status}" in
     last /tmp/hype_map.log
     echo "BTC estimate: $(running btcEstimate), result $(ready /tmp/btc_est.txt)"
     last /tmp/btc_est.log 3
+    echo "BTC moves:    $(running btcMoves), result $(ready /tmp/btc_moves.txt)"
+    last /tmp/btc_moves.log 3
     ;;
   btc)
     pkill -f scripts.btcEstimate 2>/dev/null; sleep 1
     [ -n "$ETF_FILE" ] && [ -f "$ETF_FILE" ] && etf=(--etf-file "$ETF_FILE") || etf=()
     nice -n 19 "$PY" -m scripts.btcEstimate "${etf[@]}" "${@:2}" > /tmp/btc_est.txt 2> /tmp/btc_est.log
     cat /tmp/btc_est.txt; echo; echo "(log:)"; tail -n 5 /tmp/btc_est.log
+    ;;
+  moves)
+    pkill -f scripts.btcMoves 2>/dev/null; sleep 1
+    [ -n "$ETF_FILE" ] && [ -f "$ETF_FILE" ] && etf=(--etf-file "$ETF_FILE") || etf=()
+    nice -n 19 "$PY" -m scripts.btcMoves "${etf[@]}" "${@:2}" > /tmp/btc_moves.txt 2> /tmp/btc_moves.log
+    cat /tmp/btc_moves.txt; echo; echo "(log:)"; grep -E "Strategy:|DVOL|ETF flows:|Error|error" /tmp/btc_moves.log | tail -n 6
     ;;
   map)
     pkill -f scripts.hypeMap 2>/dev/null; sleep 2
@@ -49,7 +59,7 @@ case "${1:-status}" in
     echo "fresh money started in the background; check with: bash scripts/run.sh status"
     ;;
   show)
-    for f in /tmp/fresh.txt /tmp/hype_probe.txt /tmp/hype_map.txt /tmp/btc_est.txt; do
+    for f in /tmp/fresh.txt /tmp/hype_probe.txt /tmp/hype_map.txt /tmp/btc_est.txt /tmp/btc_moves.txt; do
       [ -s "$f" ] && { echo "===== $f"; cat "$f"; echo; }
     done
     ;;
@@ -57,6 +67,6 @@ case "${1:-status}" in
     git pull --ff-only
     ;;
   *)
-    sed -n '2,13p' "$0"
+    sed -n '2,15p' "$0"
     ;;
 esac
