@@ -22,6 +22,7 @@ Times are exchange milliseconds except *_recv (this server's clock on arrival) a
 """
 import calendar
 import gzip
+import zlib
 import json
 import re
 import time
@@ -112,8 +113,14 @@ def _side(levels: list, n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return px, sz, cnt
 
 
-def read_day(paths: list[Path]) -> dict[str, dict[str, np.ndarray]]:
-    """Every coin's columns from one day's hourly recordings."""
+def part_of(coin: str, parts: int) -> int:
+    """Which of `parts` groups a coin is built in (the same coin always lands in the same group)."""
+    return zlib.crc32(coin.encode()) % parts
+
+
+def read_day(paths: list[Path], keep=None) -> dict[str, dict[str, np.ndarray]]:
+    """Every coin's columns from one day's hourly recordings (only coins `keep(coin)` says yes to, when given:
+    a day of the long tail's 40-odd coins with their best bid/offer doesn't fit in memory at once)."""
     coins: dict[str, _Coin] = defaultdict(_Coin)
     wallets: dict[str, dict[str, int]] = defaultdict(dict)
     for path in paths:
@@ -123,6 +130,10 @@ def read_day(paths: list[Path]) -> dict[str, dict[str, np.ndarray]]:
                     rec = json.loads(line)
                     recv, msg = int(rec["recv_ms"]), rec["msg"]
                     ch, d = msg.get("channel"), msg.get("data")
+                    if keep is not None and d:                   # one coin per message: skip the others early
+                        c0 = d[0].get("coin") if isinstance(d, list) else d.get("coin") if isinstance(d, dict) else None
+                        if c0 is not None and not keep(c0):
+                            continue
                     if ch == "trades" and d:
                         for x in d:
                             c = x["coin"]
@@ -193,9 +204,16 @@ def read_day(paths: list[Path]) -> dict[str, dict[str, np.ndarray]]:
     return out
 
 
-def write_day(store: Path, day: str, paths: list[Path], coins: Iterable[str] | None = None) -> list[str]:
-    """Build one day for every coin in it (or just `coins`). Returns the coins written."""
-    data = read_day(paths)
+def write_day(store: Path, day: str, paths: list[Path], coins: Iterable[str] | None = None, parts: int = 1) -> list[str]:
+    """Build one day for every coin in it (or just `coins`). Returns the coins written. With parts > 1 the day's
+    hours are read that many times, a group of coins each time, so memory stays bounded."""
+    if parts > 1:
+        return [c for g in range(parts) for c in _write(store, day, paths, coins, lambda c, g=g: part_of(c, parts) == g)]
+    return _write(store, day, paths, coins, None)
+
+
+def _write(store: Path, day: str, paths: list[Path], coins, keep) -> list[str]:
+    data = read_day(paths, keep)
     src = np.array(sources_of(paths))
     written = []
     for coin, cols in data.items():

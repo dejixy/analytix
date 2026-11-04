@@ -96,6 +96,7 @@ def busiest_traders(n: int) -> list[str]:
 
 
 async def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)            # lines show as they're printed, even through tee
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--third-party", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--out", default="/tmp/hype_probe.json")

@@ -139,3 +139,27 @@ def test_two_recording_folders_build_into_one_store(tmp_path):
         for day, paths in tickStore.hours_by_day([folder]).items():
             assert tickStore.is_built(store, day, tickStore.sources_of(paths))
     assert tickStore.coins(store) == ["AAA", "ETH"]
+
+
+def test_a_day_built_in_parts_matches_one_built_whole(tmp_path):
+    rec, whole, parted = tmp_path / "rec", tmp_path / "whole", tmp_path / "parted"
+    rec.mkdir()
+    t = 1_790_035_200_000
+    with gzip.open(rec / "longtail_20260922_0000.jsonl.gz", "wt", encoding="utf-8") as fh:
+        for i, coin in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE"]):
+            book = {"channel": "l2Book", "data": {"coin": coin, "time": t + i, "levels": [[{"px": "1.0", "sz": "5", "n": 1}],
+                                                                                         [{"px": "1.1", "sz": "5", "n": 1}]]}}
+            trade = {"channel": "trades", "data": [{"coin": coin, "px": "1.05", "sz": "2", "side": "B", "time": t + i,
+                                                    "tid": i, "hash": "0xab", "users": ["0xa", "0xb"]}]}
+            fh.write(json.dumps({"recv_ms": t + 10, "msg": book}) + "\n" + json.dumps({"recv_ms": t + 11, "msg": trade}) + "\n")
+    (day, paths), = tickStore.hours_by_day([rec]).items()
+    a = sorted(tickStore.write_day(whole, day, paths))
+    b = sorted(tickStore.write_day(parted, day, paths, parts=3))
+    assert a == b == ["AAA", "BBB", "CCC", "DDD", "EEE"]
+    assert len({tickStore.part_of(c, 3) for c in a}) > 1                  # really split across groups
+    for c in a:
+        x = tickStore.load(c, ["trades", "book"], store=whole)
+        y = tickStore.load(c, ["trades", "book"], store=parted)
+        assert x["trade_t"].tolist() == y["trade_t"].tolist()
+        assert np.array_equal(x["bid_px"], y["bid_px"], equal_nan=True)
+    assert tickStore.is_built(parted, day, tickStore.sources_of(paths))
