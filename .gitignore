@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 data/*.jsonl
+data/edge_log.json*
 data/recordings/
 data/store/
 frontend/node_modules/

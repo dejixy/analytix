@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import Edges, { Tape } from "./components/Edges.jsx";
 import News from "./components/News.jsx";
 import Bot from "./components/Bot.jsx";
-import { CommandBar, StatusBar, WorldClocks, useChangeLog } from "./components/TermChrome.jsx";
+import { CommandBar, StatusBar, WorldClocks } from "./components/TermChrome.jsx";
 import { soundOn, unlockSound } from "./botSound.js";
 import { fmtTime } from "./format.js";
 
@@ -29,7 +29,6 @@ export default function Terminal() {
   const [latency, setLatency] = useState(null);
   const [lastFetch, setLastFetch] = useState(null);
   const pending = useRef(null);                            // a jump waiting for the Edges tab to render
-  const log = useChangeLog(d, now);
 
   const go = (k) => {
     window.history.replaceState(null, "", k === "edges" ? "/terminal" : `/terminal#${k}`);
@@ -164,7 +163,7 @@ export default function Terminal() {
         <Tape d={d} />
         {tab === "edges" && lastFetch && <i key={lastFetch} className="term-sweep" style={{ animationDuration: `${EDGES_EVERY_MS}ms` }} title="Next refresh" />}
       </div>
-      {tab === "edges" && <Edges d={d} error={error} now={now} log={log} onPick={(m) => jump(m.kind === "fx" ? "FX" : "CMDY", m.ticker)} />}
+      {tab === "edges" && <Edges d={d} error={error} now={now} onPick={(m) => jump(m.kind === "fx" ? "FX" : "CMDY", m.ticker)} />}
       {tab === "news" && <News inline coins={d?.coins} />}
       {tab === "bot" && <Bot inline />}
       <StatusBar d={d} error={error} now={now} latency={latency} lastFetch={lastFetch} every={tab === "edges" ? EDGES_EVERY_MS : 60000} />

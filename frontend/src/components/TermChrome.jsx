@@ -15,6 +15,8 @@ export const COMMANDS = [
   { keys: ["HEAT", "HOURS"], label: "When markets move: hour-of-day grid", panel: "FLOW", view: "hours" },
   { keys: ["LOG", "HEADLINES"], label: "What changed while you watched, and the headlines", panel: "LOG" },
   { keys: ["FLOW", "RIVER", "TRADES", "VOL"], label: "Flow river: dollars bought and sold, every market", panel: "FLOW", view: "river" },
+  { keys: ["CNST", "STARS", "CONSTELLATION", "MAP2"], label: "Market constellation: links and who's winning", panel: "CNST" },
+  { keys: ["PRES", "RADAR", "PRESSURE"], label: "Pressure radar: buying and selling vs normal", panel: "PRES" },
   { keys: ["CORR", "LINKS", "COMP"], label: "How the markets moved together this week", panel: "FLOW", view: "links" },
   { keys: ["CMDY", "COMMODITIES"], label: "Commodities table", panel: "CMDY" },
   { keys: ["WKND", "WEEKEND"], label: "Weekend record", panel: "WKND" },
@@ -148,90 +150,26 @@ export function WorldClocks({ now, cme }) {
 }
 
 // ── what changed ──────────────────────────────────────────────────────────
-const MOVE_BPS = { fx: 8, oil: 15, metal: 12 };
-const shortName = (m) => (m.kind === "fx" ? m.label : { CL: "WTI", BRENTOIL: "BRENT" }[m.ticker] || m.ticker);
-const pxText = (p) => p.toLocaleString(undefined, { maximumFractionDigits: p >= 1000 ? 1 : p >= 10 ? 2 : 4, minimumFractionDigits: p >= 1000 ? 1 : p >= 10 ? 2 : 4 });
+/* The change log comes from the server (api/edgelog.py), so it reads the same after a reload or on another device. */
 
 /* Compares each reply with the last one and keeps a running log: price moves past a threshold since the last line
    for that market, the real markets opening and shutting, roll steps, events about to land, sources going down. */
-export function useChangeLog(d, now) {
-  const [log, setLog] = useState([]);
-  const prev = useRef(null);
-  const anchor = useRef({});
-  const said = useRef(new Set());
-
-  useEffect(() => {
-    if (!d) return;
-    const t = Date.now();
-    const lines = [];
-    const all = [...(d.markets || []), ...(d.fx || [])];
-    const p = prev.current;
-    if (!p) {
-      lines.push({ kind: "sys", text: `Session started · ${all.length} markets · ${d.weekend?.pooled?.n ?? 0} weekends on record` });
-    } else {
-      const before = Object.fromEntries([...p.markets, ...p.fx].map((m) => [m.name, m]));
-      const flipped = all.filter((m) => m.session && before[m.name]?.session && m.session.open !== before[m.name].session.open);
-      if (flipped.length) {
-        const open = flipped[0].session.open;
-        const alone = !open && flipped[0].session.why !== "break";
-        lines.push({ kind: "sess", text: `${flipped.map(shortName).join(", ")}: real market ${open ? "open again" : flipped[0].session.why === "break" ? "on its daily break" : "shut"}${alone ? " · Hyperliquid alone" : ""}` });
-      }
-      (d.roll || []).forEach((r, i) => {
-        const q = p.roll?.[i];
-        if (q && q.front_weight !== r.front_weight) {
-          lines.push({ kind: "roll", text: `${r.label} roll: ${Math.round(r.front_weight * 100)}% ${r.front} / ${Math.round((1 - r.front_weight) * 100)}% ${r.next}` });
-        }
-      });
-      if (d.yen_watch && !p.yen_watch) lines.push({ kind: "alert", text: d.yen_watch });
-      for (const [src, st] of Object.entries(d.status || {})) {
-        const was = p.status?.[src]?.ok;
-        if (was === true && !st.ok) lines.push({ kind: "alert", text: `${src}: can't be reached` });
-        if (was === false && st.ok) lines.push({ kind: "sys", text: `${src}: back` });
-      }
-    }
-    for (const m of all) {
-      if (m.price == null) continue;
-      const a = anchor.current[m.name];
-      if (!a) {
-        anchor.current[m.name] = { px: m.price, t };
-        continue;
-      }
-      const move = (m.price / a.px - 1) * 1e4;
-      if (Math.abs(move) >= (MOVE_BPS[m.kind] || 12)) {
-        const mins = Math.max(1, Math.round((t - a.t) / 60000));
-        lines.push({ kind: move > 0 ? "up" : "down", text: `${shortName(m)} ${pxText(m.price)} ${move > 0 ? "▲ +" : "▼ −"}${Math.abs(move).toFixed(0)} bps in ${mins} min` });
-        anchor.current[m.name] = { px: m.price, t };
-      }
-    }
-    for (const e of d.events || []) {
-      const left = e.t_ms - Date.now();
-      const key = `${e.t_ms}-${e.title}`;
-      if (!e.all_day && left > 0 && left <= 15 * 60_000 && !said.current.has(key)) {
-        said.current.add(key);
-        lines.push({ kind: "cal", text: `${e.title} in ${Math.round(left / 60000)} min` });
-      }
-    }
-    prev.current = d;
-    if (lines.length) setLog((l) => [...lines.map((x, i) => ({ ...x, t, id: `${t}-${i}` })).reverse(), ...l].slice(0, 80));
-  }, [d]);
-
-  return log;
-}
-
-const KIND = { up: "MOVE", down: "MOVE", sess: "HOURS", roll: "ROLL", cal: "SOON", alert: "ALERT", sys: "SYS" };
+const KIND = { up: "MOVE", down: "MOVE", flow: "FLOW", sess: "HOURS", roll: "ROLL", cal: "SOON", alert: "ALERT", sys: "SYS" };
 
 export function ChangeLog({ log }) {
+  const today = new Date().toDateString();
   const time = (ms) => {
     const x = new Date(ms);
-    return `${pad2(x.getHours())}:${pad2(x.getMinutes())}:${pad2(x.getSeconds())}`;
+    const hms = `${pad2(x.getHours())}:${pad2(x.getMinutes())}:${pad2(x.getSeconds())}`;
+    return x.toDateString() === today ? hms : `${x.toLocaleDateString([], { weekday: "short" })} ${hms.slice(0, 5)}`;
   };
   return (
     <div className="term-log" role="log" aria-live="polite">
       {!log.length && <div className="muted">Waiting for the first change…</div>}
       {log.map((x) => (
-        <div key={x.id} className={`term-log-line ${x.kind}`}>
+        <div key={x.id} className={`term-log-line ${x.kind} ${x.side || ""}`}>
           <span className="muted num">{time(x.t)}</span>
-          <span className={`term-log-kind ${x.kind}`}>{KIND[x.kind]}</span>
+          <span className={`term-log-kind ${x.kind} ${x.side || ""}`}>{KIND[x.kind] || x.kind.toUpperCase()}</span>
           <span>{x.text}</span>
         </div>
       ))}

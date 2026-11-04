@@ -139,6 +139,8 @@ LONGTAIL_COINS = [c.strip() for c in os.getenv("ANALYTIX_LONGTAIL_COINS", "").sp
 EDGE_COINS = [c.strip() for c in os.getenv("ANALYTIX_EDGE_COINS",
                                            "xyz:CL,xyz:BRENTOIL,xyz:GOLD,xyz:SILVER,xyz:JPY,xyz:EUR,xyz:DXY").split(",")
               if c.strip()]
+# The edge terminal's change log (moves, sessions, the roll, flow surges), kept here so it survives reloads and restarts
+EDGE_LOG_FILE = Path(os.getenv("ANALYTIX_EDGE_LOG_FILE", str(ROOT / "data" / "edge_log.json")))
 STORE_DIR = Path(os.path.expanduser(os.getenv("ANALYTIX_STORE_DIR", str(ROOT / "data" / "store"))))  # fast columns
                                                      # built from the recordings for studies (scripts/buildStore.py)
 FRONTEND_DIST = ROOT / "frontend" / "dist"
