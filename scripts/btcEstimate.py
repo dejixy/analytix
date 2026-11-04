@@ -103,25 +103,35 @@ async def gather(args, log=sys.stderr) -> dict:
         print(f"Strategy 8-Ks: not read ({type(exc).__name__}: {exc})", file=log)
     if args.dat_csv:
         dat += F.read_dat_csv(args.dat_csv)
-    try:
-        btc = [(t + M.HOUR, c) for t, c in await F.fetch_yahoo("BTC-USD", "730d", "1h", cache)]   # stamped at the bar's open
-    except Exception as exc:                                      # noqa: BLE001
-        print(f"Yahoo BTC hourly: {exc}; using Hyperliquid's hourly candles (about 7 months)", file=log)
-        btc = []
+    start = M.ms_of(etf[0]["date"]) - 3 * M.DAY if etf else M.ms_of("2024-01-01")
+    btc, btc_src = await F.fetch_hourly_btc(start, cache, log)
+    if not btc or btc[0][0] > start + 30 * M.DAY:
+        try:
+            yh = [(t + M.HOUR, c) for t, c in await F.fetch_yahoo("BTC-USD", "730d", "1h", cache)]   # stamped at the open
+            seen = {t for t, _ in btc}
+            btc += [x for x in yh if x[0] not in seen]
+            btc_src = (btc_src + " + " if btc_src else "") + "Yahoo"
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"Yahoo BTC hourly: {exc}", file=log)
     hl = await fetch_candles("BTC", "1h", 5000)
     seen = {t for t, _ in btc}
     btc += [(int(r["t"]) + M.HOUR, float(r["c"])) for r in hl if r.get("c") and int(r["t"]) + M.HOUR not in seen]
-    mstr = []
-    try:
-        mstr = [(t + 7 * M.HOUR + 30 * 60_000, c) for t, c in await F.fetch_yahoo("MSTR", "5y", "1d", cache)]
-    except Exception as exc:                                      # noqa: BLE001
-        print(f"Yahoo MSTR: {exc}; trying Stooq", file=log)        # stamped at the open; known by the close (+7.5 h)
+    btc_src = (btc_src + " + " if btc_src else "") + "Hyperliquid"
+    mstr, mstr_src = [], ""
+    for name, get in (("Nasdaq", lambda: F.fetch_nasdaq_daily("MSTR")),
+                      ("Yahoo", lambda: F.fetch_yahoo("MSTR", "5y", "1d", cache)),
+                      ("Stooq", lambda: F.fetch_stooq("mstr.us"))):
         try:
-            mstr = [(t + 21 * M.HOUR, c) for t, c in await F.fetch_stooq("mstr.us")]   # midnight stamps: the close is ~21:00
-        except Exception as exc2:                                 # noqa: BLE001
-            print(f"Stooq MSTR: {exc2}; the Strategy-premium term is left out this run", file=log)
+            got = await get()
+            # Nasdaq is stamped after the close already; Yahoo at the open (+7.5 h to the close, safely); Stooq at midnight
+            shift = {"Nasdaq": 0, "Yahoo": 7 * M.HOUR + 30 * 60_000, "Stooq": 21 * M.HOUR}[name]
+            mstr, mstr_src = [(t + shift, c) for t, c in got], name
+            break
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"{name} MSTR: {type(exc).__name__}: {exc}", file=log)
     book = {} if args.no_book else book_hours(log=log)
-    return {"etf": etf, "etf_src": src, "dat": dat, "btc": sorted(btc), "mstr": mstr, "book": book}
+    return {"etf": etf, "etf_src": src, "dat": dat, "btc": sorted(btc), "btc_src": btc_src, "mstr": mstr,
+            "mstr_src": mstr_src, "book": book}
 
 
 def main() -> None:
@@ -149,14 +159,15 @@ def main() -> None:
     rows = M.build_rows(d["etf"], d["dat"], d["btc"], d["mstr"], d["book"], horizon_h=args.horizon)
     done = M.usable(rows, [t for t in terms if t not in ("taker", "book")])
     tune, held = M.split(done, args.final)
+    min_train = max(60, min(M.MIN_TRAIN, len(tune) // 2))         # a short history still gets out-of-sample days
     book_days = sum(1 for r in done if r["z"].get("taker") is not None)
     day = lambda ms: time.strftime("%d %b %Y", time.gmtime(ms / 1000))
     e, b, m = d["etf"], d["btc"], d["mstr"]
     print("Data")
     print(f"  ETF flows      {len(e):>5} US days" + (f", {e[0]['date']} to {e[-1]['date']} ({d['etf_src']})" if e else "")
           + ("   ← only a few weeks: save Farside's all-data page instead" if 0 < len(e) < 60 else ""))
-    print(f"  BTC prices     {len(b):>5} hours" + (f", {day(b[0][0])} to {day(b[-1][0])}" if b else ""))
-    print(f"  Strategy price {len(m):>5} days" + (f", {day(m[0][0])} to {day(m[-1][0])}" if m else " (premium term left out)"))
+    print(f"  BTC prices     {len(b):>5} hours" + (f", {day(b[0][0])} to {day(b[-1][0])} ({d['btc_src']})" if b else ""))
+    print(f"  Strategy price {len(m):>5} days" + (f", {day(m[0][0])} to {day(m[-1][0])} ({d['mstr_src']})" if m else " (premium term left out)"))
     print(f"  Treasury buys  {len(d['dat']):>5} filings with purchases or holdings"
           + (f", latest {d['dat'][-1]['filed']}: {d['dat'][-1]['bought']:,.0f} BTC bought, {d['dat'][-1].get('held') or 0:,.0f} held" if d["dat"] else ""))
     print(f"  Order book     {len(d['book']):>5} hours from our recordings\n")
@@ -180,21 +191,21 @@ def main() -> None:
     print("\n2. Each term alone against the move that followed (all usable rows; a first look, not a test)")
     for k, v in M.univariate(done).items():
         print(f"  {M.NAMES[k]:<26}{v['n']:>5} days   r {v['r']:+.3f}")
-    print(f"\n3. Walk-forward, out of sample (refit every {M.REFIT_EVERY} rows; ridge {args.lam:g}; "
+    print(f"\n3. Walk-forward, out of sample (first fit on {min_train} days, refit every {M.REFIT_EVERY}; ridge {args.lam:g}; "
           "bps = the average move in the estimate's direction)")
     print(HEAD)
     results = {}
     for name, ts in MODELS + ([("Your terms", terms)] if terms not in [m[1] for m in MODELS] else []):
-        p = M.walk_forward(tune, ts, args.lam, horizon_h=args.horizon)
+        p = M.walk_forward(tune, ts, args.lam, min_train=min_train, horizon_h=args.horizon)
         s = M.scores(p)
         results[name] = s
         print(row_of(name, s))
-    p_all = M.walk_forward(tune, terms, args.lam, horizon_h=args.horizon)
+    p_all = M.walk_forward(tune, terms, args.lam, min_train=min_train, horizon_h=args.horizon)
     h1, h2 = M.halves(p_all)
     print(row_of("  first half", h1))
     print(row_of("  second half", h2))
     if args.final and held:
-        p_final = [x for x in M.walk_forward(done, terms, args.lam, horizon_h=args.horizon) if x["row"] in held]
+        p_final = [x for x in M.walk_forward(done, terms, args.lam, min_train=min_train, horizon_h=args.horizon) if x["row"] in held]
         print("\n   held back (seen once):")
         print(row_of("  held-back rows", M.scores(p_final)))
     sd = M.scores(p_all).get("resid_sd")
