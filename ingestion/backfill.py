@@ -20,7 +20,7 @@ from models.barModel import Bar
 
 log = logging.getLogger("analytix.backfill")
 
-_INTERVAL_S = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600}
+_INTERVAL_S = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 
 
 def candles_to_bars(candles: list[dict[str, Any]], funding: list[dict[str, Any]] | None = None) -> list[Bar]:
