@@ -125,7 +125,8 @@ BOARD = [
     {"key": "fresh", "name": "Fresh money", "markets": "BTC, ETH, SOL, HYPE",
      "idea": "A metric, not a person: the share of trading and new positions from wallets never seen here before, "
              "and money bridged in. A spike is the footprint (October 2025's crash short came from fresh money).",
-     "next": "Measure the first-seen share in our recordings; test whether spikes lead big moves."},
+     "next": "Run scripts/freshMoney.py on the server: does a spike in the first-seen share lead big moves, beyond "
+             "plain volume spikes?"},
     {"key": "listings", "name": "Listing footprints", "markets": "Long-tail coins",
      "idea": "A token reaching an exchange's wallets, or deposits opening, before the listing notice.",
      "next": "Line up past listing notices with on-chain transfers (Dune)."},
@@ -668,7 +669,8 @@ class EdgeService:
                 c["status"] = "watching" if jpy else "planned"
                 c["line"] = "Recording USD/JPY from Hyperliquid." if jpy else ""
             elif card["key"] == "fresh":
-                c["line"] = "The data is already in our recordings."
+                c["status"] = "testing"
+                c["line"] = "Study written, pass rule fixed in advance; waiting for the run on our recordings."
             out.append(c)
         return out
 
