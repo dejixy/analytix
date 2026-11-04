@@ -220,6 +220,7 @@ def test_flow_river_steps_rates_and_the_trailing_point():
     assert g["b"][i] == 8000 and g["s"][i] == 4000             # dollars a minute, 1-minute steps
     assert g["b"][-1] == round(2000 / 1.5)                     # trailing minute: the current one and 30 s before
     assert g["bought"] == 8000 and g["sold"] == 4000           # the current minute is only in the trailing point
+    assert g["horizons"][60]["b"] == 10_000 and g["horizons"][5]["s"] == 0 and g["horizons"][15]["buy_x"] is None
     assert svc.flow_public(240, now_ms=now)["step_ms"] == 300_000 and svc.flow_public(720, now_ms=now)["step_ms"] == 900_000
     assert svc.flow_from_ms == m(30)
 
@@ -259,3 +260,37 @@ def test_flow_river_marks_the_events_inside_its_window():
     ev = svc.flow_public(60, now_ms=eia + 20 * 60_000)["events"]
     assert [e["title"] for e in ev] == ["EIA crude stocks"]
     assert svc.flow_public(60, now_ms=eia - 60_000)["events"] == []
+
+
+def test_change_log_moves_surges_and_sessions(tmp_path):
+    from api.edgelog import ChangeLog
+    ch = ChangeLog(tmp_path / "log.json")
+    t = 1_800_000_000_000
+    ch.move("WTI", "xyz:CL", "oil", 60.0, t)                    # the first price is only the anchor
+    ch.move("WTI", "xyz:CL", "oil", 60.05, t + 60_000)          # 8 bps: under oil's 15
+    ch.move("WTI", "xyz:CL", "oil", 60.12, t + 120_000)         # 20 bps
+    assert [r["text"] for r in ch.rows] == ["WTI 60.12 ▲ +20 bps in 2 min"]
+    ch.flow("xyz:GOLD", "GOLD", 2.4, 0.3, t)
+    ch.flow("xyz:GOLD", "GOLD", 2.6, 0.3, t + 15_000)           # still hot: not logged twice
+    ch.flow("xyz:GOLD", "GOLD", 1.2, 0.5, t + 30_000)           # calmed down
+    ch.flow("xyz:GOLD", "GOLD", 2.1, 0.8, t + 45_000)
+    assert [r["text"] for r in ch.rows if r["kind"] == "flow"] == [
+        "GOLD flow 2.4× its normal pace over 15 min · 70% sold", "GOLD flow 2.1× its normal pace over 15 min · 80% bought"]
+    ch.sessions({"xyz:CL": ("WTI", {"open": True, "why": None}), "xyz:GOLD": ("GOLD", {"open": True, "why": None})}, t)
+    ch.sessions({"xyz:CL": ("WTI", {"open": False, "why": "weekend"}), "xyz:GOLD": ("GOLD", {"open": False, "why": "weekend"})}, t + 1)
+    assert ch.rows[-1]["text"] == "WTI, GOLD: real market shut · Hyperliquid alone"
+    ch.save(force=True)
+    again = ChangeLog(tmp_path / "log.json")                    # a restart keeps the history
+    assert [r["id"] for r in again.rows] == [r["id"] for r in ch.rows] and again.newest(1)[0]["kind"] == "sess"
+    again.move("WTI", "xyz:CL", "oil", 60.13, t + 180_000)      # and the anchor: 0.17 bps from 60.12, nothing new
+    assert len(again.rows) == len(ch.rows)
+
+
+def test_service_logs_from_its_polls_and_sends_the_log():
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None, coins=[]), coins=["xyz:GOLD"])
+    t = ny(2026, 11, 4, 11, 0)
+    svc.take({"xyz:GOLD": {"mark": 4000.0, "oracle": 4000.0}}, t)
+    svc.take({"xyz:GOLD": {"mark": 4006.0, "oracle": 4006.0}}, t + 60_000)   # 15 bps: past metals' 12
+    assert svc.changes.newest(1)[0]["text"] == "GOLD 4,006.0 ▲ +15 bps in 1 min"
+    pub = svc.public(t + 60_000)
+    assert pub["log"][0]["text"].startswith("GOLD 4,006.0") and pub["log_since"] is not None

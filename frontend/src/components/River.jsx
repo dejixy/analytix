@@ -54,7 +54,7 @@ function niceStep(raw) {
 }
 
 /* The river's data, one request at a time (the next waits for this reply). */
-function useFlow(minutes, on) {
+export function useFlow(minutes, on) {
   const [data, setData] = useState(null);
   useEffect(() => {
     if (!on) return undefined;
@@ -345,9 +345,9 @@ function Summary({ data }) {
   );
 }
 
-function Seg({ value, set, opts }) {
+export function Seg({ value, set, opts, tone = "" }) {
   return (
-    <span className="rv-seg" role="group">
+    <span className={`rv-seg ${tone}`} role="group">
       {opts.map(([k, t, tip]) => (
         <button key={k} className={value === k ? "on" : ""} aria-pressed={value === k} onClick={() => set(k)} title={tip}>{t}</button>
       ))}
@@ -355,13 +355,11 @@ function Seg({ value, set, opts }) {
   );
 }
 
-export default function Flow({ d, now }) {
+export default function Flow({ d, now, data, minutes, setMinutes }) {
   const [tab, setTab] = useState("river");
-  const [minutes, setMinutes] = useState(60);
   const [mode, setMode] = useState("usd");
   const [hiHover, setHiHover] = useState(null);
   const [pinned, setPinned] = useState(null);
-  const data = useFlow(minutes, tab === "river");
   useEffect(() => {
     const onView = (e) => { if (e.detail?.view) setTab(e.detail.view); };
     window.addEventListener("term-view", onView);

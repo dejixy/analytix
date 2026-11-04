@@ -21,6 +21,7 @@ from fastapi import WebSocket
 
 from config import (
     ALERTS_FILE,
+    EDGE_LOG_FILE,
     BOT_FILE,
     BACKFILL_ENABLED,
     BAR_HISTORY_S,
@@ -125,7 +126,7 @@ class Runtime:
         self.longtail = LongTailRecorder(self)          # mid-volume coins, recorded only, for a study
         self.regime = RegimeService(self)               # quiet / middle / loud for the next 30 minutes
         self.news = NewsService(self)                   # economic calendar and headlines, with each coin's reaction
-        self.edges = EdgeService(self)                  # the edge terminal: trade.xyz commodities, roll, yen, events
+        self.edges = EdgeService(self, log_file=EDGE_LOG_FILE if mode == "live" else None)   # the edge terminal
         self.longtail.on_edge = self.edges.on_message   # the edge markets' live trades, from the socket recording them
         self._saved_fp: dict[tuple, tuple] = {}
 

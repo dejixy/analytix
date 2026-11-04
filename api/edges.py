@@ -14,6 +14,8 @@ and the schedule in engine/edges.py.
                 the trades, and on a restart the hours before it read back from the long-tail recordings
     /api/edges/trades?since=ms   the orders since then (the world map's flow rings)
     /api/edges/flow?minutes=     the flow river: bought above, sold below, each market's normal pace beside it
+    change log  what changed (moves, sessions, the roll, flow surges, events soon), written here on every market
+                poll and kept on disk (api/edgelog.py), so the page shows the same history after a reload
 
 Live mode only; in replay it still shows the schedule.
 """
@@ -32,6 +34,7 @@ from ingestion.feedStatus import FeedStatus
 from ingestion.hyperliquidClient import HyperliquidClient
 from ingestion.parsers import parse_trade, subscriptions
 
+from api.edgelog import ChangeLog
 from config import EDGE_COINS
 from engine import edges as E
 from ingestion.account import _info, _num
@@ -137,8 +140,9 @@ BOARD = [
 
 
 class EdgeService:
-    def __init__(self, runtime, coins: list[str] | None = None):
+    def __init__(self, runtime, coins: list[str] | None = None, log_file=None):
         self.rt = runtime
+        self.changes = ChangeLog(log_file)                  # None: kept in memory only (tests, replay)
         self.coins = list(EDGE_COINS if coins is None else coins)
         self.markets: dict[str, dict] = {}
         self.history: dict[str, deque] = {}
@@ -166,6 +170,7 @@ class EdgeService:
         if not self.enabled:
             return
         self.flow_cut = int(time.time() * 1000)
+        self.changes.add("sys", f"Server started · {len(self.coins)} markets", self.flow_cut)
         self._tasks = [asyncio.create_task(self._ctx_loop(), name="edges-ctx"),
                        asyncio.create_task(self._candle_loop(), name="edges-candles"),
                        asyncio.create_task(self._futures_loop(), name="edges-futures"),
@@ -173,14 +178,18 @@ class EdgeService:
                        asyncio.create_task(self._flow_backfill(), name="edges-backfill")]
 
     async def stop(self) -> None:
+        self.changes.save(force=True)
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     def _ok(self, src: str) -> None:
-        self.status[src] = {"ok": True, "last_ms": int(time.time() * 1000), "error": None}
+        now = int(time.time() * 1000)
+        self.changes.status(src, (self.status.get(src) or {}).get("ok"), True, now)
+        self.status[src] = {"ok": True, "last_ms": now, "error": None}
 
     def _fail(self, src: str, err: str) -> None:
+        self.changes.status(src, (self.status.get(src) or {}).get("ok"), False, int(time.time() * 1000))
         st = self.status.setdefault(src, {"ok": False, "last_ms": None})
         st.update(ok=False, error=err[:200])
 
@@ -197,6 +206,44 @@ class EdgeService:
                 h.append((now_ms, x["mark"]))
             while h and now_ms - h[0][0] > HISTORY_KEEP_MS:
                 h.popleft()
+        self._watch(now_ms)
+
+    # ── the change log ────────────────────────────────────────────────────
+    def short(self, c: str) -> str:
+        b = E.bare(c)
+        return LABELS.get(b) or {"CL": "WTI", "BRENTOIL": "BRENT"}.get(b, b)
+
+    def _watch(self, now_ms: int) -> None:
+        """After every market poll: what changed since the last one goes in the log."""
+        ch = self.changes
+        states = {}
+        for c in self.coins:
+            b = E.bare(c)
+            kind = E.SESSIONS[b].kind if b in E.SESSIONS else "fx"
+            ch.move(self.short(c), c, kind, (self.markets.get(c) or {}).get("mark"), now_ms)
+            if b in E.SESSIONS:
+                states[c] = (self.short(c), E.session_state(c, now_ms))
+            if self.flow.get(c):
+                bought, sold = self.recent(c, now_ms, 15)
+                norm = self.normal_rate(c, now_ms)
+                ch.flow(c, self.short(c), (bought + sold) / 15 / norm if norm else None,
+                        bought / (bought + sold) if bought + sold else None, now_ms)
+            if b in E.ACTIVE:
+                r = E.roll_state(c, now_ms)
+                ch.roll(c, E.SESSIONS[b].label, r["front"], r["next"], r["front_weight"], now_ms)
+        ch.sessions(states, now_ms)
+        ch.soon(self._events(now_ms), now_ms)
+        ch.yen_watch(self.yen_on(now_ms), now_ms)
+        ch.save()
+
+    def yen_on(self, now_ms: int) -> bool:
+        """USD/JPY down YEN_WATCH_1H_PCT in an hour or YEN_WATCH_24H_PCT in a day: a fast yen rally."""
+        c = next((x for x in self.coins if E.bare(x) == "JPY"), None)
+        x = self.markets.get(c) or {} if c else {}
+        if not x.get("mark"):
+            return False
+        d1, d24 = self._move_1h(c, now_ms), _pct(x["mark"], x.get("prev_day"))
+        return (d1 is not None and d1 <= -YEN_WATCH_1H_PCT) or (d24 is not None and d24 <= -YEN_WATCH_24H_PCT)
 
     async def _ctx_loop(self) -> None:
         dexes = list(dict.fromkeys(c.split(":", 1)[0] for c in self.coins if ":" in c))
@@ -348,6 +395,15 @@ class EdgeService:
             self.backfilled = 0
             log.warning("flow backfill failed: %s: %s", type(exc).__name__, exc)
 
+    def recent(self, coin: str, now_ms: int, mins: int) -> tuple[float, float]:
+        """Dollars bought and sold by takers over the last `mins` minutes."""
+        b = s_ = 0.0
+        for m, (bb, ss) in self.flow.get(coin, {}).items():
+            if now_ms - m < mins * 60_000:
+                b += bb
+                s_ += ss
+        return b, s_
+
     def normal_rate(self, coin: str, t_ms: int) -> float | None:
         """A market's normal pace, dollars a minute: the median hourly dollar volume at this weekday and UTC hour over
         the last NORMAL_WEEKS weeks (oil at 3 pm New York is not oil on a Sunday night). Too few: the median hour."""
@@ -392,7 +448,13 @@ class EdgeService:
             s_ = [round(x / per_min) for x in s_[:n]] + [round(s_[n] / tail_min)]
             norm = [self.normal_rate(c, t) for t in ts]
             now_norm = norm[-1]
-            out.append({"coin": c, "b": b, "s": s_, "norm": [round(x) if x else None for x in norm],
+            horizons = {}
+            for mins in (5, 15, 60):
+                hb, hs = self.recent(c, now, mins)
+                horizons[mins] = {"b": round(hb), "s": round(hs),
+                                  "buy_x": round(hb / mins / (now_norm / 2), 2) if now_norm else None,
+                                  "sell_x": round(hs / mins / (now_norm / 2), 2) if now_norm else None}
+            out.append({"coin": c, "name": self.short(c), "horizons": horizons, "b": b, "s": s_, "norm": [round(x) if x else None for x in norm],
                         "bought": round(sum(x * per_min for x in b[:n])), "sold": round(sum(x * per_min for x in s_[:n])),
                         "pace": round((pace_b + pace_s) / 15 / now_norm, 2) if now_norm else None,
                         "pace_buy": round(pace_b / (pace_b + pace_s), 3) if pace_b + pace_s else None})
@@ -619,12 +681,8 @@ class EdgeService:
         markets = [self._market(c, now, rec) for c in self.coins]
         rolls = [self._roll(c, now) for c in self.coins if E.bare(c) in E.ACTIVE]
         fx = [m for m in markets if m["kind"] == "fx"]
-        yen = next((m for m in fx if m["ticker"] == "JPY"), None)
-        watch = None
-        if yen:
-            d1, d24 = yen.get("change_1h_pct"), yen.get("change_24h_pct")
-            if (d1 is not None and d1 <= -YEN_WATCH_1H_PCT) or (d24 is not None and d24 <= -YEN_WATCH_24H_PCT):
-                watch = "The yen is rallying fast: the kind of move that forced carry-trade selling in August 2024."
+        watch = ("The yen is rallying fast: the kind of move that forced carry-trade selling in August 2024."
+                 if self.yen_on(now) else None)
         longtail = getattr(self.rt, "longtail", None)
         return {"now_ms": now, "enabled": self.enabled, "mode": self.rt.mode, "coins": list(getattr(self.rt, "coins", [])),
                 "markets": [m for m in markets if m["kind"] != "fx"], "fx": fx, "yen_watch": watch,
@@ -635,4 +693,5 @@ class EdgeService:
                 "fees": {"taker_bps": E.TAKER_BPS, "maker_bps": E.MAKER_BPS},
                 "hours": {"from_ms": now - E.DAY, "to_ms": now + 6 * E.DAY, "market": "WTI, gold and silver",
                           "open": E.open_intervals("CL", now - E.DAY, now + 6 * E.DAY)},
-                "status": self.status}
+                "status": self.status,
+                "log": self.changes.newest(), "log_since": self.changes.rows[0]["t"] if self.changes.rows else None}

@@ -2,7 +2,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { fmtPct, fmtUsd } from "../format.js";
 import { ChangeLog } from "./TermChrome.jsx";
 import { useOrders } from "./Compare.jsx";
-import Flow from "./River.jsx";
+import Flow, { useFlow } from "./River.jsx";
+import Constellation, { Radar } from "./Constellation.jsx";
 import World from "./World.jsx";
 import Charts from "./Charts.jsx";
 import { Flash, Head, Pill, SourcePill, fresh } from "./TermPanel.jsx";
@@ -469,7 +470,7 @@ function Board({ d }) {
 }
 
 /* What changed since the page opened, or the latest headlines with how the market moved after each. */
-function Log({ log, coins }) {
+function Log({ log, since, coins }) {
   const [tab, setTab] = useState("changes");
   const [news, setNews] = useState(null);
   useEffect(() => {
@@ -497,7 +498,7 @@ function Log({ log, coins }) {
   return (
     <section id="p-LOG" className="panel">
       <Head code="LOG" title={tab === "changes" ? "What changed" : "Headlines"}
-        meta={tab === "changes" ? [["Since", "page opened"]] : [["Range", "24 h"]]}
+        meta={tab === "changes" ? [["Kept", "7 days"], ["Since", since ? new Date(since).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) : "-"]] : [["Range", "24 h"]]}
         pills={[<Pill key="n">{tab === "changes" ? `${log.length} lines` : `${items.length} items`}</Pill>]}>
         <span className="tp-tabs" role="tablist">
           {[["changes", "Changes"], ["news", "Headlines"]].map(([k, t]) => (
@@ -543,8 +544,10 @@ function Boot({ error }) {
   );
 }
 
-export default function Edges({ d, error, now, log = [], onPick = () => {} }) {
+export default function Edges({ d, error, now, onPick = () => {} }) {
   const { orders, info } = useOrders(Boolean(d));
+  const [flowMin, setFlowMin] = useState(60);
+  const flow = useFlow(flowMin, Boolean(d));             // one poll for the river, the constellation and the radar
   if (!d) return <Boot error={error} />;
   now = now || d.now_ms;
   const down = Object.entries(d.status || {}).filter(([, s]) => !s.ok);
@@ -552,9 +555,11 @@ export default function Edges({ d, error, now, log = [], onPick = () => {} }) {
     <div className="term-grid">
       {error && <div className="plan-error term-wide">{error}</div>}
       <div className="tw-8"><World d={d} now={now} orders={orders} info={info} /></div>
-      <div className="tw-4"><Log log={log} coins={d.coins} /></div>
+      <div className="tw-4"><Log log={d.log || []} since={d.log_since} coins={d.coins} /></div>
       <Charts d={d} onPick={onPick} />
-      <Flow d={d} now={now} />
+      <Flow d={d} now={now} data={flow} minutes={flowMin} setMinutes={setFlowMin} />
+      <div className="tw-7"><Constellation d={d} flow={flow} /></div>
+      <div className="tw-5"><Radar flow={flow} /></div>
       <Markets d={d} now={now} />
       <div className="tw-7"><Record d={d} /></div>
       <div className="tw-5 term-col">

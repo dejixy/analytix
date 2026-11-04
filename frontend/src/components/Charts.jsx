@@ -136,7 +136,8 @@ function Chart({ m, c, days, onPick }) {
 
 export default function Charts({ d, onPick }) {
   const [days, setDays] = useState(2);
-  const all = [...d.markets, ...d.fx].sort((a, b) => ORDER.indexOf(a.ticker) - ORDER.indexOf(b.ticker));
+  const all = [...d.markets, ...d.fx].filter((m) => m.ticker !== "DXY")           // the dollar index lives in FX
+    .sort((a, b) => ORDER.indexOf(a.ticker) - ORDER.indexOf(b.ticker));
   const shut = d.markets.some((m) => m.session && !m.session.open && m.session.why !== "break");
   return (
     <section id="p-CHRT" className="panel term-wide">
