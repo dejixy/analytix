@@ -294,3 +294,35 @@ def test_service_logs_from_its_polls_and_sends_the_log():
     assert svc.changes.newest(1)[0]["text"] == "GOLD 4,006.0 ▲ +15 bps in 1 min"
     pub = svc.public(t + 60_000)
     assert pub["log"][0]["text"].startswith("GOLD 4,006.0") and pub["log_since"] is not None
+
+
+def test_market_links_lines_verdicts_and_weekends():
+    import random
+    rnd = random.Random(7)
+    svc = EdgeService(SimpleNamespace(mode="live", news=None, longtail=None, coins=[]),
+                      coins=["xyz:CL", "xyz:BRENTOIL", "xyz:GOLD", "xyz:DXY"])
+    now = ny(2026, 11, 4, 12, 30)                             # a Wednesday, after the EIA report
+    start = (now - 40 * 86_400_000) // E.HOUR * E.HOUR
+    px = {c: 100.0 for c in svc.coins}
+    rows = {c: [] for c in svc.coins}
+    for t in range(start, now, E.HOUR):
+        common = rnd.gauss(0, 0.004)
+        loose = now - 4 * 86_400_000 <= t < now - 3 * 86_400_000   # a day when oil's two benchmarks drift apart
+        moves = {"xyz:CL": common, "xyz:BRENTOIL": (rnd.gauss(0, 0.004) if loose else common + rnd.gauss(0, 0.001)),
+                 "xyz:GOLD": rnd.gauss(0, 0.003), "xyz:DXY": -common + rnd.gauss(0, 0.002)}
+        for c in svc.coins:
+            px[c] *= math.exp(moves[c])
+            rows[c].append((t, px[c]))
+    svc.candles = rows
+    links = svc.links(now)
+    week = links[7]
+    assert len(week["names"]) == 4 and all(len(l["series"]) == 7 * 24 for l in week["lines"])
+    by = {(l["a"], l["b"]): l for l in week["lines"]}
+    oil = by[("xyz:CL", "xyz:BRENTOIL")]
+    assert oil["r"] > 0.6 and now - 4 * 86_400_000 <= oil["weakest"]["t_ms"] < now - 2 * 86_400_000
+    assert by[("xyz:CL", "xyz:DXY")]["r"] < -0.6                 # opposite links are lines too
+    assert not any("xyz:GOLD" in (l["a"], l["b"]) for l in week["lines"])   # gold moved on its own: no line
+    assert oil["verdict"] in ("steady", "forming", "loosening") and len(week["shut"]) == 1   # last weekend's closure
+    assert {e["label"] for e in week["events"]} >= {"EIA", "CFTC", "Close", "Reopen"}
+    assert len(links[30]["lines"][0]["series"]) == 30 * 24 and len(links[30]["shut"]) >= 4
+    assert svc.links(now) is links                                # cached until the candles change or the hour turns

@@ -12,6 +12,8 @@ and the schedule in engine/edges.py.
                 what's coming up and the edge board
     flow        every market's dollars bought and sold by takers, minute by minute, kept FLOW_KEEP_MS: live from
                 the trades, and on a restart the hours before it read back from the long-tail recordings
+    links       how the markets moved together over 7 and 30 days (hourly), and each strong pair's 24-hour rolling
+                correlation through that time: whether a link is forming, loosening or flipping
     /api/edges/trades?since=ms   the orders since then (the world map's flow rings)
     /api/edges/flow?minutes=     the flow river: bought above, sold below, each market's normal pace beside it
     change log  what changed (moves, sessions, the roll, flow surges, events soon), written here on every market
@@ -56,6 +58,12 @@ FLOW_BACKFILL_FILES = 14    # on start, the newest long-tail recordings read bac
 NORMAL_WEEKS = 8            # a market's normal pace: its median dollar volume at this weekday and hour, these weeks
 OWN_FEED_AFTER_S = 90       # no trades from the long-tail socket by then: open a socket of our own
 COMP_HOURS = 168            # the compare chart: a week of hourly closes on one grid
+LINK_DAYS = (7, 30)         # market links: over the last week, or the last month
+LINK_ROLL_H = 24            # each link line: the correlation of the 24 hours up to each hour
+LINK_MIN = 0.35             # weaker links aren't drawn
+LINK_LINES = 6              # at most this many pairs get a line (the strongest)
+LINK_SHORT = {"EIA crude stocks": "EIA", "API crude stocks": "API", "CFTC positioning": "CFTC",
+              "Baker Hughes rig count": "Rigs", "WTI, gold and silver close": "Close", "Oil, gold and silver reopen": "Reopen"}
 ACTIVITY_DAYS = 30          # the heat grid: average hourly move by hour of day over this many days
 CORR_MIN = 24               # hourly returns two markets need in common before their link is shown
 LABELS = {"JPY": "USD/JPY", "EUR": "EUR/USD", "GBP": "GBP/USD", "DXY": "Dollar index"}
@@ -101,6 +109,20 @@ def correlations(series: dict[str, list[float | None]], min_n: int = CORR_MIN) -
             syy = sum((y - my) ** 2 for _, y in pairs)
             m[i][j] = round(sxy / math.sqrt(sxx * syy), 2) if sxx > 0 and syy > 0 else None
     return m
+
+
+def _corr(xs: list[tuple[float, float]]) -> float | None:
+    n = len(xs)
+    mx = sum(x for x, _ in xs) / n
+    my = sum(y for _, y in xs) / n
+    sxy = sum((x - mx) * (y - my) for x, y in xs)
+    sxx = sum((x - mx) ** 2 for x, _ in xs)
+    syy = sum((y - my) ** 2 for _, y in xs)
+    return sxy / math.sqrt(sxx * syy) if sxx > 0 and syy > 0 else None
+
+
+def _mean(xs: list) -> float | None:
+    return sum(xs) / len(xs) if xs else None
 
 
 def _pct(a, b):
@@ -162,6 +184,7 @@ class EdgeService:
         self.flow_cut = int(time.time() * 1000)             # trades before this come from the recordings
         self.flow_from_ms: int | None = None                 # the oldest minute the river has
         self.backfilled: int | None = None                   # trades read back from the recordings (None: not yet)
+        self._links: tuple[int, int, dict] | None = None     # (heavy_v, hour, links): recomputed when candles change
 
     @property
     def enabled(self) -> bool:
@@ -588,6 +611,75 @@ class EdgeService:
                 "corr": {"names": list(series), "m": correlations(series)},
                 "open": E.open_intervals("CL", t0, now_ms), "market": "WTI, gold and silver"}
 
+    # ── market links ──────────────────────────────────────────────────────
+    def links(self, now_ms: int) -> dict:
+        """For each of LINK_DAYS: the correlation of every pair's hourly moves over the window, and for the strongest
+        pairs (|r| >= LINK_MIN, at most LINK_LINES) the 24-hour rolling correlation at every hour, a verdict (forming,
+        loosening, flipped, steady: the last 24 hours against the first), and its weakest hour (and whether the real
+        oil and metals markets were shut then). Plus the window's weekend closures and scheduled moments."""
+        hour = int(now_ms // E.HOUR)
+        if self._links and self._links[0] == self.heavy_v and self._links[1] == hour:
+            return self._links[2]
+        end = hour * E.HOUR
+        out = {}
+        for days in LINK_DAYS:
+            n = days * 24
+            hours = list(range(end - (n + LINK_ROLL_H) * E.HOUR, end + 1, E.HOUR))
+            rets, levels = {}, {}
+            for c in self.coins:
+                closes = dict(self.candles.get(c, []))
+                if not closes:
+                    continue
+                vals, last = [], None
+                for t in hours:
+                    last = closes.get(t, last)
+                    vals.append(last)
+                r = [math.log(b / a) if a and b else None for a, b in zip(vals, vals[1:])]
+                if sum(x is not None for x in r[-n:]) >= CORR_MIN:
+                    rets[c], levels[c] = r, vals[-(n + 1):]
+            names = list(rets)
+            m = correlations(levels)
+            pairs = [(names[i], names[j], m[i][j]) for i in range(len(names)) for j in range(i + 1, len(names))
+                     if m[i][j] is not None]
+            strong = sorted((p for p in pairs if abs(p[2]) >= LINK_MIN), key=lambda p: -abs(p[2]))[:LINK_LINES]
+            t0 = hours[LINK_ROLL_H + 1]                        # the window's first hourly move ends here
+            lines = []
+            for a, b, r in strong:
+                ra, rb = rets[a], rets[b]
+                roll = []
+                for k in range(LINK_ROLL_H, LINK_ROLL_H + n):
+                    xs = [(x, y) for x, y in zip(ra[k - LINK_ROLL_H + 1:k + 1], rb[k - LINK_ROLL_H + 1:k + 1])
+                          if x is not None and y is not None]
+                    roll.append(_corr(xs) if len(xs) >= LINK_ROLL_H // 2 else None)
+                got = [x for x in roll if x is not None]
+                if not got:
+                    continue
+                first = _mean([x for x in roll[:LINK_ROLL_H] if x is not None]) or got[0]
+                last = _mean([x for x in roll[-LINK_ROLL_H:] if x is not None]) or got[-1]
+                if first * last < 0 and abs(first) > 0.15:
+                    verdict = "flipped"
+                elif abs(last - first) < 0.1:
+                    verdict = "steady"
+                else:
+                    verdict = "forming" if abs(last) > abs(first) else "loosening"
+                pos = [(i, x) for i, x in enumerate(roll) if x is not None]
+                wi, wr = min(pos, key=lambda p: p[1]) if r > 0 else max(pos, key=lambda p: p[1])
+                wt = t0 + wi * E.HOUR
+                lines.append({"a": a, "b": b, "r": r, "series": [round(x, 3) if x is not None else None for x in roll],
+                              "verdict": verdict, "first": round(first, 3), "last": round(last, 3),
+                              "weakest": {"t_ms": wt, "r": round(wr, 3), "shut": not E.session_state("CL", wt)["open"]}})
+            opens = E.open_intervals("CL", t0, now_ms)
+            shut, prev = [], t0
+            for a_, b_ in opens + [(now_ms, now_ms)]:
+                if a_ - prev > 6 * E.HOUR:                        # closures longer than the daily break: weekends, holidays
+                    shut.append([prev, a_])
+                prev = b_
+            events = [{"t_ms": e["t_ms"], "label": LINK_SHORT[e["title"]]} for e in E.recurring(t0, days + 1)
+                      if e["title"] in LINK_SHORT and not e["all_day"] and t0 <= e["t_ms"] <= now_ms]
+            out[days] = {"t0": t0, "step": E.HOUR, "names": names, "m": m, "lines": lines, "shut": shut, "events": events}
+        self._links = (self.heavy_v, hour, out)
+        return out
+
     def _market(self, c: str, now_ms: int, rec: dict) -> dict:
         x = self.markets.get(c) or {}
         b = E.bare(c)
@@ -690,7 +782,7 @@ class EdgeService:
                 "markets": [m for m in markets if m["kind"] != "fx"], "fx": fx, "yen_watch": watch,
                 "heavy_v": self.heavy_v, "light": light,
                 "weekend": None if light else rec, "roll": rolls, "compare": None if light else self.compare(now),
-                "activity": None if light else self.activity(), "events": self._events(now), "board": self._board(rec, rolls),
+                "activity": None if light else self.activity(), "links": None if light else self.links(now), "events": self._events(now), "board": self._board(rec, rolls),
                 "recording": {"on": bool(longtail and longtail.client), "markets": getattr(longtail, "edge_coins", [])},
                 "fees": {"taker_bps": E.TAKER_BPS, "maker_bps": E.MAKER_BPS},
                 "hours": {"from_ms": now - E.DAY, "to_ms": now + 6 * E.DAY, "market": "WTI, gold and silver",
