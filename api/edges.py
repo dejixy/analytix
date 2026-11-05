@@ -143,8 +143,8 @@ BOARD = [
      "next": "Test whether sharp yen moves lead crypto over the next hours, on Hyperliquid's own yen history."},
     {"key": "holders", "name": "HYPE holder map", "markets": "HYPE",
      "idea": "Who holds HYPE and how each group behaves. The 7-day unstaking queue is the warning a holder may sell.",
-     "next": "Run scripts/hypeProbe.py then scripts/hypeMap.py on the server: groups, what unlocks this week, and "
-             "whether waves of unstaking come before weak HYPE."},
+     "next": "Unstaking waves failed as a warning. Name the five wallets holding 128M HYPE (run.sh top); keep the "
+             "unlock calendar as context, not a signal."},
     {"key": "btc_est", "name": "BTC estimate", "markets": "BTC",
      "idea": "ETF flows, treasury-company buying, Strategy's premium and the order book in one equation for BTC's "
              "next 24 hours, fitted walk-forward.",
@@ -771,8 +771,10 @@ class EdgeService:
                              "49-52% right sign, in both halves. ETF flows follow price (+0.34 with that day's move, "
                              "-0.01 with the next).")
             elif card["key"] == "holders":
-                c["status"] = "testing"
-                c["line"] = "Probe and first map written, pass rule fixed in advance; waiting for the server run."
+                c["status"] = "failed"
+                c["line"] = ("Unstaking waves, tested 4 Nov on 663 days (70 wave days): HYPE's next 7 days were +2.1% "
+                             "after them and +2.4% after other days (t -0.2); the halves disagree. Five wallets hold "
+                             "42% of circulating HYPE.")
             elif card["key"] == "fresh":
                 c["status"] = "failed"
                 c["line"] = ("Tested 4 Nov on 16 days (27 spikes): 4-hour moves after a spike were 0.96x normal (t -0.2) "
