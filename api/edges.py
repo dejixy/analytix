@@ -148,7 +148,8 @@ BOARD = [
     {"key": "btc_est", "name": "BTC estimate", "markets": "BTC",
      "idea": "ETF flows, treasury-company buying, Strategy's premium and the order book in one equation for BTC's "
              "next 24 hours, fitted walk-forward.",
-     "next": "Run scripts/btcEstimate.py on the server; tune on the first 80% of days, check the last 20% once."},
+     "next": "Direction failed; next, the size of tomorrow's move (volatility is far more predictable than direction) "
+             "and the most extreme flow days as events."},
     {"key": "fresh", "name": "Fresh money", "markets": "BTC, ETH, SOL, HYPE",
      "idea": "A metric, not a person: the share of trading and new positions from wallets never seen here before, "
              "and money bridged in. A spike is the footprint (October 2025's crash short came from fresh money).",
@@ -765,8 +766,10 @@ class EdgeService:
                 c["status"] = "watching" if jpy else "planned"
                 c["line"] = "Recording USD/JPY from Hyperliquid." if jpy else ""
             elif card["key"] == "btc_est":
-                c["status"] = "testing"
-                c["line"] = "Equation written; waiting for the first fit on the server."
+                c["status"] = "failed"
+                c["line"] = ("Direction, tested 4 Nov on 426 unseen days (Feb 2024 to Nov 2026): correlation -0.05 (t -1.0), "
+                             "49-52% right sign, in both halves. ETF flows follow price (+0.34 with that day's move, "
+                             "-0.01 with the next).")
             elif card["key"] == "holders":
                 c["status"] = "testing"
                 c["line"] = "Probe and first map written, pass rule fixed in advance; waiting for the server run."
