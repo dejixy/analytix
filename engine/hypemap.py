@@ -7,6 +7,7 @@ in what shape; scripts/hypeMap.py crawls and reports). Pure functions here, no n
                 undelegated staking balance) and leaving staking (pendingWithdrawal: 7 days from asking to being
                 spendable, so it is the earliest public warning that a holder may sell)
     groups      Assistance Fund (only buys), not circulating (tokenDetails' non-circulating balances: reserves),
+                on HyperEVM (the bridge address holding everyone's HYPE sent to HyperEVM),
                 labelled (a labels file: exchanges, market makers, team, by hand), then by behaviour: stakers (most
                 of their HYPE staked), traders (seen trading on Hyperliquid in our recordings), holders (the rest)
     switching   staking flows by day from each wallet's history: HYPE staked, withdrawals started (the warning) and
@@ -25,6 +26,8 @@ import math
 DAY_MS = 86_400_000
 UNSTAKE_DAYS = 7
 ASSISTANCE_FUND = "0xfefefefefefefefefefefefefefefefefefefefe"   # widely reported; the probe checks it holds HYPE
+HYPER_EVM = "0x2222222222222222222222222222222222222222"         # HyperCore's system address for HYPE sent to HyperEVM:
+                                                                  # everyone's bridged HYPE, not one holder
 SPIKE_Q = 0.90
 TRAIL_DAYS = 30
 MIN_TRAIL = 14
@@ -105,6 +108,8 @@ def group_of(w: Wallet) -> str:
         return "Assistance Fund"
     if w.not_circulating:
         return "Not circulating"
+    if w.address.lower() == HYPER_EVM:
+        return "On HyperEVM"
     if w.label:
         return f"Labelled: {w.label}"
     if w.total and w.staked / w.total >= 0.5:
@@ -112,6 +117,9 @@ def group_of(w: Wallet) -> str:
     if w.traded_usd >= 10_000:
         return "Traders"
     return "Holders"
+
+
+SYSTEM = ("Assistance Fund", "Not circulating", "On HyperEVM")
 
 
 def tier_of(x: float) -> str:
@@ -135,8 +143,9 @@ def groups(wallets: list[Wallet], supply: float | None = None) -> list[dict]:
 
 
 def concentration(wallets: list[Wallet], supply: float | None = None, tops=(10, 100, 1000)) -> dict:
-    """Share of the supply (or of what was found) in the biggest wallets, the Assistance Fund and reserves aside."""
-    xs = sorted((w.total for w in wallets if group_of(w) not in ("Assistance Fund", "Not circulating")), reverse=True)
+    """Share of the supply (or of what was found) in the biggest wallets, the Assistance Fund, reserves and the
+    HyperEVM bridge aside."""
+    xs = sorted((w.total for w in wallets if group_of(w) not in SYSTEM), reverse=True)
     base = supply or sum(xs) or 1.0
     return {n: sum(xs[:n]) / base for n in tops}
 

@@ -146,10 +146,10 @@ def report(wallets: list[H.Wallet], supply: float | None, closes: dict[int, floa
     tiers = Counter()
     tier_hype = Counter()
     for w in wallets:
-        if w.total > 0 and H.group_of(w) not in ("Assistance Fund", "Not circulating"):
+        if w.total > 0 and H.group_of(w) not in H.SYSTEM:
             tiers[H.tier_of(w.total)] += 1
             tier_hype[H.tier_of(w.total)] += w.total
-    print("\n2. By size (Assistance Fund and reserves aside)")
+    print("\n2. By size (Assistance Fund, reserves and the HyperEVM bridge aside)")
     for _, name in H.TIERS:
         if tiers[name]:
             print(f"  {name:<12}{tiers[name]:>7,} wallets{fmt(tier_hype[name]):>11} HYPE")

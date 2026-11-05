@@ -7,6 +7,7 @@
 #   bash ~/analytix/scripts/run.sh moves     BTC estimate v2: the size of the next day's move, extreme ETF-flow days
 #                                            and Strategy's biggest buys (a few minutes), kept in /tmp/btc_moves.txt
 #   bash ~/analytix/scripts/run.sh map       (re)start the HYPE map in the background (keeps what it already read)
+#   bash ~/analytix/scripts/run.sh top       the biggest wallets in the latest HYPE map, to look up and name
 #   bash ~/analytix/scripts/run.sh fresh     (re)start fresh money in the background (store build, then the study)
 #   bash ~/analytix/scripts/run.sh show      every finished result
 #   bash ~/analytix/scripts/run.sh update    pull the latest code
@@ -47,6 +48,9 @@ case "${1:-status}" in
     nice -n 19 "$PY" -m scripts.btcMoves "${etf[@]}" "${@:2}" > /tmp/btc_moves.txt 2> /tmp/btc_moves.log
     cat /tmp/btc_moves.txt; echo; echo "(log:)"; grep -E "Strategy:|DVOL|ETF flows:|Error|error" /tmp/btc_moves.log | tail -n 6
     ;;
+  top)
+    "$PY" -m scripts.hypeTop "${@:2}"
+    ;;
   map)
     pkill -f scripts.hypeMap 2>/dev/null; sleep 2
     nohup nice -n 19 "$PY" -m scripts.hypeMap "${@:2}" > /tmp/hype_map.txt 2> /tmp/hype_map.log < /dev/null &
@@ -67,6 +71,6 @@ case "${1:-status}" in
     git pull --ff-only
     ;;
   *)
-    sed -n '2,15p' "$0"
+    sed -n '2,16p' "$0"
     ;;
 esac
