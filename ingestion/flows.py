@@ -12,6 +12,7 @@ Slow money into BTC, from public sources (for scripts/btcEstimate.py):
     prices         BTC hourly closes from Binance's or Coinbase's public candles (kept in a cache file, topped up each
                    run), MSTR daily closes from Nasdaq's quote history; Yahoo and Stooq as fallbacks (Yahoo
                    rate-limits busy servers)
+    options        Deribit's DVOL: BTC's 30-day implied volatility (annualised %), hourly, from its public API
 """
 import asyncio
 import csv
@@ -28,6 +29,7 @@ import httpx
 FARSIDE_URL = "https://farside.co.uk/btc/"
 TFTC_URL = "https://www.tftc.io/bitcoin-etf-flows/data.json"    # TFTC's tracker, CC BY 4.0 (SoSoValue and Farside data)
 SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+SEC_OLDER = "https://data.sec.gov/submissions/{name}"           # the pages before the newest 1,000 filings
 SEC_ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
 SEC_INDEX = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/index.json"
 STRATEGY_CIK = 1050446
@@ -36,7 +38,9 @@ STOOQ = "https://stooq.com/q/d/l/?s={symbol}&i=d"
 BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/{product}/candles"
 NASDAQ_HISTORY = "https://api.nasdaq.com/api/quote/{symbol}/historical"
+DERIBIT_DVOL = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
 HOUR_MS = 3_600_000
+DAY_MS = 24 * HOUR_MS
 BROWSER = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"}
 
 
@@ -181,7 +185,7 @@ _OLD_HELD = re.compile(r"held (?:an aggregate of )?approximately ([\d,]+) (?:bit
 _PERIOD = re.compile(r"(?:([A-Z][a-z]+ \d{1,2}, \d{4})\s*(?:to|through|-|–|—)\s*([A-Z][a-z]+ \d{1,2}, \d{4})"
                      r"|(\d{1,2}/\d{1,2}/\d{4})\s*(?:to|-|–|—)\s*(\d{1,2}/\d{1,2}/\d{4}))")
 _CELL = re.compile(r"\$?\s?(\d[\d,]*(?:\.\d+)?)|(?<!\S)([—–-])(?!\S)")
-PARSER_VERSION = 2                                         # bump when the reading changes: cached filings are read again
+PARSER_VERSION = 3                                         # bump when the reading changes: cached filings are read again
 _NONE = re.compile(r"did not (?:acquire|purchase) any (?:bitcoin|BTC)", re.I)
 
 
@@ -195,14 +199,31 @@ def _day(x: str) -> str | None:
 
 
 def parse_table(text: str) -> dict | None:
-    """The bitcoin table Strategy's 8-Ks carry since 2025: after the "BTC Acquired" header, one row per period,
-    "April 1, 2026 to April 5, 2026  4,871  $329.9  $67,718  766,970  $58.02  $75,644" (a dash where none were
-    bought). Columns: acquired, purchase price, average price, aggregate holdings, ... Rows are summed; holdings and
-    the period end are the last row's."""
-    i = text.find("BTC Acquired")
-    if i < 0:
+    """The bitcoin table Strategy's 8-Ks carry since 2025, in either of its layouts. Columns: bought, purchase price,
+    average price, aggregate holdings, ...
+        to Oct 2026   after a "BTC Acquired" header, one row per period, "April 1, 2026 to April 5, 2026  4,871
+                      $329.9  $67,718  766,970  $58.02  $75,644" (a dash where none were bought); rows are summed,
+                      holdings and the period end are the last row's
+        from Oct 2026 the period in the header ("During Period October 5, 2026 to October 11, 2026 | As of ...")
+                      above "BTC Purchased", then a single row of numbers"""
+    m = re.search(r"BTC (?:Acquired|Purchased)", text)
+    if not m:
         return None
+    i = m.start()
     window = re.sub(r"\(\d\)", " ", text[i:i + 3000])           # footnote marks like (1)
+    heads = [h.end() for h in re.finditer(r"Average Purchase Price", window[:900])]
+    body = window[heads[-1]:] if heads else window
+    first_period = _PERIOD.search(body)
+    first_cell = _CELL.search(body)
+    if first_cell and (not first_period or first_cell.start() < first_period.start()):
+        before = list(_PERIOD.finditer(text[max(0, i - 400):i]))  # the newer layout: one row under a dated header
+        cells = [(a, d) for a, d in _CELL.findall(body)][:4]
+        if before and len(cells) == 4:
+            end = _day(before[-1].group(2) or before[-1].group(4))
+            first, fourth = cells[0], cells[3]
+            if end:
+                return {"bought": 0.0 if first[1] else float(first[0].replace(",", "")),
+                        "held": None if fourth[1] else float(fourth[0].replace(",", "")), "period_end": end}
     rows = list(_PERIOD.finditer(window))
     bought, held, end = 0.0, None, None
     for k, m in enumerate(rows):
@@ -247,14 +268,31 @@ async def fetch_strategy(since: str = "2024-01-01", cik: int = STRATEGY_CIK, cac
     seen = json.loads(cache.read_text()) if cache and cache.exists() else {}
     if seen.get("_version") != PARSER_VERSION:                # read with an older parser: read everything again
         seen = {"_version": PARSER_VERSION}
+    failed = []
     async with httpx.AsyncClient(timeout=30, headers=sec_headers(), follow_redirects=True) as c:
         r = await c.get(SEC_SUBMISSIONS.format(cik=cik))
         r.raise_for_status()
-        recent = r.json()["filings"]["recent"]
-        out = []
-        for form, filed, acc, doc in zip(recent["form"], recent["filingDate"], recent["accessionNumber"], recent["primaryDocument"]):
-            if form != "8-K" or filed < since:
+        sub = r.json()["filings"]
+        pages = [sub["recent"]]
+        # "recent" is only the newest 1,000 filings (Strategy files a lot); older ones sit in further pages
+        if not sub["recent"]["filingDate"] or min(sub["recent"]["filingDate"]) > since:
+            for f in sub.get("files", []):
+                if f.get("filingTo", "9999") < since:
+                    continue
+                await asyncio.sleep(0.25)
+                try:
+                    older = await c.get(SEC_OLDER.format(name=f["name"]))
+                    if older.status_code == 200:
+                        pages.append(older.json())
+                except (httpx.HTTPError, ValueError, KeyError):
+                    pass
+        filings = [x for p in pages for x in zip(p["form"], p["filingDate"], p["accessionNumber"], p["primaryDocument"])]
+        out, n_8k, done = [], 0, set()
+        for form, filed, acc, doc in sorted(filings, key=lambda x: x[1]):
+            if form != "8-K" or filed < since or acc in done:
                 continue
+            done.add(acc)
+            n_8k += 1
             key = acc
             if key not in seen:
                 acc_dir = acc.replace("-", "")
@@ -266,18 +304,23 @@ async def fetch_strategy(since: str = "2024-01-01", cik: int = STRATEGY_CIK, cac
                                  if x["name"].lower().endswith(".htm") and x["name"] != doc and "ex99" in x["name"].lower()]
                 except (httpx.HTTPError, ValueError):
                     pass
-                found = None
+                found, missed = None, False
                 for d in docs:
                     await asyncio.sleep(0.25)                           # SEC allows 10 a second; stay far under
                     try:
                         page = await c.get(SEC_ARCHIVE.format(cik=cik, acc=acc_dir, doc=d))
                     except httpx.HTTPError:
+                        missed = True
                         continue
                     if page.status_code != 200:
+                        missed = True
                         continue
                     found = parse_purchase(html_text(page.text))
                     if found:
                         break
+                if missed and not found:                                # not read: try again next run, don't remember
+                    failed.append(filed)
+                    continue
                 seen[key] = found
                 if cache:
                     cache.write_text(json.dumps(seen))
@@ -286,8 +329,9 @@ async def fetch_strategy(since: str = "2024-01-01", cik: int = STRATEGY_CIK, cac
             if seen.get(key):
                 out.append({"filed": filed, "accession": acc, **seen[key]})
     if log:
-        n_8k = sum(1 for k in seen if k != "_version")
-        print(f"Strategy: {n_8k} 8-Ks since {since}, {len(out)} with bitcoin purchases or holdings", file=log)
+        print(f"Strategy: {n_8k} 8-Ks since {since} ({len(pages)} SEC page{'s' if len(pages) > 1 else ''}), {len(out)} with "
+              f"bitcoin purchases or holdings, {n_8k - len(out) - len(failed)} about other things"
+              + (f", {len(failed)} not reachable (retried next run; first {failed[0]})" if failed else ""), file=log)
     return sorted(out, key=lambda x: x["filed"])
 
 
@@ -424,6 +468,42 @@ async def fetch_nasdaq_daily(symbol: str, start: str = "2023-12-01") -> list[tup
     if not out:
         raise RuntimeError(f"Nasdaq {symbol}: no rows")
     return sorted(out)
+
+
+async def fetch_dvol(start_ms: int, cache: Path | None = None, log=None, currency: str = "BTC") -> list[tuple[int, float]]:
+    """Deribit's DVOL (30-day implied volatility, annualised %) hourly from `start_ms`, stamped at each hour's end
+    (when its close was known). Deribit pages backwards from the newest hour; the cache keeps what's been read, so
+    reruns only fetch the latest. [] if Deribit can't be reached."""
+    key = cache / f"dvol_{currency}.json" if cache else None
+    have = [tuple(x) for x in json.loads(key.read_text())] if key and key.exists() else []
+    if not (have and have[0][0] <= start_ms + DAY_MS):         # the cache doesn't reach back far enough: start over
+        have = []
+    stop = have[-1][0] - HOUR_MS if have else start_ms
+    now = int(time_ms())
+    new, end = [], now
+    try:
+        async with httpx.AsyncClient(timeout=30, headers=BROWSER) as c:
+            for _ in range(80):                                   # 1,000 hours a page: enough for ~9 years
+                r = await c.get(DERIBIT_DVOL, params={"currency": currency, "start_timestamp": stop, "end_timestamp": end,
+                                                      "resolution": "3600"})
+                r.raise_for_status()
+                res = r.json().get("result") or {}
+                rows = res.get("data") or []
+                new += [(int(k[0]) + HOUR_MS, float(k[4])) for k in rows if k and k[4] is not None]
+                cont = res.get("continuation")
+                if not rows or not cont or int(cont) <= stop or int(cont) >= end:
+                    break
+                end = int(cont)
+                await asyncio.sleep(0.2)
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        if log:
+            print(f"Deribit DVOL: {type(exc).__name__}: {exc}" + ("; using the cache" if have else ""), file=log)
+    by = dict(have)
+    by.update(new)
+    out = sorted((t, v) for t, v in by.items() if t >= start_ms)
+    if key and out:
+        key.write_text(json.dumps(out))
+    return out
 
 
 def time_ms() -> float:
