@@ -146,6 +146,7 @@ STORE_DIR = Path(os.path.expanduser(os.getenv("ANALYTIX_STORE_DIR", str(ROOT / "
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 ALERTS_FILE = Path(os.getenv("ANALYTIX_ALERTS_FILE", str(ROOT / "data" / "alerts.json")))   # alert settings + Telegram
 WATCH_FILE = Path(os.getenv("ANALYTIX_WATCH_FILE", str(ROOT / "data" / "watch.json")))      # position watch wallets
+WATCHERS_FILE = Path(os.getenv("ANALYTIX_WATCHERS_FILE", str(ROOT / "data" / "watchers.json")))   # watcher tickets
 BOT_FILE = Path(os.getenv("ANALYTIX_BOT_FILE", str(ROOT / "data" / "bot.json")))            # the trading bot's rules
 # Baskets shown in the bot panel, in order. The others keep running and recording in the background, silently: no
 # banner, no Telegram ("twap,informed,degen" shows them all again)

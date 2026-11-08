@@ -1487,3 +1487,41 @@ kbd {
 .rs-end { font-family: var(--t-sans); font-size: 11px; font-weight: 500; }
 .rs-end.g { fill: #4a9e7f; }
 .rs-end.r { fill: #c4646b; }
+
+/* ── WATCH: trade watchers ─────────────────────────────────────────────── */
+.term .wt-body { display: grid; gap: 14px; }
+.term .wt-tickets { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 1px; background: var(--t-line); border: 1px solid var(--t-line); }
+.term .wt-ticket { background: var(--t-raise); padding: 10px 12px; display: grid; gap: 6px; box-shadow: inset 2px 0 0 var(--t-strong); }
+.term .wt-ticket.long { box-shadow: inset 2px 0 0 var(--t-green); }
+.term .wt-ticket.short { box-shadow: inset 2px 0 0 var(--t-red); }
+.term .wt-ticket.carry { box-shadow: inset 2px 0 0 var(--t-cyan); }
+.term .wt-ticket-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.term .wt-ticket-top > b { font-size: 13px; font-weight: 600; color: var(--t-ink); }
+.term .wt-now { margin-left: auto; font-size: 12px; }
+.term .wt-now b { font-size: 14px; }
+.term .wt-side { font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 1px 6px; border: 1px solid var(--t-edge); color: var(--t-ink2); }
+.term .wt-side.long { color: var(--t-green); border-color: var(--t-teal); }
+.term .wt-side.short { color: var(--t-red); border-color: var(--t-red); }
+.term .wt-side.carry { color: var(--t-cyan); border-color: var(--t-cyan-line); }
+.term .wt-legs { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--t-ink); }
+.term .wt-why { margin: 0; padding-left: 14px; display: grid; gap: 3px; font-size: 12px; line-height: 1.45; color: var(--t-ink2); }
+.term .wt-watchers { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px; }
+.term .wt-watcher { display: grid; gap: 6px; align-content: start; }
+.term .wt-watcher-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; font-size: 12px; }
+.term .wt-watcher-top > b { font-size: 13px; font-weight: 600; }
+.term .wt-reads { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.term .wt-reads th { text-align: left; font-weight: 500; color: var(--t-mute); font-size: 10.5px; padding: 3px 8px 4px 0; border-bottom: 1px solid var(--t-line); white-space: nowrap; }
+.term .wt-reads td { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--t-line); white-space: nowrap; }
+.term .wt-reads td:last-child { white-space: normal; font-family: var(--t-sans); font-size: 11px; text-align: left; }
+.term .wt-reads th:last-child { width: 46%; }
+.term .wt-reads td:first-child { font-family: var(--t-sans); }
+.term .wt-closed { display: grid; gap: 3px; font-size: 12px; }
+.term .wt-closed-head { font-size: 10.5px; }
+.term .wt-closed-line { display: grid; grid-template-columns: 150px auto 90px 1fr; gap: 12px; align-items: baseline; }
+@media (max-width: 700px) {
+  .term .wt-tickets, .term .wt-watchers { grid-template-columns: 1fr; }
+  .term .wt-reads { display: block; overflow-x: auto; }
+  .term .wt-closed-line { grid-template-columns: 1fr auto; }
+  .term .wt-closed-line > :nth-child(4) { grid-column: 1 / -1; }
+}

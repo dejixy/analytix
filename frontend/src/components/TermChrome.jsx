@@ -21,6 +21,7 @@ export const COMMANDS = [
   { keys: ["CMDY", "COMMODITIES"], label: "Commodities table", panel: "CMDY" },
   { keys: ["WKND", "WEEKEND"], label: "Weekend record", panel: "WKND" },
   { keys: ["ROLL"], label: "Oil roll", panel: "ROLL" },
+  { keys: ["WATCH", "TICKETS", "CARRY"], label: "Trade watchers: open tickets and each rule's record", panel: "WATCH" },
   { keys: ["FX", "CURRENCIES"], label: "Currencies", panel: "FX" },
   { keys: ["CAL", "CALENDAR"], label: "Coming up, 7 days", panel: "CAL" },
   { keys: ["EDGE", "BOARD"], label: "Edge board", panel: "EDGE" },
@@ -154,7 +155,7 @@ export function WorldClocks({ now, cme }) {
 
 /* Compares each reply with the last one and keeps a running log: price moves past a threshold since the last line
    for that market, the real markets opening and shutting, roll steps, events about to land, sources going down. */
-const KIND = { up: "MOVE", down: "MOVE", flow: "FLOW", sess: "HOURS", roll: "ROLL", cal: "SOON", alert: "ALERT", sys: "SYS" };
+const KIND = { up: "MOVE", down: "MOVE", flow: "FLOW", sess: "HOURS", roll: "ROLL", cal: "SOON", alert: "ALERT", sys: "SYS", watch: "WATCH" };
 
 export function ChangeLog({ log }) {
   const today = new Date().toDateString();
