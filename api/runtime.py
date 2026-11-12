@@ -41,11 +41,13 @@ from config import (
     REPLAY_SPEED,
     WATCH_FILE,
     WATCHERS_FILE,
+    ANALYZER_DUNE_FILE,
 )
 from api.alerts import AlertService
 from api.baskets import Bot
 from api.edges import EdgeService
 from api.watchers import WatcherService
+from api.analyzer import AnalyzerService
 from api.longtail import LongTailRecorder
 from api.news import NewsService
 from api.regime import RegimeService
@@ -131,6 +133,7 @@ class Runtime:
         self.edges = EdgeService(self, log_file=EDGE_LOG_FILE if mode == "live" else None)   # the edge terminal
         self.longtail.on_edge = self.edges.on_message   # the edge markets' live trades, from the socket recording them
         self.watchers = WatcherService(self, WATCHERS_FILE if mode == "live" else None)   # trade tickets, paper-tracked
+        self.analyzer = AnalyzerService(self, ANALYZER_DUNE_FILE)   # where money is being made, by category and chain
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -203,6 +206,7 @@ class Runtime:
         await self.news.start()
         await self.edges.start()
         await self.watchers.start()
+        await self.analyzer.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
@@ -219,6 +223,7 @@ class Runtime:
         await self.news.stop()
         await self.edges.stop()
         await self.watchers.stop()
+        await self.analyzer.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:

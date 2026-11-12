@@ -1525,3 +1525,39 @@ kbd {
   .term .wt-closed-line { grid-template-columns: 1fr auto; }
   .term .wt-closed-line > :nth-child(4) { grid-column: 1 / -1; }
 }
+
+/* ── Analyzer (/analyzer) ──────────────────────────────────────────────── */
+.term .az-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.term .az-table th { text-align: left; font-weight: 500; color: var(--t-mute); font-size: 10.5px; padding: 6px 10px 5px; border-bottom: 1px solid var(--t-edge); white-space: nowrap; }
+.term .az-table td { padding: 5px 10px; border-bottom: 1px solid var(--t-line); white-space: nowrap; text-align: left; }
+.term .az-table td.r, .term .az-table th.r { text-align: right; }
+.term .az-infra td { color: var(--t-mute); }
+.term .az-infra b { color: var(--t-ink2); font-weight: 500; }
+.term .az-first-infra td { border-top: 1px solid var(--t-strong); }
+.term .az-src b { white-space: nowrap; }
+.term .az-table td:first-child, .term .az-table td.az-names { font-family: var(--t-sans); }
+.term .az-table .r { text-align: right; }
+.term .az-table b { font-weight: 600; color: var(--t-ink); }
+.term .az-table a { color: var(--t-ink); text-decoration: none; border-bottom: 1px dotted var(--t-strong); font-family: var(--mono); }
+.term .az-table a:hover { color: var(--t-cyan); border-color: var(--t-cyan); }
+.term .az-map tbody tr, .term .az-grid tbody tr { cursor: pointer; }
+.term .az-map tbody tr:hover td, .term .az-grid tbody tr:hover td:first-child { background: var(--t-raise); }
+.term .az-table tr.on td:first-child { box-shadow: inset 2px 0 0 var(--t-cyan); }
+.term .az-table tr.on td { background: var(--t-head); }
+.term .az-table .tp-pill { margin-left: 6px; vertical-align: 1px; }
+.term .az-bar { width: 22%; min-width: 70px; padding-left: 0; }
+.term .az-bar i { display: block; height: 6px; min-width: 1px; background: var(--t-cyan); opacity: 0.75; }
+.term .az-names { white-space: normal; font-size: 11.5px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.term .az-scroll { overflow-x: auto; }
+.term .az-rows { max-height: 560px; overflow-y: auto; }
+.term .az-rows thead th { position: sticky; top: 0; background: var(--t-panel); }
+.term .az-cell { min-width: 84px; }
+.term .az-total td { border-top: 1px solid var(--t-edge); border-bottom: 0; }
+.term .az-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--t-line); border-bottom: 1px solid var(--t-line); }
+.term .az-kpis > div { background: var(--t-panel); padding: 9px 12px 10px; display: grid; gap: 3px; }
+.term .az-kpis span { font-size: 10.5px; }
+.term .az-kpis b { font-size: 16px; font-weight: 600; }
+.term .az-src { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 8px 18px; padding: 10px 12px 12px; font-size: 12px; }
+.term .az-src > div { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.term .az-src span.muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1000px) { .term .az-names { display: none; } .term .az-map th:last-child { display: none; } }

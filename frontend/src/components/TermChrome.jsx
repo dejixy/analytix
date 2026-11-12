@@ -21,6 +21,7 @@ export const COMMANDS = [
   { keys: ["CMDY", "COMMODITIES"], label: "Commodities table", panel: "CMDY" },
   { keys: ["WKND", "WEEKEND"], label: "Weekend record", panel: "WKND" },
   { keys: ["ROLL"], label: "Oil roll", panel: "ROLL" },
+  { keys: ["ANLZ", "ANALYZER", "MONEY"], label: "Analyzer: where the money is, by category and chain", href: "/analyzer" },
   { keys: ["WATCH", "TICKETS", "CARRY"], label: "Trade watchers: open tickets and each rule's record", panel: "WATCH" },
   { keys: ["FX", "CURRENCIES"], label: "Currencies", panel: "FX" },
   { keys: ["CAL", "CALENDAR"], label: "Coming up, 7 days", panel: "CAL" },
