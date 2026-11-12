@@ -215,6 +215,12 @@ async def news(request: Request, hours: float = 24, coin: str | None = None):
     return _rt(request).news.public(min(max(hours, 1), 168), coin)
 
 
+@router.get("/analyzer")
+async def analyzer(request: Request):
+    """The Analyzer: fees by category and chain, what's heating up, and who is making money where it's public."""
+    return _rt(request).analyzer.public()
+
+
 @router.get("/edges")
 async def edges(request: Request, have: int | None = None):
     """The edge terminal: trade.xyz commodities and currencies, the weekend record, the oil roll, what's coming up.

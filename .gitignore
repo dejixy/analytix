@@ -12,6 +12,7 @@ data/*.sqlite
 data/alerts.json
 data/watch.json
 data/watchers.json
+data/analyzer_dune.json
 data/bot.json
 data/*.tmp
 data/bigmovers.json
