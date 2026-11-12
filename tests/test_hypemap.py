@@ -105,3 +105,18 @@ def test_hypurrscan_holders_and_queue_in_their_shapes():
     later = H.parse_queue([{"time": now + D, "user": "0xa", "wei": 10 ** 8}], now)
     assert later["times_are"] == "unlock" and later["by_day"] == [((now + D) // D * D, 1.0)]
     assert H.parse_queue([], now)["n"] == 0
+
+
+def test_the_hyperevm_bridge_is_its_own_group_and_top_lists_the_biggest():
+    from scripts import hypeTop
+    bridge = H.Wallet(H.HYPER_EVM, spot=30e6)
+    big = H.Wallet("0xaa", delegated=20e6)
+    small = H.Wallet("0xbb", spot=1e6)
+    assert H.group_of(bridge) == "On HyperEVM"
+    c = H.concentration([bridge, big, small], supply=100e6, tops=(1, 10))
+    assert c == {1: 0.2, 10: 0.21}                                       # the bridge isn't one holder
+    snap = {"supply": 100e6, "wallets": {w.address: {"spot": w.spot, "staked": w.staked, "pending": w.pending,
+                                                     "group": H.group_of(w)} for w in (bridge, big, small)}}
+    lines = hypeTop.top(snap, 2, {"0xaa": "Some LST"})
+    assert len(lines) == 3 and H.HYPER_EVM in lines[1] and "HyperEVM bridge" in lines[1]
+    assert "0xaa" in lines[2] and "20.0%" in lines[2] and "Some LST" in lines[2]
