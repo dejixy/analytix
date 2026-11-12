@@ -6,6 +6,7 @@ import Flow, { useFlow } from "./River.jsx";
 import MarketLinks, { PressureRose, samePick } from "./LinkRose.jsx";
 import World from "./World.jsx";
 import Charts from "./Charts.jsx";
+import Watch from "./Watch.jsx";
 import { Flash, Head, Pill, SourcePill, fresh } from "./TermPanel.jsx";
 
 export { Flash };
@@ -325,7 +326,7 @@ function Roll({ d, now }) {
   return (
     <section id="p-ROLL" className="panel">
       <Head code="ROLL" title="Oil roll"
-        meta={[["Window", "business days 5 to 10"], ["Futures", ff.state === "down" ? "unreachable" : `Yahoo, ${ff.age}`]]}
+        meta={[["Window", "business days 5 to 9"], ["Futures", ff.state === "down" ? "unreachable" : `Yahoo, ${ff.age}`]]}
         pills={[<Pill key="p" kind={rolling ? "state" : "mute"}>{rolling ? "Rolling" : "Upcoming"}</Pill>,
           <Pill key="f" kind={ff.state === "down" ? "bad" : "mute"} title="Yahoo's futures prices run about 10 minutes late">Delayed</Pill>]} />
       <div className="term-pad term-stack">
@@ -339,8 +340,8 @@ function Roll({ d, now }) {
                 <span className={`bm-status ${r.phase === "during" ? "live" : ""}`}>{r.phase === "during" ? "Rolling now" : r.phase === "before" ? "Coming" : "Done"}</span>
               </div>
               <div className="term-days">
-                {r.days.slice(4, 10).map((x) => (
-                  <span key={x.date} className={`term-day ${x.date === today ? "on" : ""}`} title={`${Math.round(x.front_weight * 100)}% ${r.front}, ${Math.round((1 - x.front_weight) * 100)}% ${r.next}`}>
+                {r.days.slice(4, 9).map((x) => (
+                  <span key={x.date} className={`term-day ${x.date === today ? "on" : ""}`} title={`From that evening's 18:00 New York reopen: ${Math.round(x.front_weight * 100)}% ${r.front}, ${Math.round((1 - x.front_weight) * 100)}% ${r.next}`}>
                     {isoDay(x.date)}
                     <i style={{ width: `${(1 - x.front_weight) * 100}%` }} />
                   </span>
@@ -361,7 +362,7 @@ function Roll({ d, now }) {
             </div>
           );
         })}
-        <p className="plan-note muted">trade.xyz moves the oracle 20% a day from the front contract to the next. Futures prices are Yahoo's, about 10 minutes late.</p>
+        <p className="plan-note muted">trade.xyz moves 20% of the oracle from the front contract to the next at 17:30 New York on each of those days, live from the 18:00 reopen. Futures prices are Yahoo's, about 10 minutes late.</p>
       </div>
     </section>
   );
@@ -564,6 +565,7 @@ export default function Edges({ d, error, now, onPick = () => {} }) {
       <Flow d={d} now={now} data={flow} minutes={flowMin} setMinutes={setFlowMin} />
       <div className="tw-6"><MarketLinks d={d} flow={flow} pick={pick} hover={setPickHover} pin={pin} pinned={pickPin} /></div>
       <div className="tw-6"><PressureRose flow={flow} pick={pick} /></div>
+      <Watch w={d.watch} now={now} />
       <Markets d={d} now={now} />
       <div className="tw-7"><Record d={d} /></div>
       <div className="tw-5 term-col">

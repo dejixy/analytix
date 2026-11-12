@@ -6,6 +6,7 @@
 #                                            (extra options pass through: run.sh btc --lam 0.3 --terms etf,mom)
 #   bash ~/analytix/scripts/run.sh moves     BTC estimate v2: the size of the next day's move, extreme ETF-flow days
 #                                            and Strategy's biggest buys (a few minutes), kept in /tmp/btc_moves.txt
+#   bash ~/analytix/scripts/run.sh carry     the funding-carry watcher's rule on Hyperliquid's history (a few minutes)
 #   bash ~/analytix/scripts/run.sh map       (re)start the HYPE map in the background (keeps what it already read)
 #   bash ~/analytix/scripts/run.sh top       the biggest wallets in the latest HYPE map, to look up and name
 #   bash ~/analytix/scripts/run.sh fresh     (re)start fresh money in the background (store build, then the study)
@@ -51,6 +52,11 @@ case "${1:-status}" in
   top)
     "$PY" -m scripts.hypeTop "${@:2}"
     ;;
+  carry)
+    pkill -f scripts.carryStudy 2>/dev/null; sleep 1
+    nice -n 19 "$PY" -m scripts.carryStudy "${@:2}" > /tmp/carry.txt 2> /tmp/carry.log
+    cat /tmp/carry.txt; echo; echo "(log:)"; tail -n 6 /tmp/carry.log
+    ;;
   map)
     pkill -f scripts.hypeMap 2>/dev/null; sleep 2
     nohup nice -n 19 "$PY" -m scripts.hypeMap "${@:2}" > /tmp/hype_map.txt 2> /tmp/hype_map.log < /dev/null &
@@ -63,7 +69,7 @@ case "${1:-status}" in
     echo "fresh money started in the background; check with: bash scripts/run.sh status"
     ;;
   show)
-    for f in /tmp/fresh.txt /tmp/hype_probe.txt /tmp/hype_map.txt /tmp/btc_est.txt /tmp/btc_moves.txt; do
+    for f in /tmp/fresh.txt /tmp/hype_probe.txt /tmp/hype_map.txt /tmp/btc_est.txt /tmp/btc_moves.txt /tmp/carry.txt; do
       [ -s "$f" ] && { echo "===== $f"; cat "$f"; echo; }
     done
     ;;
@@ -71,6 +77,6 @@ case "${1:-status}" in
     git pull --ff-only
     ;;
   *)
-    sed -n '2,16p' "$0"
+    sed -n '2,17p' "$0"
     ;;
 esac

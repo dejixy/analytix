@@ -71,14 +71,24 @@ def test_fit_and_fade():
 
 
 def test_roll_window_weights_and_contracts():
+    # trade.xyz's published schedule: 20% at 17:30 New York on business days 5 to 9, live from the 18:00 reopen
     r = E.roll_state("xyz:CL", ny(2026, 11, 3, 12))
-    assert (r["start"], r["end"], r["phase"], r["front"], r["next"]) == ("2026-11-06", "2026-11-13", "before", "Z26", "F27")
-    assert r["symbols"] == ["CLZ26.NYM", "CLF27.NYM"]
-    assert E.roll_state("WTIOIL", ny(2026, 11, 7, 12))["front_weight"] == 1.0       # Saturday keeps Friday's
-    mid = E.roll_state("WTIOIL", ny(2026, 11, 10, 12))
-    assert mid["phase"] == "during" and mid["front_weight"] == 0.6
+    assert (r["start"], r["end"], r["phase"], r["front"], r["next"]) == ("2026-11-06", "2026-11-12", "before", "Z26", "F27")
+    assert r["symbols"] == ["CLZ26.NYM", "CLF27.NYM"] and r["front_weight"] == 1.0
+    assert r["next_step_ms"] == ny(2026, 11, 8, 18) and r["end_ms"] == ny(2026, 11, 12, 18)
+    assert E.roll_state("WTIOIL", ny(2026, 11, 6, 17))["front_weight"] == 1.0       # Friday, before the step
+    sat = E.roll_state("WTIOIL", ny(2026, 11, 7, 12))          # Friday's step waits for Sunday's 18:00 reopen
+    assert sat["front_weight"] == 1.0 and sat["phase"] == "during" and sat["next_step_ms"] == ny(2026, 11, 8, 18)
+    assert E.roll_state("WTIOIL", ny(2026, 11, 8, 19))["front_weight"] == 0.8
+    assert E.roll_state("WTIOIL", ny(2026, 11, 10, 12))["front_weight"] == 0.6
+    assert E.roll_state("WTIOIL", ny(2026, 11, 10, 18))["front_weight"] == 0.4
+    last = E.roll_state("WTIOIL", ny(2026, 11, 12, 19))
+    assert last["front_weight"] == 0.0 and last["phase"] == "after" and last["next_step_ms"] is None
     dec = E.roll_state("BRENTOIL", ny(2026, 11, 20, 12))                           # November's is over: December's
-    assert (dec["start"], dec["front"], dec["next"]) == ("2026-12-07", "G27", "H27")
+    assert (dec["start"], dec["end"], dec["front"], dec["next"]) == ("2026-12-07", "2026-12-11", "G27", "H27")
+    octo = E.roll_state("WTIOIL", ny(2026, 10, 1, 12))                             # the docs' October example
+    assert (octo["start"], octo["end"]) == ("2026-10-07", "2026-10-13")
+    assert [x["front_weight"] for x in octo["days"][3:9]] == [1.0, 0.8, 0.6, 0.4, 0.2, 0.0]
     d = E.roll_drift({"front_weight": 1.0}, 60.0, 59.0)
     assert d["gap_pct"] == -1.67 and d["left_bps"] == round(-1 / 60 * 1e4, 1)
 

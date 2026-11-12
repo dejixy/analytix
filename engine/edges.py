@@ -10,9 +10,10 @@ Event edges: the scheduled moments the edge terminal watches, as pure functions.
                     R   the hour after the reopen against Friday's close (what the real market said)
                 and the fitted R = a + b·W per market and pooled. b below 1 means big weekend moves give some back
                 at the reopen; fading them is judged after a taker round trip
-    roll        oil's monthly switch to the next futures contract: from the 5th to the 10th business day the
-                oracle moves 20% a day from the front contract to the next, so if the next one is cheaper the
-                oracle drifts down by the gap even when nothing else happens
+    roll        oil's monthly switch to the next futures contract (trade.xyz's roll schedule): at 17:30 New York
+                time on each of the 5th to 9th business days, 20% of the oracle's weight moves from the front
+                contract to the next, taking effect at the 18:00 reopen. If the next one is cheaper the oracle
+                drifts down by the gap even when nothing else happens
     events      the recurring moments of the next days: oil reports, closes and reopens, roll days, options expiry
 
 Holidays: full closures (Good Friday, Christmas, New Year) are modelled; part-days (Thanksgiving, July 4 and the
@@ -250,31 +251,45 @@ def _label(code: str, y: int) -> str:
     return f"{code}{y % 100:02d}"
 
 
+ROLL_STEP_MIN = 17 * 60 + 30        # each step is set at 17:30 New York time ...
+ROLL_LIVE_MIN = 18 * 60             # ... and the oracle prices with it from the 18:00 reopen
+
+
+def roll_steps(bd: list[date]) -> list[int]:
+    """When each 20% step reaches the oracle, ms: the 18:00 reopen after the 5th to 9th business days' 17:30 (a
+    Friday's waits for Sunday's reopen, since the oracle follows Hyperliquid's own book over the weekend)."""
+    return [_ny(d + timedelta(days=2 if d.weekday() == 4 else 0), 0) + ROLL_LIVE_MIN * 60_000 for d in bd[4:9]]
+
+
 def roll_state(name: str, t_ms: float) -> dict:
-    """This month's roll window (or next month's, once it's over), today's weights and the two contracts."""
+    """This month's roll window (or next month's, once it's over), the weight on the front contract now, when the
+    next step lands and the two contracts."""
     today = ny_date(t_ms)
     y, m = today.year, today.month
     for _ in range(2):
         bd = business_days(y, m)
-        start, end = bd[4], bd[9]
-        if today <= end:
+        steps = roll_steps(bd)
+        if t_ms < steps[-1]:
+            break
+        if today <= bd[8]:                                # the last step is in: the day still shows this roll
             break
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    start, end = bd[4], bd[8]
     front, fy, _ = contract(name, y, m)
     nm_y, nm = (y + 1, 1) if m == 12 else (y, m + 1)
     nxt, ny_, _ = contract(name, nm_y, nm)
-    if today < start:
-        phase, w_front = "before", 1.0
-    else:
-        k = bd.index(today) if today in bd else sum(d <= today for d in bd) - 1   # weekends keep Friday's weight
-        w_front = max(0.0, 1.0 - 0.2 * (k - 4))
-        phase = "during" if today <= end else "after"
+    done = sum(1 for s in steps if t_ms >= s)
+    w_front = round(1.0 - 0.2 * done, 2)
+    first_set = _ny(start, 0) + ROLL_STEP_MIN * 60_000           # the 5th business day's 17:30: the window opens
+    phase = "before" if t_ms < first_set else "during" if done < 5 else "after"
     root = YAHOO_ROOT[bare(name)]
-    return {"start": start.isoformat(), "end": end.isoformat(), "phase": phase, "front_weight": round(w_front, 2),
-            "front": _label(front, fy), "next": _label(nxt, ny_),
+    # front_weight is what the oracle uses now (a step set on Friday counts from Sunday's reopen)
+    return {"start": start.isoformat(), "end": end.isoformat(), "phase": phase, "front_weight": w_front,
+            "front": _label(front, fy), "next": _label(nxt, ny_), "steps_ms": steps,
+            "next_step_ms": next((s for s in steps if s > t_ms), None), "end_ms": steps[-1],
             "symbols": [f"{root}{_label(front, fy)}.NYM", f"{root}{_label(nxt, ny_)}.NYM"],
-            "days": [{"date": d.isoformat(), "front_weight": round(max(0.0, 1.0 - 0.2 * (i - 4)), 1) if i >= 4 else 1.0}
-                     for i, d in enumerate(bd[:11])]}
+            "days": [{"date": d.isoformat(), "front_weight": round(1.0 - 0.2 * max(0, min(5, i - 3)), 1)}
+                     for i, d in enumerate(bd[:10])]}
 
 
 def roll_drift(state: dict, front_px: float | None, next_px: float | None) -> dict | None:
@@ -323,7 +338,7 @@ def recurring(t_ms: float, days: int = 7) -> list[dict]:
             d = date.fromisoformat(r[key])
             if d0 <= d <= d0 + timedelta(days=days):
                 out.append((_ny(d, 0), f"{SESSIONS[name].label} roll {what}", "oil",
-                            f"{r['front']} → {r['next']}, 20% a day", True))
+                            f"{r['front']} → {r['next']}, 20% each evening at 17:30 New York", True))
     rows = [{"t_ms": x[0], "title": x[1], "group": x[2], "note": x[3], "all_day": len(x) > 4} for x in out]
     return sorted((e for e in rows if e["t_ms"] > t_ms or (e["all_day"] and ny_date(e["t_ms"]) == d0)),
                   key=lambda e: e["t_ms"])

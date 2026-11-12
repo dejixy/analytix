@@ -135,9 +135,10 @@ BOARD = [
              "past weekends' big moves gave part of themselves back.",
      "next": "Our own record below; then the same check on 5-minute data from our recordings."},
     {"key": "roll", "name": "Oil roll drift", "markets": "WTI, Brent",
-     "idea": "From the 5th to the 10th business day the oracle moves from the front contract to the next. If the next "
-             "is cheaper, the oracle drifts down by the gap with nothing else happening.",
-     "next": "Watch whether Hyperliquid's price and funding see it coming."},
+     "idea": "On the 5th to 9th business days the oracle moves 20% a day from the front contract to the next. If the "
+             "next is cheaper, the oracle drifts down by the gap with nothing else happening.",
+     "next": "The roll watcher (WATCH) opens a ticket when the part Hyperliquid hasn't priced in beats funding and "
+             "fees; its paper record decides."},
     {"key": "yen", "name": "Yen unwinds", "markets": "BTC, ETH, SOL, HYPE, gold",
      "idea": "A fast yen rally makes yen loans dearer, and carry trades get sold everywhere at once (Aug 2024).",
      "next": "Test whether sharp yen moves lead crypto over the next hours, on Hyperliquid's own yen history."},
@@ -804,4 +805,5 @@ class EdgeService:
                 "hours": {"from_ms": now - E.DAY, "to_ms": now + 6 * E.DAY, "market": "WTI, gold and silver",
                           "open": E.open_intervals("CL", now - E.DAY, now + 6 * E.DAY)},
                 "status": self.status,
-                "log": self.changes.newest(), "log_since": self.changes.rows[0]["t"] if self.changes.rows else None}
+                "log": self.changes.newest(), "log_since": self.changes.rows[0]["t"] if self.changes.rows else None,
+                "watch": self.rt.watchers.public(now) if getattr(self.rt, "watchers", None) is not None else None}

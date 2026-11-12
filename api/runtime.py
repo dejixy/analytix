@@ -40,10 +40,12 @@ from config import (
     REPLAY_LOOP,
     REPLAY_SPEED,
     WATCH_FILE,
+    WATCHERS_FILE,
 )
 from api.alerts import AlertService
 from api.baskets import Bot
 from api.edges import EdgeService
+from api.watchers import WatcherService
 from api.longtail import LongTailRecorder
 from api.news import NewsService
 from api.regime import RegimeService
@@ -128,6 +130,7 @@ class Runtime:
         self.news = NewsService(self)                   # economic calendar and headlines, with each coin's reaction
         self.edges = EdgeService(self, log_file=EDGE_LOG_FILE if mode == "live" else None)   # the edge terminal
         self.longtail.on_edge = self.edges.on_message   # the edge markets' live trades, from the socket recording them
+        self.watchers = WatcherService(self, WATCHERS_FILE if mode == "live" else None)   # trade tickets, paper-tracked
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────
@@ -199,6 +202,7 @@ class Runtime:
         await self.regime.start()
         await self.news.start()
         await self.edges.start()
+        await self.watchers.start()
         await self.alerts.start()
         await self.positions.start()
         log.info("analytix %s mode started for %s", self.mode, ", ".join(self.coins))
@@ -214,6 +218,7 @@ class Runtime:
         await self.regime.stop()
         await self.news.stop()
         await self.edges.stop()
+        await self.watchers.stop()
         await self.positions.stop()
         await self.alerts.stop()
         for t in self._tasks:
