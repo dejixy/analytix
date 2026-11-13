@@ -29,11 +29,14 @@ class AnalyzerService:
     def __init__(self, runtime, dune_file=None):
         self.rt = runtime
         self.dune_file = dune_file
-        self.map: dict | None = None
+        self.map: dict | None = None            # the fees map (kept for older callers)
+        self.maps: dict[str, dict] = {}         # fees, revenue, volume
+        self._cache: dict[tuple, tuple[float, dict]] = {}
         self.hl: dict | None = None
         self.boards: dict[str, dict] = {}
         self.status: dict[str, dict] = {k: {"ok": None, "at": None, "error": None} for k in EVERY_S}
         self._tasks: list[asyncio.Task] = []
+        self.fetch_pools, self.fetch_history = S.fetch_pools, S.fetch_history
         self.fetch = {"fees": S.fetch_llama, "hyperliquid": S.fetch_hl_leaderboard, "solana": S.fetch_birdeye,
                       "polymarket": S.fetch_polymarket, "dune": S.fetch_dune}     # swappable in tests
 
@@ -66,10 +69,41 @@ class AnalyzerService:
                 log.warning("analyzer %s: %s", key, exc)
 
     async def _fees(self) -> None:
-        protocols = await self.fetch["fees"]()
-        if not protocols:
+        got = await self.fetch["fees"]()
+        if not got.get("fees"):
             raise RuntimeError("no protocols in the reply")
-        self.map = M.money_map(protocols)
+        self.maps = {k: M.money_map(v) for k, v in got.items() if v}
+        self.map = self.maps["fees"]
+
+    async def _cached(self, key: tuple, ttl: float, make) -> dict:
+        hit = self._cache.get(key)
+        if hit and time.time() - hit[0] < ttl:
+            return hit[1]
+        try:
+            val = await make()
+        except Exception as exc:                          # noqa: BLE001 - shown on the page
+            val = {"error": f"{type(exc).__name__}: {exc}"[:160]}
+        self._cache[key] = (time.time(), val)
+        if len(self._cache) > 300:
+            self._cache.pop(next(iter(self._cache)))
+        return val
+
+    async def chain(self, name: str, metric: str = "fees") -> dict:
+        """What's driving one chain: its biggest protocols by the chosen measure, and its busiest pools."""
+        m = self.maps.get(metric) or self.maps.get("fees") or {}
+
+        async def pools():
+            network, rows = await self.fetch_pools(name)
+            return {"network": network, "rows": rows}
+        return {"chain": name, "metric": metric, "total": (m.get("chain_totals") or {}).get(name),
+                "protocols": (m.get("on_chain") or {}).get(name, []),
+                "pools": await self._cached(("pools", name), 300, pools)}
+
+    async def protocol(self, slug: str, metric: str = "fees") -> dict:
+        """One protocol's last 90 days of the chosen measure."""
+        async def hist():
+            return {"rows": await self.fetch_history(slug, metric)}
+        return {"slug": slug, "metric": metric, **(await self._cached(("hist", slug, metric), 1800, hist))}
 
     async def _hyperliquid(self) -> None:
         rows = await self.fetch["hyperliquid"]()
@@ -108,6 +142,7 @@ class AnalyzerService:
             raise RuntimeError("; ".join(errors))
 
     def public(self) -> dict:
-        return {"now_ms": int(time.time() * 1000), "enabled": self.rt.mode == "live", "map": self.map, "hyperliquid": self.hl,
+        return {"now_ms": int(time.time() * 1000), "enabled": self.rt.mode == "live", "map": self.map, "maps": self.maps,
+                "hyperliquid": self.hl,
                 "boards": list(self.boards.values()), "labels": M.LABEL,
                 "status": {SOURCE_NAME[k]: v for k, v in self.status.items()}}

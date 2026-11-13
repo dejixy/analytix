@@ -1,8 +1,10 @@
 """
 Where money is being made in crypto, from public sources (for the Analyzer page, api/analyzer.py):
 
-    DefiLlama      fees users paid to every protocol over 24 h, 7 d and 30 d, with its category and chains (free,
-                   no key): where the activity is
+    DefiLlama      fees users paid to every protocol over 24 h, 7 d and 30 d, the revenue the protocol kept, and
+                   trading volume (spot, perps, options), with its category and chains (free, no key); and one
+                   protocol's daily history
+    GeckoTerminal  a chain's busiest pools by 24 h volume: what is actually trading there (free, no key)
     Hyperliquid    the perps leaderboard: every trader's profit, return and volume by day, week, month and all time
                    (free, no key)
     Birdeye        Solana's top traders by profit (ANALYTIX_BIRDEYE_KEY, a free key from birdeye.so)
@@ -18,6 +20,17 @@ import os
 import httpx
 
 LLAMA_FEES = "https://api.llama.fi/overview/fees"
+LLAMA_VOLUME = ("https://api.llama.fi/overview/dexs", "https://api.llama.fi/overview/derivatives",
+                "https://api.llama.fi/overview/options")
+LLAMA_SUMMARY = "https://api.llama.fi/summary/{kind}/{slug}"
+GECKO_POOLS = "https://api.geckoterminal.com/api/v2/networks/{network}/pools"
+GECKO_NETWORK = {"Solana": "solana", "TON": "ton", "Base": "base", "Ethereum": "eth", "BSC": "bsc", "Avalanche": "avax",
+                 "Arbitrum": "arbitrum", "Polygon": "polygon_pos", "Tron": "tron", "Sui": "sui-network", "Aptos": "aptos",
+                 "Hyperliquid": "hyperevm", "Hyperliquid L1": "hyperevm", "OP Mainnet": "optimism", "Optimism": "optimism",
+                 "Unichain": "unichain", "Sonic": "sonic", "Berachain": "berachain", "Monad": "monad", "Plasma": "plasma",
+                 "Linea": "linea", "Mantle": "mantle", "Sei": "sei-evm", "Ronin": "ronin", "Abstract": "abstract",
+                 "Starknet": "starknet-alpha", "zkSync Era": "zksync", "Blast": "blast", "Scroll": "scroll"}
+METRICS = ("fees", "revenue", "volume")
 HL_LEADERBOARD = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
 BIRDEYE_TRADERS = "https://public-api.birdeye.so/trader/gainers-losers"
 POLYMARKET_PROFIT = "https://lb-api.polymarket.com/profit"
@@ -51,16 +64,92 @@ def parse_llama(payload: dict) -> list[dict]:
                 by[proper.get(str(chain).lower(), str(chain).title())] = total
         if not by and len(chains) == 1 and d1:
             by = {chains[0]: d1}
-        out.append({"name": p.get("displayName") or p.get("name") or "?", "category": p.get("category") or "",
+        name = p.get("displayName") or p.get("name") or "?"
+        out.append({"name": name, "category": p.get("category") or "", "slug": p.get("slug") or slug_of(p.get("name") or name),
                     "chains": chains, "d1": d1 or 0.0, "d7": d7 or 0.0, "d30": d30 or 0.0, "by_chain": by})
     return out
 
 
-async def fetch_llama() -> list[dict]:
+def slug_of(name: str) -> str:
+    return "-".join(str(name).lower().split())
+
+
+_LEAN = {"excludeTotalDataChart": "true", "excludeTotalDataChartBreakdown": "true"}
+
+
+async def fetch_llama() -> dict[str, list[dict]]:
+    """{"fees": [...], "revenue": [...], "volume": [...]}: the same protocol rows measured three ways. Volume joins
+    spot, perps and options venues; a part that can't be read is left empty rather than failing the rest."""
+    out: dict[str, list[dict]] = {}
     async with httpx.AsyncClient(timeout=60, headers=UA) as c:
-        r = await c.get(LLAMA_FEES, params={"excludeTotalDataChart": "true", "excludeTotalDataChartBreakdown": "true"})
+        r = await c.get(LLAMA_FEES, params=_LEAN)
         r.raise_for_status()
-        return parse_llama(r.json())
+        out["fees"] = parse_llama(r.json())
+        try:
+            r = await c.get(LLAMA_FEES, params={**_LEAN, "dataType": "dailyRevenue"})
+            out["revenue"] = parse_llama(r.json()) if r.status_code == 200 else []
+        except (httpx.HTTPError, ValueError):
+            out["revenue"] = []
+        vol: dict[str, dict] = {}
+        for url in LLAMA_VOLUME:
+            try:
+                r = await c.get(url, params=_LEAN)
+                for p in parse_llama(r.json()) if r.status_code == 200 else []:
+                    vol.setdefault(p["name"], p)
+            except (httpx.HTTPError, ValueError):
+                continue
+        out["volume"] = list(vol.values())
+    return out
+
+
+def parse_history(payload: dict, days: int = 90) -> list[list[float]]:
+    """A protocol's daily values, [[ms, value]], the last `days`."""
+    rows = []
+    for x in (payload or {}).get("totalDataChart") or []:
+        if isinstance(x, (list, tuple)) and len(x) >= 2 and num(x[0]) is not None and num(x[1]) is not None:
+            rows.append([int(num(x[0])) * 1000, num(x[1])])
+    return rows[-days:]
+
+
+async def fetch_history(slug: str, metric: str = "fees") -> list[list[float]]:
+    """One protocol's daily fees, revenue or volume for the last 90 days."""
+    tries = [("fees", {"dataType": "dailyRevenue"})] if metric == "revenue" else \
+        [("dexs", {}), ("derivatives", {}), ("options", {})] if metric == "volume" else [("fees", {})]
+    async with httpx.AsyncClient(timeout=40, headers=UA) as c:
+        for kind, params in tries:
+            r = await c.get(LLAMA_SUMMARY.format(kind=kind, slug=slug), params=params)
+            if r.status_code == 200:
+                rows = parse_history(r.json())
+                if rows:
+                    return rows
+    return []
+
+
+# ── GeckoTerminal: what is trading on a chain ────────────────────────────────
+def parse_pools(payload: dict) -> list[dict]:
+    out = []
+    for x in (payload or {}).get("data") or []:
+        a = x.get("attributes") or {}
+        vol = num((a.get("volume_usd") or {}).get("h24"))
+        if not a.get("name") or not vol:
+            continue
+        tx = (a.get("transactions") or {}).get("h24") or {}
+        dex = (((x.get("relationships") or {}).get("dex") or {}).get("data") or {}).get("id") or ""
+        out.append({"name": a["name"], "dex": dex.replace("-", " ").replace("_", " "), "address": a.get("address") or "",
+                    "vol": vol, "chg": num((a.get("price_change_percentage") or {}).get("h24")),
+                    "trades": int((num(tx.get("buys")) or 0) + (num(tx.get("sells")) or 0)),
+                    "buyers": int(num(tx.get("buyers")) or 0), "liquidity": num(a.get("reserve_in_usd")),
+                    "fdv": num(a.get("fdv_usd"))})
+    return sorted(out, key=lambda p: -p["vol"])
+
+
+async def fetch_pools(chain: str) -> tuple[str, list[dict]]:
+    """(network id, a chain's 20 busiest pools by 24 h volume)."""
+    network = GECKO_NETWORK.get(chain) or slug_of(chain)
+    async with httpx.AsyncClient(timeout=30, headers={**UA, "accept": "application/json"}) as c:
+        r = await c.get(GECKO_POOLS.format(network=network), params={"page": 1, "sort": "h24_volume_usd_desc"})
+        r.raise_for_status()
+        return network, parse_pools(r.json())
 
 
 # ── Hyperliquid's leaderboard ────────────────────────────────────────────────

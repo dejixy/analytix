@@ -79,7 +79,8 @@ def test_the_service_keeps_each_source_apart(tmp_path):
     svc = AnalyzerService(SimpleNamespace(mode="live"), tmp_path / "dune.json")
 
     async def fees():
-        return S.parse_llama(LLAMA)
+        ps = S.parse_llama(LLAMA)
+        return {"fees": ps, "revenue": ps[:2], "volume": []}
 
     async def hl():
         return S.parse_hl_leaderboard(HL)
@@ -102,9 +103,37 @@ def test_the_service_keeps_each_source_apart(tmp_path):
     p = svc.public()
     assert p["map"]["categories"][0]["key"] == "perps" and p["hyperliquid"]["windows"]["day"]["crowd"]["traders"] == 2
     assert [b["title"] for b in p["boards"]] == ["Polymarket, 7 days"]
+    assert set(p["maps"]) == {"fees", "revenue"} and len(p["maps"]["revenue"]["categories"]) == 2    # an empty measure is left out
+
+    async def pools(chain):
+        return "solana", [{"name": "BONK / SOL", "vol": 5.0}]
+
+    async def hist(slug, metric):
+        raise RuntimeError("boom")
+    svc.fetch_pools, svc.fetch_history = pools, hist
+    ch = asyncio.run(svc.chain("Solana", "fees"))
+    assert ch["protocols"][0]["name"] == "pump.fun" and ch["total"] == 2_000_000 and ch["pools"]["rows"][0]["name"] == "BONK / SOL"
+    assert "boom" in asyncio.run(svc.protocol("pump.fun", "fees"))["error"]                       # shown, not raised
     st = p["status"]
     assert st["DefiLlama fees"]["ok"] and st["Birdeye (Solana traders)"]["ok"] is False and "no key" in st["Birdeye (Solana traders)"]["error"]
     assert "no queries" in st["Dune queries"]["error"]
     (tmp_path / "dune.json").write_text('[{"id": 42, "title": "NFT traders, 7 days", "category": "nfts", "chain": "Ethereum"}]')
     asyncio.run(svc.refresh("dune"))
     assert svc.public()["boards"][-1]["title"] == "NFT traders, 7 days" and svc.public()["status"]["Dune queries"]["ok"]
+
+
+def test_pools_and_history_parse():
+    pools = S.parse_pools({"data": [
+        {"attributes": {"name": "A / SOL", "address": "x1", "volume_usd": {"h24": "100"}, "price_change_percentage": {"h24": "-5"},
+                        "transactions": {"h24": {"buys": 3, "sells": 2, "buyers": 2}}, "reserve_in_usd": "50", "fdv_usd": "9"},
+         "relationships": {"dex": {"data": {"id": "pump-fun"}}}},
+        {"attributes": {"name": "B / SOL", "volume_usd": {"h24": "900"}}}, {"attributes": {"name": "dead", "volume_usd": {}}}]})
+    assert [p["name"] for p in pools] == ["B / SOL", "A / SOL"]
+    assert pools[1] == {"name": "A / SOL", "dex": "pump fun", "address": "x1", "vol": 100.0, "chg": -5.0, "trades": 5, "buyers": 2,
+                        "liquidity": 50.0, "fdv": 9.0}
+    assert S.parse_history({"totalDataChart": [[1, 5], ["x", 1], [2, 7]]}, days=1) == [[2000, 7.0]]
+    ps = S.parse_llama(LLAMA)
+    assert ps[1]["slug"] == "pump.fun" and S.slug_of("Jito MEV") == "jito-mev"
+    m = M.money_map(ps)
+    assert m["on_chain"]["Base"][0]["name"] == "Uniswap" and m["chain_totals"]["Solana"] == 2_000_000
+    assert m["categories"][2]["protocols"][0]["by_chain"] == {"Ethereum": 600_000, "Base": 400_000}
