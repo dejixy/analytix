@@ -1589,3 +1589,12 @@ kbd {
 .term .az-dot.up { background: var(--t-green); }
 .term .az-dot.down { background: var(--t-red); }
 @media (max-width: 1000px) { .term .az-names { display: none; } .term .az-table th:nth-child(6) { display: none; } .term .az-facts { margin-left: 0; } }
+.term .az-select { background: var(--t-panel); color: var(--t-ink); border: 1px solid var(--t-edge); font: inherit; font-size: 11.5px; padding: 3px 6px; }
+.term .az-check { font-size: 11.5px; color: var(--t-ink2); display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+.term .az-check input { accent-color: var(--t-green); margin: 0; }
+.term .az-sort { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; white-space: nowrap; }
+.term .az-sort:hover, .term .az-sort.on { color: var(--t-ink); }
+.term .az-sym { margin-left: 6px; font-family: var(--mono); font-size: 10.5px; }
+.term .az-cat { display: block; font-size: 10.5px; margin-top: 1px; }
+.term .az-setup td:first-child { box-shadow: inset 2px 0 0 var(--t-green); }
+.term .az-note .up { color: var(--t-green); }

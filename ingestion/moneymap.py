@@ -15,6 +15,7 @@ Where money is being made in crypto, from public sources (for the Analyzer page,
 Every parser takes the raw reply and is forgiving about shapes: scripts/analyzerProbe.py prints what each source
 really returns on the server.
 """
+import asyncio
 import os
 
 import httpx
@@ -23,6 +24,9 @@ LLAMA_FEES = "https://api.llama.fi/overview/fees"
 LLAMA_VOLUME = ("https://api.llama.fi/overview/dexs", "https://api.llama.fi/overview/derivatives",
                 "https://api.llama.fi/overview/options")
 LLAMA_SUMMARY = "https://api.llama.fi/summary/{kind}/{slug}"
+LLAMA_PROTOCOLS = "https://api.llama.fi/protocols"
+LLAMA_STABLE_CHART = "https://stablecoins.llama.fi/stablecoincharts/{chain}"
+EXTRA_TYPES = {"revenue": "dailyRevenue", "earnings": "dailyEarnings", "holders": "dailyHoldersRevenue"}
 GECKO_POOLS = "https://api.geckoterminal.com/api/v2/networks/{network}/pools"
 GECKO_NETWORK = {"Solana": "solana", "TON": "ton", "Base": "base", "Ethereum": "eth", "BSC": "bsc", "Avalanche": "avax",
                  "Arbitrum": "arbitrum", "Polygon": "polygon_pos", "Tron": "tron", "Sui": "sui-network", "Aptos": "aptos",
@@ -66,6 +70,7 @@ def parse_llama(payload: dict) -> list[dict]:
             by = {chains[0]: d1}
         name = p.get("displayName") or p.get("name") or "?"
         out.append({"name": name, "category": p.get("category") or "", "slug": p.get("slug") or slug_of(p.get("name") or name),
+                    "parent": p.get("parentProtocol") or "",
                     "chains": chains, "d1": d1 or 0.0, "d7": d7 or 0.0, "d30": d30 or 0.0, "by_chain": by})
     return out
 
@@ -85,11 +90,12 @@ async def fetch_llama() -> dict[str, list[dict]]:
         r = await c.get(LLAMA_FEES, params=_LEAN)
         r.raise_for_status()
         out["fees"] = parse_llama(r.json())
-        try:
-            r = await c.get(LLAMA_FEES, params={**_LEAN, "dataType": "dailyRevenue"})
-            out["revenue"] = parse_llama(r.json()) if r.status_code == 200 else []
-        except (httpx.HTTPError, ValueError):
-            out["revenue"] = []
+        for key, data_type in EXTRA_TYPES.items():      # revenue; earnings (after token incentives); what holders get
+            try:
+                r = await c.get(LLAMA_FEES, params={**_LEAN, "dataType": data_type})
+                out[key] = parse_llama(r.json()) if r.status_code == 200 else []
+            except (httpx.HTTPError, ValueError):
+                out[key] = []
         vol: dict[str, dict] = {}
         for url in LLAMA_VOLUME:
             try:
@@ -99,6 +105,64 @@ async def fetch_llama() -> dict[str, list[dict]]:
             except (httpx.HTTPError, ValueError):
                 continue
         out["volume"] = list(vol.values())
+    return out
+
+
+def parse_protocols(payload) -> dict:
+    """Each protocol's TVL, market cap and token from DefiLlama's protocol list, by name, by slug and by parent
+    (a parent's TVL is its versions' sum; its market cap is the token's, the same on every version)."""
+    out: dict[str, dict] = {}
+    for p in payload if isinstance(payload, list) else []:
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        row = {"tvl": num(p.get("tvl")) or 0.0, "mcap": num(p.get("mcap")), "symbol": p.get("symbol") if p.get("symbol") not in (None, "-") else ""}
+        out[p["name"]] = row
+        if p.get("slug"):
+            out.setdefault("slug:" + p["slug"], row)
+        par = p.get("parentProtocol")
+        if par:
+            agg = out.setdefault("parent:" + par, {"tvl": 0.0, "mcap": None, "symbol": ""})
+            agg["tvl"] += row["tvl"]
+            agg["mcap"] = max(agg["mcap"] or 0.0, row["mcap"] or 0.0) or None
+            agg["symbol"] = agg["symbol"] or row["symbol"]
+    return out
+
+
+async def fetch_protocols() -> dict:
+    async with httpx.AsyncClient(timeout=90, headers=UA) as c:
+        r = await c.get(LLAMA_PROTOCOLS)
+        r.raise_for_status()
+        return parse_protocols(r.json())
+
+
+def parse_stable_chart(payload) -> dict | None:
+    """A chain's dollar stablecoin supply now and its change over 7 and 30 days."""
+    rows = []
+    for x in payload if isinstance(payload, list) else []:
+        v = num(((x or {}).get("totalCirculatingUSD") or {}).get("peggedUSD"))
+        if v is not None:
+            rows.append(v)
+    if len(rows) < 2:
+        return None
+    now = rows[-1]
+    back = lambda n: rows[-1 - n] if len(rows) > n else None
+    chg = lambda old: (now - old) if old is not None else None
+    return {"supply": now, "d7": chg(back(7)), "d30": chg(back(30)),
+            "d7_pct": (now / back(7) - 1) if back(7) else None, "d30_pct": (now / back(30) - 1) if back(30) else None}
+
+
+async def fetch_stables(chains: list[str]) -> dict[str, dict]:
+    out = {}
+    async with httpx.AsyncClient(timeout=40, headers=UA) as c:
+        for chain in chains:
+            try:
+                r = await c.get(LLAMA_STABLE_CHART.format(chain=chain))
+                got = parse_stable_chart(r.json()) if r.status_code == 200 else None
+                if got:
+                    out[chain] = got
+            except (httpx.HTTPError, ValueError):
+                pass
+            await asyncio.sleep(0.4)
     return out
 
 

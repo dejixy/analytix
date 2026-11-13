@@ -66,6 +66,23 @@ async def main() -> None:
             print(f"   pools on {chain}: HTTP {code}, {len(rows)} pools" + (f", busiest {rows[0]['name']} ${rows[0]['vol'] / 1e6:.1f}M" if rows else "; sample: " + sample(j)))
     except Exception as exc:                              # noqa: BLE001
         print(f"   failed: {type(exc).__name__}: {exc}")
+    print("1c. The screener's inputs: earnings after incentives, holders' revenue, TVL and market caps, stablecoins")
+    try:
+        got = await S.fetch_llama()
+        print("   " + ", ".join(f"{k}: {len(v)}" for k, v in got.items()))
+        meta = await S.fetch_protocols()
+        sc = M.screen(got, meta)
+        rows = sc["rows"]
+        print(f"   {len(rows)} protocols screened; with a market cap {sum(1 for r in rows if r['mcap'])}, with TVL "
+              f"{sum(1 for r in rows if r['tvl'])}, with earnings {sum(1 for r in rows if r['earn30'] is not None)}, "
+              f"with volume {sum(1 for r in rows if r['take'] is not None)}; setups {sum(1 for r in rows if r['setup'])}")
+        for r in rows[:8]:
+            print(f"   {'*' if r['setup'] else ' '} {r['name'][:22]:<22} {r['category']:<10} rev/day ${r['rev30'] / 30 / 1e3:>8,.0f}K  "
+                  f"share trend {r['share_mom'] or 0:.2f}x  P/S {r['ps'] or 0:>6.1f}  vs cat {r['ps_vs'] or 0:.2f}")
+        st = await S.fetch_stables(["Solana", "Hyperliquid L1", "Base"])
+        print("   stablecoins: " + (", ".join(f"{c} ${v['supply'] / 1e9:.1f}B ({(v['d7_pct'] or 0) * 100:+.1f}% 7d)" for c, v in st.items()) or "none read"))
+    except Exception as exc:                              # noqa: BLE001
+        print(f"   failed: {type(exc).__name__}: {exc}")
     print("2. Hyperliquid leaderboard")
     try:
         code, j = await raw(S.HL_LEADERBOARD)

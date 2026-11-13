@@ -19,16 +19,20 @@ from ingestion import moneymap as S
 
 log = logging.getLogger("analytix.analyzer")
 
-EVERY_S = {"fees": 900, "hyperliquid": 1800, "solana": 1800, "polymarket": 1800, "dune": 3600}
-SOURCE_NAME = {"fees": "DefiLlama fees", "hyperliquid": "Hyperliquid leaderboard", "solana": "Birdeye (Solana traders)",
+EVERY_S = {"fees": 900, "capital": 3600, "hyperliquid": 1800, "solana": 1800, "polymarket": 1800, "dune": 3600}
+SOURCE_NAME = {"fees": "DefiLlama fees", "capital": "DefiLlama stablecoins", "hyperliquid": "Hyperliquid leaderboard", "solana": "Birdeye (Solana traders)",
                "polymarket": "Polymarket leaderboard", "dune": "Dune queries"}
 HL_WINDOWS = ("day", "week", "month")
 
 
 class AnalyzerService:
-    def __init__(self, runtime, dune_file=None):
+    def __init__(self, runtime, dune_file=None, screen_log=None):
         self.rt = runtime
         self.dune_file = dune_file
+        self.screen_log = screen_log            # one line a day: what the screen said, to score it later
+        self.screen: dict | None = None
+        self.stables: dict[str, dict] = {}
+        self._logged_day = self._last_logged()
         self.map: dict | None = None            # the fees map (kept for older callers)
         self.maps: dict[str, dict] = {}         # fees, revenue, volume
         self._cache: dict[tuple, tuple[float, dict]] = {}
@@ -37,7 +41,8 @@ class AnalyzerService:
         self.status: dict[str, dict] = {k: {"ok": None, "at": None, "error": None} for k in EVERY_S}
         self._tasks: list[asyncio.Task] = []
         self.fetch_pools, self.fetch_history = S.fetch_pools, S.fetch_history
-        self.fetch = {"fees": S.fetch_llama, "hyperliquid": S.fetch_hl_leaderboard, "solana": S.fetch_birdeye,
+        self.fetch_protocols, self.fetch_stables = S.fetch_protocols, S.fetch_stables
+        self.fetch = {"fees": S.fetch_llama, "capital": None, "hyperliquid": S.fetch_hl_leaderboard, "solana": S.fetch_birdeye,
                       "polymarket": S.fetch_polymarket, "dune": S.fetch_dune}     # swappable in tests
 
     async def start(self) -> None:
@@ -72,8 +77,53 @@ class AnalyzerService:
         got = await self.fetch["fees"]()
         if not got.get("fees"):
             raise RuntimeError("no protocols in the reply")
-        self.maps = {k: M.money_map(v) for k, v in got.items() if v}
+        self.maps = {k: M.money_map(got[k]) for k in S.METRICS if got.get(k)}
         self.map = self.maps["fees"]
+        try:
+            meta = await self.fetch_protocols()
+        except Exception as exc:                          # noqa: BLE001 - the screen still runs, without TVL and prices
+            log.warning("analyzer protocols: %s", exc)
+            meta = {}
+        self.screen = {**M.screen(got, meta), "priced": bool(meta), "has_earnings": bool(got.get("earnings"))}
+        self._log_screen()
+
+    def _last_logged(self) -> str:
+        try:
+            lines = self.screen_log.read_text().strip().splitlines() if self.screen_log and self.screen_log.exists() else []
+            return json.loads(lines[-1])["day"] if lines else ""
+        except (OSError, ValueError, KeyError):
+            return ""
+
+    def _log_screen(self) -> None:
+        """Once a UTC day, keep what the screen said (every row's market cap and whether it was a setup), so the
+        setups can be scored against the rest later."""
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        if not self.screen_log or day == self._logged_day or not self.screen or not self.screen["rows"]:
+            return
+        rows = [{"name": r["name"], "category": r["category"], "setup": r["setup"], "mcap": r["mcap"], "rev30": r["rev30"],
+                 "share_mom": r["share_mom"], "ps_vs": r["ps_vs"]} for r in self.screen["rows"]]
+        try:
+            self.screen_log.parent.mkdir(parents=True, exist_ok=True)
+            with self.screen_log.open("a") as fh:
+                fh.write(json.dumps({"day": day, "t_ms": int(time.time() * 1000), "rows": rows}) + "\n")
+            self._logged_day = day
+        except OSError as exc:
+            log.warning("analyzer screen log: %s", exc)
+
+    def screen_days(self) -> int:
+        try:
+            return sum(1 for _ in self.screen_log.open()) if self.screen_log and self.screen_log.exists() else 0
+        except OSError:
+            return 0
+
+    async def _capital(self) -> None:
+        if not self.map:
+            raise RuntimeError("waiting for the fee data")
+        names = {c["name"]: {"Hyperliquid": "Hyperliquid L1"}.get(c["name"], c["name"]) for c in self.map["chains"]}
+        got = await self.fetch_stables(list(names.values()))
+        if not got:
+            raise RuntimeError("no chain's stablecoin supply could be read")
+        self.stables = {short: got[full] for short, full in names.items() if full in got}
 
     async def _cached(self, key: tuple, ttl: float, make) -> dict:
         hit = self._cache.get(key)
@@ -143,6 +193,7 @@ class AnalyzerService:
 
     def public(self) -> dict:
         return {"now_ms": int(time.time() * 1000), "enabled": self.rt.mode == "live", "map": self.map, "maps": self.maps,
-                "hyperliquid": self.hl,
+                "hyperliquid": self.hl, "screen": self.screen, "screen_days": self.screen_days(),
+                "capital": M.capital(self.maps, self.stables) if self.maps else [],
                 "boards": list(self.boards.values()), "labels": M.LABEL,
                 "status": {SOURCE_NAME[k]: v for k, v in self.status.items()}}

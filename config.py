@@ -147,6 +147,7 @@ FRONTEND_DIST = ROOT / "frontend" / "dist"
 ALERTS_FILE = Path(os.getenv("ANALYTIX_ALERTS_FILE", str(ROOT / "data" / "alerts.json")))   # alert settings + Telegram
 WATCH_FILE = Path(os.getenv("ANALYTIX_WATCH_FILE", str(ROOT / "data" / "watch.json")))      # position watch wallets
 WATCHERS_FILE = Path(os.getenv("ANALYTIX_WATCHERS_FILE", str(ROOT / "data" / "watchers.json")))   # watcher tickets
+ANALYZER_SCREEN_LOG = Path(os.getenv("ANALYTIX_SCREEN_LOG", str(ROOT / "data" / "analyzer_screen.jsonl")))  # daily screens
 ANALYZER_DUNE_FILE = Path(os.getenv("ANALYTIX_DUNE_FILE", str(ROOT / "data" / "analyzer_dune.json")))  # Dune queries
 BOT_FILE = Path(os.getenv("ANALYTIX_BOT_FILE", str(ROOT / "data" / "bot.json")))            # the trading bot's rules
 # Baskets shown in the bot panel, in order. The others keep running and recording in the background, silently: no

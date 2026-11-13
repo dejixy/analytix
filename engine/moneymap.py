@@ -119,3 +119,94 @@ def board(rows: list[dict], n: int = 25) -> dict:
     """A plain winners list (wallet, profit): the top n and their total."""
     best = sorted(rows, key=lambda r: -r["pnl"])[:n]
     return {"rows": best, "total": sum(r["pnl"] for r in best if r["pnl"] > 0), "n": len(rows)}
+
+
+# ── the screener ─────────────────────────────────────────────────────────────
+YEAR = 365 / 30                    # 30 days of anything, as a yearly run rate
+SCREEN_MIN_REV = 10_000            # dollars of revenue a day (30-day average) to be screened at all
+SHARE_GAIN = 1.10                  # "gaining share": this week's share of its category at least 10% above the month's
+
+
+def _median(xs: list[float]) -> float | None:
+    xs = sorted(xs)
+    if not xs:
+        return None
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+
+def screen(data: dict[str, list[dict]], meta: dict | None = None) -> dict:
+    """Every protocol with real revenue, measured the ways that separate durable money from noise:
+
+        share      its share of its category's fees this week against its share over the month (above 1 = gaining)
+        take       revenue / volume: how much of each traded dollar it keeps (venues with volume only)
+        earnings   revenue after token incentives, 30 days (DefiLlama's earnings; None where it isn't published)
+        holders    the share of revenue that reaches token holders (buybacks, burns, staking payouts)
+        turnover   volume / TVL a day; yield_tvl = yearly revenue / TVL
+        ps, pf     market cap / yearly revenue and / yearly fees, and ps_vs = ps against its category's median
+        setup      the classic shape, fixed in advance: gaining share, earnings not negative, and a price-to-sales
+                   at or below its category's median
+
+    {"rows": [...], "medians": {category: ps}, "categories": {category: share-of-all-fees now and over the month}}."""
+    meta = meta or {}
+    by = {k: {p["name"]: p for p in v} for k, v in data.items()}
+    fees = data.get("fees") or []
+    cat7: dict[str, float] = {}
+    cat30: dict[str, float] = {}
+    for p in fees:
+        k = category_of(p["category"])
+        cat7[k] = cat7.get(k, 0.0) + p["d7"]
+        cat30[k] = cat30.get(k, 0.0) + p["d30"]
+    rows = []
+    for p in fees:
+        k = category_of(p["category"])
+        if k in INFRA:
+            continue
+        rev = by.get("revenue", {}).get(p["name"])
+        if not rev or rev["d30"] / 30 < SCREEN_MIN_REV:
+            continue
+        vol = by.get("volume", {}).get(p["name"])
+        earn = by.get("earnings", {}).get(p["name"])
+        hold = by.get("holders", {}).get(p["name"])
+        m = meta.get(p["name"]) or meta.get("slug:" + p.get("slug", "")) or meta.get("parent:" + p.get("parent", "")) or {}
+        s7 = p["d7"] / cat7[k] if cat7.get(k) else None
+        s30 = p["d30"] / cat30[k] if cat30.get(k) else None
+        tvl, mcap = m.get("tvl") or None, m.get("mcap") or None
+        rows.append({
+            "name": p["name"], "slug": p.get("slug", ""), "category": k, "symbol": m.get("symbol", ""),
+            "fees30": p["d30"], "rev30": rev["d30"], "rev1": rev["d1"], "ratio": heat(p["d1"], p["d7"], p["d30"])["ratio"],
+            "share": s7, "share_mom": (s7 / s30) if s7 and s30 else None,
+            "take": rev["d30"] / vol["d30"] if vol and vol["d30"] else None,
+            "earn30": earn["d30"] if earn else None,
+            "holders": min(1.0, hold["d30"] / rev["d30"]) if hold and rev["d30"] else None,
+            "tvl": tvl, "turnover": (vol["d30"] / 30) / tvl if vol and tvl else None,
+            "yield_tvl": rev["d30"] * YEAR / tvl if tvl else None,
+            "mcap": mcap, "ps": mcap / (rev["d30"] * YEAR) if mcap else None, "pf": mcap / (p["d30"] * YEAR) if mcap and p["d30"] else None})
+    medians = {k: _median([r["ps"] for r in rows if r["category"] == k and r["ps"]]) for k in {r["category"] for r in rows}}
+    for r in rows:
+        med = medians.get(r["category"])
+        r["ps_vs"] = r["ps"] / med if r["ps"] and med else None
+        r["setup"] = bool(r["share_mom"] and r["share_mom"] >= SHARE_GAIN and r["ps_vs"] is not None and r["ps_vs"] <= 1.0
+                          and (r["earn30"] is None or r["earn30"] >= 0))
+    rows.sort(key=lambda r: (not r["setup"], -(r["share_mom"] or 0)))
+    tot7, tot30 = sum(v for k, v in cat7.items() if k not in INFRA), sum(v for k, v in cat30.items() if k not in INFRA)
+    cats = {k: {"share": cat7[k] / tot7 if tot7 else None, "share_mom": (cat7[k] / tot7) / (cat30[k] / tot30) if tot7 and tot30 and cat30.get(k) else None}
+            for k in cat7 if k not in INFRA}
+    return {"rows": rows, "medians": medians, "categories": cats}
+
+
+def capital(maps: dict[str, dict], stables: dict[str, dict]) -> list[dict]:
+    """Per chain: stablecoin supply and its 7- and 30-day change (capital arriving or leaving), what its apps earn
+    against what the chain itself earns in gas (who is capturing the value), and fees over 24 h."""
+    rev = (maps.get("revenue") or maps.get("fees") or {})
+    grid = rev.get("grid") or {}
+    out = []
+    for chain in [c["name"] for c in rev.get("chains") or []]:
+        gas = (grid.get("chains") or {}).get(chain, 0.0)
+        apps = sum(row.get(chain, 0.0) for k, row in grid.items() if k not in INFRA)
+        st = stables.get(chain) or stables.get({"Hyperliquid": "Hyperliquid L1"}.get(chain, chain)) or {}
+        if not st and apps + gas < 10_000:
+            continue
+        out.append({"chain": chain, "apps": apps, "gas": gas, "capture": apps / gas if gas else None,
+                    "fees": ((maps.get("fees") or {}).get("chain_totals") or {}).get(chain), **{f"st_{k}": v for k, v in st.items()}})
+    return sorted(out, key=lambda r: -(r.get("st_supply") or 0))

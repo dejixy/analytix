@@ -76,7 +76,14 @@ def test_other_boards_parse_forgivingly():
 
 
 def test_the_service_keeps_each_source_apart(tmp_path):
-    svc = AnalyzerService(SimpleNamespace(mode="live"), tmp_path / "dune.json")
+    svc = AnalyzerService(SimpleNamespace(mode="live"), tmp_path / "dune.json", tmp_path / "screen.jsonl")
+
+    async def protos():
+        return {"Hyperliquid Perps": {"tvl": 5e9, "mcap": 3e9, "symbol": "HYPE"}}
+
+    async def stables(chains):
+        return {"Solana": {"supply": 1.2e10, "d7": 3e8, "d30": 9e8, "d7_pct": 0.026, "d30_pct": 0.08}}
+    svc.fetch_protocols, svc.fetch_stables = protos, stables
 
     async def fees():
         ps = S.parse_llama(LLAMA)
@@ -94,7 +101,7 @@ def test_the_service_keeps_each_source_apart(tmp_path):
     async def dune(qid):
         return [{"wallet": "0xn", "pnl": 3.0, "name": ""}]
 
-    svc.fetch = {"fees": fees, "hyperliquid": hl, "solana": sol, "polymarket": poly, "dune": dune}
+    svc.fetch = {"fees": fees, "capital": None, "hyperliquid": hl, "solana": sol, "polymarket": poly, "dune": dune}
 
     async def run():
         for k in svc.fetch:
@@ -103,6 +110,9 @@ def test_the_service_keeps_each_source_apart(tmp_path):
     p = svc.public()
     assert p["map"]["categories"][0]["key"] == "perps" and p["hyperliquid"]["windows"]["day"]["crowd"]["traders"] == 2
     assert [b["title"] for b in p["boards"]] == ["Polymarket, 7 days"]
+    assert p["screen"]["priced"] and p["screen_days"] == 1 and (tmp_path / "screen.jsonl").read_text().count("\n") == 1
+    sol = next(c for c in p["capital"] if c["chain"] == "Solana")
+    assert sol["st_supply"] == 1.2e10 and sol["st_d7"] == 3e8 and p["status"]["DefiLlama stablecoins"]["ok"]
     assert set(p["maps"]) == {"fees", "revenue"} and len(p["maps"]["revenue"]["categories"]) == 2    # an empty measure is left out
 
     async def pools(chain):
@@ -137,3 +147,31 @@ def test_pools_and_history_parse():
     m = M.money_map(ps)
     assert m["on_chain"]["Base"][0]["name"] == "Uniswap" and m["chain_totals"]["Solana"] == 2_000_000
     assert m["categories"][2]["protocols"][0]["by_chain"] == {"Ethereum": 600_000, "Base": 400_000}
+
+
+def test_the_screen_finds_the_classic_setup_and_only_that():
+    def row(name, cat, d7, d30, d1=None):
+        return {"name": name, "category": cat, "slug": S.slug_of(name), "parent": "", "chains": [], "d1": d1 if d1 is not None else d7 / 7,
+                "d7": d7, "d30": d30, "by_chain": {}}
+    # two perps venues: A is gaining share of the category and cheap; B is losing share and dear
+    fees = [row("A", "Derivatives", 7e6, 20e6), row("B", "Derivatives", 7e6, 40e6), row("Gas", "Chain", 1e6, 4e6)]
+    rev = [row("A", "Derivatives", 3.5e6, 10e6), row("B", "Derivatives", 3.5e6, 20e6), row("Tiny", "Derivatives", 10, 100)]
+    vol = [row("A", "Derivatives", 7e9, 20e9), row("B", "Derivatives", 7e9, 40e9)]
+    earn = [row("A", "Derivatives", 2e6, 6e6), row("B", "Derivatives", -1e6, -5e6)]
+    hold = [row("A", "Derivatives", 1e6, 5e6)]
+    meta = {"A": {"tvl": 1e9, "mcap": 6e8, "symbol": "AAA"}, "slug:b": {"tvl": 2e9, "mcap": 5e9, "symbol": "BBB"}}
+    sc = M.screen({"fees": fees, "revenue": rev, "volume": vol, "earnings": earn, "holders": hold}, meta)
+    a, b = sc["rows"]
+    assert (a["name"], a["setup"], b["name"], b["setup"]) == ("A", True, "B", False)                # and gas isn't screened
+    assert abs(a["share"] - 0.5) < 1e-9 and abs(a["share_mom"] - 0.5 / (20 / 60)) < 1e-9 and b["share_mom"] < 1
+    assert abs(a["take"] - 10e6 / 20e9) < 1e-12 and a["holders"] == 0.5 and a["earn30"] == 6e6 and b["earn30"] == -5e6
+    assert abs(a["ps"] - 6e8 / (10e6 * 365 / 30)) < 1e-9 and abs(a["yield_tvl"] - 10e6 * 365 / 30 / 1e9) < 1e-12
+    assert a["ps_vs"] < 1 < b["ps_vs"] and abs(a["turnover"] - (20e9 / 30) / 1e9) < 1e-9
+    assert sc["categories"]["perps"]["share"] == 1.0 and "chains" not in sc["categories"]
+    no_price = M.screen({"fees": fees, "revenue": rev}, {})
+    assert not any(r["setup"] for r in no_price["rows"]) and no_price["rows"][0]["ps"] is None      # no price, no setup
+    assert S.parse_stable_chart([{"totalCirculatingUSD": {"peggedUSD": 100 + k}} for k in range(31)]) == \
+        {"supply": 130.0, "d7": 7.0, "d30": 30.0, "d7_pct": 130 / 123 - 1, "d30_pct": 130 / 100 - 1}
+    pm = S.parse_protocols([{"name": "Uni V3", "slug": "uni-v3", "tvl": 5, "mcap": 9, "symbol": "UNI", "parentProtocol": "parent#uni"},
+                            {"name": "Uni V2", "tvl": 2, "mcap": 9, "symbol": "UNI", "parentProtocol": "parent#uni"}])
+    assert pm["parent:parent#uni"] == {"tvl": 7.0, "mcap": 9.0, "symbol": "UNI"} and pm["slug:uni-v3"]["tvl"] == 5.0
