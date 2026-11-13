@@ -52,11 +52,13 @@ def heat(d1: float, d7: float, d30: float) -> dict:
     return {"ratio": round(ratio, 2) if ratio is not None else None, "flag": flag, "avg30": avg30, "avg7": avg7}
 
 
-def money_map(protocols: list[dict], top: int = 6) -> dict:
-    """{"categories": [...by 24 h fees], "chains": [...], "grid": {category: {chain: 24 h fees}}, "total": {...}}."""
+def money_map(protocols: list[dict], top: int = 12, per_chain: int = 15) -> dict:
+    """One measure (fees, revenue or volume) as a map: {"categories": [...by 24 h], "chains": [...], "grid":
+    {category: {chain: 24 h}}, "on_chain": {chain: its biggest protocols}, "total": {...}}."""
     cats: dict[str, dict] = {}
     chain_tot: dict[str, float] = {}
     grid: dict[str, dict[str, float]] = {}
+    on_chain: dict[str, list] = {}
     for p in protocols:
         k = category_of(p["category"])
         c = cats.setdefault(k, {"key": k, "name": LABEL[k], "d1": 0.0, "d7": 0.0, "d30": 0.0, "n": 0, "protocols": []})
@@ -69,10 +71,14 @@ def money_map(protocols: list[dict], top: int = 6) -> dict:
             chain = CHAIN_SHORT.get(chain, chain)
             chain_tot[chain] = chain_tot.get(chain, 0.0) + v
             grid.setdefault(k, {})[chain] = grid.get(k, {}).get(chain, 0.0) + v
+            on_chain.setdefault(chain, []).append({"name": p["name"], "slug": p.get("slug", ""), "category": k,
+                                                   "d1": v, "ratio": heat(p["d1"], p["d7"], p["d30"])["ratio"]})
     out = []
     for c in cats.values():
         best = sorted(c["protocols"], key=lambda p: -p["d1"])[:top]
-        c["protocols"] = [{"name": p["name"], "d1": p["d1"], "d7": p["d7"], "chains": p["chains"][:4],
+        c["protocols"] = [{"name": p["name"], "slug": p.get("slug", ""), "d1": p["d1"], "d7": p["d7"], "d30": p["d30"],
+                           "chains": p["chains"][:4],
+                           "by_chain": {CHAIN_SHORT.get(a, a): b for a, b in sorted(p["by_chain"].items(), key=lambda kv: -kv[1])[:8]},
                            **{k: v for k, v in heat(p["d1"], p["d7"], p["d30"]).items() if k in ("ratio", "flag")}}
                           for p in best]
         c.update(heat(c["d1"], c["d7"], c["d30"]))
@@ -83,6 +89,9 @@ def money_map(protocols: list[dict], top: int = 6) -> dict:
     rest = sorted((c for c in chain_tot if c not in want), key=lambda c: -chain_tot[c])[:3]
     chains = [c for c in want if chain_tot.get(c)] + rest
     return {"categories": out, "chains": [{"name": c, "d1": chain_tot[c]} for c in chains],
+            "chain_totals": {c: v for c, v in sorted(chain_tot.items(), key=lambda kv: -kv[1])[:40]},
+            "on_chain": {c: sorted(rows, key=lambda r: -r["d1"])[:per_chain] for c, rows in on_chain.items()
+                         if chain_tot[c] >= 1},
             "grid": {k: {c: v for c, v in row.items() if c in chains} for k, row in grid.items()},
             "total": {k: sum(c[k] for c in out if not c["infra"]) for k in ("d1", "d7", "d30")}}
 

@@ -221,6 +221,18 @@ async def analyzer(request: Request):
     return _rt(request).analyzer.public()
 
 
+@router.get("/analyzer/chain")
+async def analyzer_chain(request: Request, name: str, metric: str = "fees"):
+    """What's driving one chain: its biggest protocols and its busiest pools by 24 h volume."""
+    return await _rt(request).analyzer.chain(name[:40], metric if metric in ("fees", "revenue", "volume") else "fees")
+
+
+@router.get("/analyzer/protocol")
+async def analyzer_protocol(request: Request, slug: str, metric: str = "fees"):
+    """One protocol's last 90 days of fees, revenue or volume."""
+    return await _rt(request).analyzer.protocol(slug[:80], metric if metric in ("fees", "revenue", "volume") else "fees")
+
+
 @router.get("/edges")
 async def edges(request: Request, have: int | None = None):
     """The edge terminal: trade.xyz commodities and currencies, the weekend record, the oil roll, what's coming up.

@@ -1,25 +1,29 @@
 import { useEffect, useState } from "react";
-import { Head, Pill } from "./components/TermPanel.jsx";
-import { Seg } from "./components/River.jsx";
 import { fmtTime, fmtUsd } from "./format.js";
 
 /* The Analyzer (/analyzer, /api/analyzer): where crypto's money is being made right now. The money map ranks every
-   category by the fees people are paying in it against its own normal, and splits it by chain; the profit boards show
-   who is actually making money where wallets' profit is public. Fees show where the action is and what the venues
-   earn; they are not traders' profit, which is why the two are kept apart. */
+   category by fees, revenue or trading volume against its own normal and splits it by chain. Everything drills
+   down: a category opens its protocols, a protocol its 90-day history and chains, a chain what is driving it (its
+   biggest protocols and its busiest pools). The profit boards show who is actually making money where wallets'
+   profit is public. Colours: green and red for data, white for everything else. */
 
 const EVERY_MS = 60_000;
+const METRIC = {
+  fees: ["Fees", "what people pay to take part: trading fees, launch fees, interest, gas"],
+  revenue: ["Revenue", "the part of the fees the protocol keeps"],
+  volume: ["Volume", "dollars traded on spot, perps and options venues"],
+};
 const x1 = (r) => (r == null ? "-" : `${r.toFixed(2)}×`);
 const pct = (v, d = 0) => (v == null ? "-" : `${(v * 100).toFixed(d)}%`);
 const tone = (v) => (v == null || Math.abs(v) < 1e-9 ? "" : v > 0 ? "up" : "down");
+const heatTone = (r) => (r == null ? "" : r >= 1.25 ? "up" : r <= 0.75 ? "down" : "");
 const short = (a) => (a && a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "-");
 const ago = (ms) => {
   if (ms == null) return "-";
   const m = Math.max(0, Math.round(ms / 60000));
   return m < 1 ? "now" : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ${m % 60}m ago`;
 };
-const FLAG = { hot: ["good", "Heating up"], cooling: ["bad", "Cooling"] };
-const flagPill = (f) => (FLAG[f] ? <Pill kind={FLAG[f][0]}>{FLAG[f][1]}</Pill> : null);
+const Flag = ({ f }) => (f === "hot" ? <span className="az-flag up">▲ heating up</span> : f === "cooling" ? <span className="az-flag down">▼ cooling</span> : null);
 const EXPLORER = {
   Hyperliquid: (a) => `https://hypurrscan.io/address/${a}`,
   Solana: (a) => `https://solscan.io/account/${a}`,
@@ -32,57 +36,108 @@ const Wallet = ({ a, name, chain }) => {
   const text = name && !name.startsWith("0x") ? name : short(a);
   return url ? <a href={url} target="_blank" rel="noreferrer" title={a}>{text}</a> : <span title={a}>{text}</span>;
 };
+const Seg = ({ value, set, opts }) => (
+  <span className="az-seg" role="group">
+    {opts.map(([k, t, tip]) => <button key={k} className={value === k ? "on" : ""} aria-pressed={value === k} onClick={() => set(k)} title={tip}>{t}</button>)}
+  </span>
+);
+/* A panel's top line: a title, plain facts on the right, and whatever control it needs. */
+const Top = ({ title, facts = [], children, back }) => (
+  <div className="az-top">
+    {back}
+    <h2>{title}</h2>
+    {children}
+    <span className="az-facts">{facts.filter(Boolean).map((f, i) => <span key={i}>{f}</span>)}</span>
+  </div>
+);
+const Go = ({ onClick, children, title }) => <button className="az-go" onClick={onClick} title={title}>{children}</button>;
 
-function MoneyMap({ map, pick, setPick }) {
-  const max = Math.max(...map.categories.filter((c) => !c.infra).map((c) => c.d1), 1);
-  const firstInfra = map.categories.findIndex((c) => c.infra);
+function useFetch(url) {
+  const [state, setState] = useState({ url: null, data: null });
+  useEffect(() => {
+    if (!url) return undefined;
+    let live = true;
+    fetch(url).then((r) => r.json()).then((j) => live && setState({ url, data: j })).catch(() => live && setState({ url, data: { error: "Can't reach the server" } }));
+    return () => {
+      live = false;
+    };
+  }, [url]);
+  return state.url === url ? state.data : null;
+}
+
+function MoneyMap({ map, metric, setMetric, have, sel, open }) {
+  const cats = map.categories;
+  const max = Math.max(...cats.filter((c) => !c.infra).map((c) => c.d1), 1);
+  const firstInfra = cats.findIndex((c) => c.infra);
+  const word = METRIC[metric][0].toLowerCase();
   return (
-    <section id="p-MAP" className="panel">
-      <Head code="MAP" title="Where the money is"
-        meta={[["Fees, 24 h", fmtUsd(map.total.d1)], ["7 days", fmtUsd(map.total.d7)]]}
-        pills={[<Pill key="h" kind="good">{map.categories.filter((c) => !c.infra && c.flag === "hot").length} heating up</Pill>,
-          <Pill key="c" kind="bad">{map.categories.filter((c) => !c.infra && c.flag === "cooling").length} cooling</Pill>]} />
-      <div className="az-scroll"><table className="az-table az-map">
-        <thead><tr><th>Category</th><th className="r">Fees, 24 h</th><th /><th className="r" title="The last 24 hours against this category's own daily average over 30 days">vs normal</th><th className="r">7 days</th><th>Biggest right now</th></tr></thead>
+    <section className="panel">
+      <Top title="Where the money is"
+        facts={[`24 h ${fmtUsd(map.total.d1)}`, `7 days ${fmtUsd(map.total.d7)}`,
+          <span key="h" className="up">{cats.filter((c) => !c.infra && c.flag === "hot").length} heating up</span>,
+          <span key="c" className="down">{cats.filter((c) => !c.infra && c.flag === "cooling").length} cooling</span>]}>
+        <Seg value={metric} set={setMetric} opts={Object.entries(METRIC).filter(([k]) => have.includes(k)).map(([k, [t, tip]]) => [k, t, tip])} />
+      </Top>
+      <div className="az-scroll"><table className="az-table az-click">
+        <thead><tr><th>Category</th><th className="r">{METRIC[metric][0]}, 24 h</th><th /><th className="r" title="The last 24 hours against this category's own daily average over 30 days">vs normal</th><th className="r">7 days</th><th>Biggest right now</th></tr></thead>
         <tbody>
-          {map.categories.map((c, i) => (
-            <tr key={c.key} className={`${pick === c.key ? "on" : ""} ${c.infra ? "az-infra" : ""} ${i === firstInfra ? "az-first-infra" : ""}`}
-              onClick={() => setPick(c.key)} tabIndex={0} onKeyDown={(e) => e.key === "Enter" && setPick(c.key)}
+          {cats.map((c, i) => (
+            <tr key={c.key} className={`${sel.cat === c.key ? "on" : ""} ${c.infra ? "az-infra" : ""} ${i === firstInfra ? "az-first-infra" : ""}`}
+              onClick={() => open({ cat: c.key })} tabIndex={0} onKeyDown={(e) => e.key === "Enter" && open({ cat: c.key })}
               title={c.infra ? "Infrastructure: what the rails earn, not a way to make money trading" : undefined}>
-              <td><b>{c.name}</b> {c.infra ? null : flagPill(c.flag)}</td>
+              <td><b>{c.name}</b>{!c.infra && <Flag f={c.flag} />}</td>
               <td className="r num">{fmtUsd(c.d1)}</td>
               <td className="az-bar">{!c.infra && <i style={{ width: `${(c.d1 / max) * 100}%` }} />}</td>
-              <td className={`r num ${c.ratio == null ? "" : c.ratio >= 1.25 ? "up" : c.ratio <= 0.75 ? "down" : ""}`}>{x1(c.ratio)}</td>
+              <td className={`r num ${heatTone(c.ratio)}`}>{x1(c.ratio)}</td>
               <td className="r num muted">{fmtUsd(c.d7)}</td>
               <td className="muted az-names">{c.protocols.slice(0, 3).map((p) => p.name).join(" · ")}</td>
             </tr>
           ))}
         </tbody>
       </table></div>
-      <p className="term-pad plan-note muted">
-        Fees are what people pay to take part (trading fees, launch fees, interest, gas), so they show where the action is and
-        what the venues earn. They are not traders' profit: that is on the profit boards. "Heating up" is 24 hours at
-        1.25× the category's 30-day daily average or more, with the week above it too; "cooling" is 0.75× or less. Stablecoins,
-        gas and bridges sit at the bottom as infrastructure and are left out of the totals.
+      <p className="az-note">
+        {METRIC[metric][0]}: {METRIC[metric][1]}. It shows where the action is{metric === "volume" ? "" : " and what the venues earn"}; it is not
+        traders' profit, which is on the profit boards. "Heating up" is 24 hours of {word} at 1.25× the 30-day daily average or
+        more, with the week above it too; "cooling" is 0.75× or less. Click any row to open it.
       </p>
     </section>
   );
 }
 
-function Detail({ map, pick }) {
-  const c = map.categories.find((x) => x.key === pick) || map.categories[0];
+function Spark({ rows }) {
+  if (!rows?.length) return null;
+  const W = 520, H = 120, pad = 4;
+  const vals = rows.map((r) => r[1]);
+  const max = Math.max(...vals, 1);
+  const bw = (W - pad * 2) / rows.length;
+  const avg = vals.slice(-30).reduce((a, b) => a + b, 0) / Math.min(30, vals.length);
+  const y = (v) => H - pad - (v / max) * (H - pad * 2);
+  const day = (ms) => new Date(ms).toLocaleDateString([], { day: "numeric", month: "short" });
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="az-spark" role="img" aria-label="Daily history">
+      {rows.map((r, i) => (
+        <rect key={r[0]} x={pad + i * bw + 0.5} y={y(r[1])} width={Math.max(bw - 1, 1)} height={H - pad - y(r[1])}
+          className={i >= rows.length - 1 ? "last" : ""}><title>{`${day(r[0])}: ${fmtUsd(r[1])}`}</title></rect>
+      ))}
+      <line x1={pad} x2={W - pad} y1={y(avg)} y2={y(avg)} />
+    </svg>
+  );
+}
+
+function Category({ map, sel, open, metric }) {
+  const c = map.categories.find((x) => x.key === sel.cat) || map.categories.find((x) => !x.infra) || map.categories[0];
   const chains = Object.entries(map.grid[c.key] || {}).sort((a, b) => b[1] - a[1]);
   return (
-    <section id="p-CAT" className="panel">
-      <Head code="CAT" title={c.name} meta={[["Protocols", c.n], ["vs normal", x1(c.ratio)]]} pills={[flagPill(c.flag)]} />
-      <div className="az-scroll"><table className="az-table">
-        <thead><tr><th>Protocol</th><th className="r">Fees, 24 h</th><th className="r">vs normal</th><th className="r">7 days</th><th>Chains</th></tr></thead>
+    <section className="panel">
+      <Top title={c.name} facts={[`${c.n} protocols`, `${x1(c.ratio)} normal`, <Flag key="f" f={c.flag} />]} />
+      <div className="az-scroll az-tall"><table className="az-table az-click">
+        <thead><tr><th>Protocol</th><th className="r">{METRIC[metric][0]}, 24 h</th><th className="r">vs normal</th><th className="r">7 days</th><th>Chains</th></tr></thead>
         <tbody>
           {c.protocols.map((p) => (
-            <tr key={p.name}>
-              <td><b>{p.name}</b> {flagPill(p.flag)}</td>
+            <tr key={p.name} onClick={() => open({ cat: c.key, protocol: p.name })} tabIndex={0} onKeyDown={(e) => e.key === "Enter" && open({ cat: c.key, protocol: p.name })}>
+              <td><b>{p.name}</b><Flag f={p.flag} /></td>
               <td className="r num">{fmtUsd(p.d1)}</td>
-              <td className={`r num ${p.ratio == null ? "" : p.ratio >= 1.25 ? "up" : p.ratio <= 0.75 ? "down" : ""}`}>{x1(p.ratio)}</td>
+              <td className={`r num ${heatTone(p.ratio)}`}>{x1(p.ratio)}</td>
               <td className="r num muted">{fmtUsd(p.d7)}</td>
               <td className="muted">{p.chains.join(" · ")}</td>
             </tr>
@@ -90,29 +145,120 @@ function Detail({ map, pick }) {
         </tbody>
       </table></div>
       {chains.length > 0 && (
-        <p className="term-pad plan-note muted">By chain, 24 h: {chains.map(([n, v]) => `${n} ${fmtUsd(v)}`).join(" · ")}</p>
+        <p className="az-note">By chain: {chains.map(([n, v]) => <Go key={n} onClick={() => open({ cat: c.key, chain: n })} title={`What's driving ${n}`}>{n} {fmtUsd(v)}</Go>)}</p>
       )}
     </section>
   );
 }
 
-function Grid({ map, pick, setPick }) {
-  const cats = map.categories.filter((c) => Object.keys(map.grid[c.key] || {}).length);
-  const max = Math.max(...cats.flatMap((c) => Object.values(map.grid[c.key])), 1);
+function Protocol({ map, sel, open, metric }) {
+  const c = map.categories.find((x) => x.key === sel.cat);
+  const p = c?.protocols.find((x) => x.name === sel.protocol);
+  const hist = useFetch(p?.slug ? `/api/analyzer/protocol?slug=${encodeURIComponent(p.slug)}&metric=${metric}` : null);
+  if (!p) return <Category map={map} sel={{ cat: sel.cat }} open={open} metric={metric} />;
+  const chains = Object.entries(p.by_chain || {});
   return (
-    <section id="p-GRID" className="panel term-wide">
-      <Head code="GRID" title="Category by chain" meta={[["Shows", "fees, 24 h"], ["Chains", map.chains.length]]} />
+    <section className="panel">
+      <Top title={p.name} back={<Go onClick={() => open({ cat: c.key })}>‹ {c.name}</Go>}
+        facts={[`${x1(p.ratio)} normal`, <Flag key="f" f={p.flag} />]} />
+      <div className="az-kpis">
+        <div><span className="muted">{METRIC[metric][0]}, 24 h</span><b className="num">{fmtUsd(p.d1)}</b></div>
+        <div><span className="muted">7 days</span><b className="num">{fmtUsd(p.d7)}</b></div>
+        <div><span className="muted">30 days</span><b className="num">{fmtUsd(p.d30)}</b></div>
+        <div><span className="muted">Daily average, 30 days</span><b className="num">{fmtUsd(p.d30 / 30)}</b></div>
+      </div>
+      <div className="az-pad">
+        <div className="muted az-cap">{METRIC[metric][0]} a day, last 90 days (the line is the 30-day average)</div>
+        {!hist && <div className="muted">Loading the history…</div>}
+        {hist && hist.rows?.length > 0 && <Spark rows={hist.rows} />}
+        {hist && !hist.rows?.length && <div className="muted">No daily history for this one{hist.error ? ` (${hist.error})` : ""}.</div>}
+      </div>
+      {chains.length > 0 && (
+        <table className="az-table az-click">
+          <thead><tr><th>On chain</th><th className="r">{METRIC[metric][0]}, 24 h</th><th className="r">Share</th><th /></tr></thead>
+          <tbody>
+            {chains.map(([n, v]) => (
+              <tr key={n} onClick={() => open({ cat: c.key, protocol: p.name, chain: n })} tabIndex={0}>
+                <td><b>{n}</b></td><td className="r num">{fmtUsd(v)}</td><td className="r num muted">{pct(v / (p.d1 || 1))}</td>
+                <td className="muted">what's driving {n} ›</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+function Chain({ map, sel, open, metric }) {
+  const d = useFetch(`/api/analyzer/chain?name=${encodeURIComponent(sel.chain)}&metric=${metric}`);
+  const backTo = sel.protocol ? { cat: sel.cat, protocol: sel.protocol } : { cat: sel.cat };
+  const catOf = (k) => map.categories.find((c) => c.key === k);
+  const pools = d?.pools;
+  return (
+    <section className="panel">
+      <Top title={`What's driving ${sel.chain}`} back={<Go onClick={() => open(backTo)}>‹ {sel.protocol || catOf(sel.cat)?.name || "Back"}</Go>}
+        facts={[d?.total != null ? `${METRIC[metric][0].toLowerCase()}, 24 h ${fmtUsd(d.total)}` : null]} />
+      {!d && <p className="az-note">Reading {sel.chain}…</p>}
+      {d && (
+        <>
+          <div className="muted az-cap az-pad">Biggest protocols on {sel.chain}, by {METRIC[metric][0].toLowerCase()}</div>
+          {d.protocols.length ? (
+            <div className="az-scroll az-mid"><table className="az-table az-click">
+              <thead><tr><th>Protocol</th><th>Category</th><th className="r">{METRIC[metric][0]}, 24 h</th><th className="r">vs normal</th></tr></thead>
+              <tbody>
+                {d.protocols.map((p) => (
+                  <tr key={p.name} onClick={() => open({ cat: p.category, protocol: p.name })} tabIndex={0}>
+                    <td><b>{p.name}</b></td><td className="muted">{catOf(p.category)?.name || p.category}</td>
+                    <td className="r num">{fmtUsd(p.d1)}</td><td className={`r num ${heatTone(p.ratio)}`}>{x1(p.ratio)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table></div>
+          ) : <p className="az-note">No protocol reports {METRIC[metric][0].toLowerCase()} on {sel.chain}.</p>}
+          <div className="muted az-cap az-pad">Busiest pools on {sel.chain}, by 24 h volume (GeckoTerminal)</div>
+          {pools?.rows?.length ? (
+            <div className="az-scroll az-mid"><table className="az-table">
+              <thead><tr><th>Pool</th><th>Venue</th><th className="r">Volume, 24 h</th><th className="r">Price, 24 h</th><th className="r">Trades</th><th className="r">Buyers</th><th className="r">Liquidity</th></tr></thead>
+              <tbody>
+                {pools.rows.map((p) => (
+                  <tr key={p.address || p.name}>
+                    <td><a href={`https://www.geckoterminal.com/${pools.network}/pools/${p.address}`} target="_blank" rel="noreferrer">{p.name}</a></td>
+                    <td className="muted">{p.dex}</td>
+                    <td className="r num">{fmtUsd(p.vol)}</td>
+                    <td className={`r num ${tone(p.chg)}`}>{p.chg == null ? "-" : `${p.chg > 0 ? "+" : ""}${p.chg.toFixed(1)}%`}</td>
+                    <td className="r num muted">{p.trades.toLocaleString()}</td>
+                    <td className="r num muted">{p.buyers ? p.buyers.toLocaleString() : "-"}</td>
+                    <td className="r num muted">{fmtUsd(p.liquidity)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table></div>
+          ) : <p className="az-note">No pool list for {sel.chain}{pools?.error ? ` (${pools.error})` : ""}. Chains without token pools (Bitcoin, Hyperliquid's own order book) have none.</p>}
+        </>
+      )}
+    </section>
+  );
+}
+
+function Grid({ map, sel, open, metric }) {
+  const cats = map.categories.filter((c) => Object.keys(map.grid[c.key] || {}).length);
+  const max = Math.max(...cats.filter((c) => !c.infra).flatMap((c) => Object.values(map.grid[c.key])), 1);
+  return (
+    <section className="panel term-wide">
+      <Top title="Category by chain" facts={[`${METRIC[metric][0].toLowerCase()}, 24 h`, "click a chain to see what's driving it"]} />
       <div className="az-scroll">
         <table className="az-table az-grid">
-          <thead><tr><th>Category</th>{map.chains.map((c) => <th key={c.name} className="r">{c.name}</th>)}</tr></thead>
+          <thead><tr><th>Category</th>{map.chains.map((c) => <th key={c.name} className="r"><Go onClick={() => open({ cat: sel.cat, chain: c.name })}>{c.name}</Go></th>)}</tr></thead>
           <tbody>
             {cats.map((c) => (
-              <tr key={c.key} className={pick === c.key ? "on" : ""} onClick={() => setPick(c.key)}>
-                <td><b>{c.name}</b></td>
+              <tr key={c.key} className={`${sel.cat === c.key ? "on" : ""} ${c.infra ? "az-infra" : ""}`}>
+                <td className="az-pick" onClick={() => open({ cat: c.key })}><b>{c.name}</b></td>
                 {map.chains.map((ch) => {
                   const v = map.grid[c.key][ch.name];
                   return (
-                    <td key={ch.name} className="r num az-cell" style={v ? { background: `rgba(76, 196, 204, ${0.06 + 0.5 * Math.sqrt(v / max)})` } : undefined}>
+                    <td key={ch.name} className="r num az-cell" onClick={() => v && open({ cat: c.key, chain: ch.name })}
+                      style={v && !c.infra ? { background: `rgba(31, 166, 122, ${0.05 + 0.45 * Math.sqrt(Math.min(1, v / max))})`, cursor: "pointer" } : undefined}>
                       {v ? fmtUsd(v) : <span className="muted">·</span>}
                     </td>
                   );
@@ -127,36 +273,36 @@ function Grid({ map, pick, setPick }) {
   );
 }
 
-function Perps({ hl }) {
-  const [win, setWin] = useState("week");
-  const w = hl.windows[win];
-  const c = w.crowd;
+function Hot({ map, open, metric }) {
+  const hot = map.categories.filter((c) => !c.infra).flatMap((c) => c.protocols.filter((p) => p.flag === "hot" && p.d1 >= 100_000).map((p) => ({ ...p, cat: c })))
+    .sort((a, b) => b.ratio - a.ratio).slice(0, 12);
   return (
-    <section id="p-PERP" className="panel">
-      <Head code="PERP" title="Perps traders: who made money" meta={[["Venue", "Hyperliquid"], ["Traders", c.traders.toLocaleString()]]}
-        pills={[<Pill key="p" kind={c.in_profit >= 0.5 ? "good" : "bad"}>{pct(c.in_profit)} in profit</Pill>]}>
-        <Seg value={win} set={setWin} opts={[["day", "Day"], ["week", "Week"], ["month", "Month"]]} />
-      </Head>
-      <div className="az-kpis">
-        <div><span className="muted">Winners made</span><b className="num up">{fmtUsd(c.won)}</b></div>
-        <div><span className="muted">Losers lost</span><b className="num down">{fmtUsd(c.lost)}</b></div>
-        <div><span className="muted">Everyone, net</span><b className={`num ${tone(c.net)}`}>{fmtUsd(c.net)}</b></div>
-        <div><span className="muted">Top 10's share of winnings</span><b className="num">{pct(c.top10_share)}</b></div>
-        <div><span className="muted">Volume</span><b className="num">{fmtUsd(c.volume)}</b></div>
-      </div>
-      <Rows rows={w.top} chain="Hyperliquid" extra />
+    <section className="panel">
+      <Top title="Heating up right now" facts={[`${hot.length} protocols`, "24 h at 1.25× normal or more"]} />
+      {hot.length ? (
+        <div className="az-scroll"><table className="az-table az-click">
+          <thead><tr><th>Protocol</th><th>Category</th><th className="r">{METRIC[metric][0]}, 24 h</th><th className="r">vs normal</th></tr></thead>
+          <tbody>
+            {hot.map((p) => (
+              <tr key={p.cat.key + p.name} onClick={() => open({ cat: p.cat.key, protocol: p.name })} tabIndex={0}>
+                <td><b>{p.name}</b></td><td className="muted">{p.cat.name}</td><td className="r num">{fmtUsd(p.d1)}</td><td className="r num up">{x1(p.ratio)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      ) : <p className="az-note">Nothing with $100K+ a day is running hot against its own month.</p>}
     </section>
   );
 }
 
 function Rows({ rows, chain, extra }) {
   return (
-    <div className="az-scroll az-rows">
+    <div className="az-scroll az-tall">
       <table className="az-table">
         <thead><tr><th className="r">#</th><th>Wallet</th><th className="r">Profit</th>{extra && <><th className="r">Return</th><th className="r">Volume</th><th className="r">Account</th></>}</tr></thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={r.wallet}>
+            <tr key={r.wallet + i}>
               <td className="r num muted">{i + 1}</td>
               <td><Wallet a={r.wallet} name={r.name} chain={chain} /></td>
               <td className={`r num ${tone(r.pnl)}`}>{fmtUsd(r.pnl)}</td>
@@ -169,48 +315,47 @@ function Rows({ rows, chain, extra }) {
   );
 }
 
-function Board({ b, labels }) {
+function Perps({ hl }) {
+  const [win, setWin] = useState("week");
+  const w = hl.windows[win];
+  const c = w.crowd;
   return (
     <section className="panel">
-      <Head code="PNL" title={b.title} meta={[["Category", labels[b.category] || b.category], ["Source", b.source]]}
-        pills={[<Pill key="t" kind="good">Top {b.rows.length}: {fmtUsd(b.total)}</Pill>]} />
-      {b.rows.length ? <Rows rows={b.rows} chain={b.chain} /> : <p className="term-pad plan-note muted">No rows in the latest reply.</p>}
+      <Top title="Perps traders: who made money"
+        facts={["Hyperliquid", `${c.traders.toLocaleString()} traders`, <span key="p" className={c.in_profit >= 0.5 ? "up" : "down"}>{pct(c.in_profit)} in profit</span>]}>
+        <Seg value={win} set={setWin} opts={[["day", "Day"], ["week", "Week"], ["month", "Month"]]} />
+      </Top>
+      <div className="az-kpis">
+        <div><span className="muted">Winners made</span><b className="num up">{fmtUsd(c.won)}</b></div>
+        <div><span className="muted">Losers lost</span><b className="num down">{fmtUsd(c.lost)}</b></div>
+        <div><span className="muted">Everyone, net</span><b className={`num ${tone(c.net)}`}>{fmtUsd(c.net)}</b></div>
+        <div><span className="muted">Top 10's share of winnings</span><b className="num">{pct(c.top10_share)}</b></div>
+        <div><span className="muted">Volume</span><b className="num">{fmtUsd(c.volume)}</b></div>
+      </div>
+      <Rows rows={w.top} chain="Hyperliquid" extra />
     </section>
   );
 }
 
-function Flags({ map }) {
-  const hot = map.categories.filter((c) => !c.infra).flatMap((c) => c.protocols.filter((p) => p.flag === "hot" && p.d1 >= 100_000).map((p) => ({ ...p, cat: c.name })))
-    .sort((a, b) => b.ratio - a.ratio).slice(0, 12);
+function Board({ b, labels }) {
   return (
-    <section id="p-HOT" className="panel">
-      <Head code="HOT" title="Heating up right now" meta={[["Rule", "24 h at 1.25× normal or more"]]} pills={[<Pill key="n">{hot.length} protocols</Pill>]} />
-      {hot.length ? (
-        <div className="az-scroll"><table className="az-table">
-          <thead><tr><th>Protocol</th><th>Category</th><th className="r">Fees, 24 h</th><th className="r">vs normal</th></tr></thead>
-          <tbody>
-            {hot.map((p) => (
-              <tr key={p.cat + p.name}><td><b>{p.name}</b></td><td className="muted">{p.cat}</td><td className="r num">{fmtUsd(p.d1)}</td><td className="r num up">{x1(p.ratio)}</td></tr>
-            ))}
-          </tbody>
-        </table></div>
-      ) : <p className="term-pad plan-note muted">Nothing with $100K+ of daily fees is running hot against its own month.</p>}
+    <section className="panel">
+      <Top title={b.title} facts={[labels[b.category] || b.category, b.source, <span key="t" className="up">top {b.rows.length}: {fmtUsd(b.total)}</span>]} />
+      {b.rows.length ? <Rows rows={b.rows} chain={b.chain} /> : <p className="az-note">No rows in the latest reply.</p>}
     </section>
   );
 }
 
 function Sources({ status, now }) {
   return (
-    <section id="p-SRC" className="panel term-wide">
-      <Head code="SRC" title="Sources" />
+    <section className="panel term-wide">
+      <Top title="Sources" />
       <div className="az-src">
         {Object.entries(status).map(([name, s]) => (
           <div key={name}>
-            <Pill kind={s.ok ? "good" : s.ok === false && !s.setup ? "bad" : "mute"}>
-              {s.ok ? "OK" : s.ok === false ? (s.setup ? "Not set up" : "Down") : "Waiting"}
-            </Pill>
+            <i className={`az-dot ${s.ok ? "up" : s.ok === false && !s.setup ? "down" : ""}`} />
             <b>{name}</b>
-            <span className="muted" title={s.error || ""}>{s.ok ? ago(now - s.at) : s.error || "first read pending"}</span>
+            <span className="muted" title={s.error || ""}>{s.ok ? ago(now - s.at) : s.ok === false ? (s.setup ? `not set up: ${s.error}` : `down: ${s.error}`) : "first read pending"}</span>
           </div>
         ))}
       </div>
@@ -221,7 +366,8 @@ function Sources({ status, now }) {
 export default function Analyzer() {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
-  const [pick, setPick] = useState(null);
+  const [metric, setMetric] = useState("fees");
+  const [sel, setSel] = useState({});                      // {cat, protocol?, chain?}: how far down the page has drilled
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     document.title = "Analytix · Analyzer";
@@ -248,10 +394,14 @@ export default function Analyzer() {
       clearInterval(tick);
     };
   }, []);
-  const map = d?.map;
-  const sel = pick || map?.categories?.find((c) => !c.infra)?.key;
+  const maps = d?.maps && Object.keys(d.maps).length ? d.maps : d?.map ? { fees: d.map } : null;
+  const have = maps ? Object.keys(maps) : [];
+  const m = have.includes(metric) ? metric : "fees";
+  const map = maps?.[m];
+  const cur = { ...sel, cat: sel.cat || map?.categories?.find((c) => !c.infra)?.key };
+  const side = { map, sel: cur, open: setSel, metric: m };
   return (
-    <div className="app term">
+    <div className="app term az">
       <header className="topbar">
         <div className="brand">
           <span className="brand-name">ANALYTIX<span className="cursor" aria-hidden="true" /></span>
@@ -261,8 +411,8 @@ export default function Analyzer() {
           <a className="alerts-open term-link" href="/terminal">‹ Terminal</a>
           <a className="alerts-open term-link" href="/">‹ Dashboard</a>
           <span className="badge" title={error || ""}>
-            <span className={`dot ${error ? "critical" : d?.enabled ? "good pulse" : "info"}`} />
-            {error ? "Server offline" : d?.enabled ? "Live" : "Replay"}
+            <span className={`dot ${error ? "critical" : "good pulse"}`} />
+            {error ? "Server offline" : d?.enabled === false ? "Replay" : "Live"}
           </span>
           <span className="clock num" title="Your local time">{fmtTime(now)}</span>
         </div>
@@ -270,10 +420,15 @@ export default function Analyzer() {
       {!d && <div className="term-boot" role="status"><div>&gt; {error || "reading the money map"}<span className="cursor" aria-hidden="true" /></div></div>}
       {d && (
         <div className="term-grid">
-          {!map && <p className="plan-note muted term-wide">{d.enabled ? "The first read of the fee data is on its way (about a minute after the server starts)." : "The Analyzer reads its sources in live mode only."}</p>}
-          {map && <div className="tw-7"><MoneyMap map={map} pick={sel} setPick={setPick} /></div>}
-          {map && <div className="tw-5 term-col"><Detail map={map} pick={sel} /><Flags map={map} /></div>}
-          {map && <Grid map={map} pick={sel} setPick={setPick} />}
+          {!map && <p className="az-note term-wide">{d.enabled ? "The first read of the data is on its way (about a minute after the server starts)." : "The Analyzer reads its sources in live mode only."}</p>}
+          {map && <div className="tw-7"><MoneyMap map={map} metric={m} setMetric={setMetric} have={have} sel={cur} open={setSel} /></div>}
+          {map && (
+            <div className="tw-5 term-col">
+              {cur.chain ? <Chain {...side} /> : cur.protocol ? <Protocol {...side} /> : <Category {...side} />}
+              <Hot map={map} open={setSel} metric={m} />
+            </div>
+          )}
+          {map && <Grid map={map} sel={cur} open={setSel} metric={m} />}
           {d.hyperliquid && <div className={d.boards.length ? "tw-7" : "term-wide"}><Perps hl={d.hyperliquid} /></div>}
           {d.boards.length > 0 && <div className="tw-5 term-col">{d.boards.map((b) => <Board key={b.title} b={b} labels={d.labels} />)}</div>}
           <Sources status={d.status} now={now} />

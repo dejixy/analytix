@@ -52,6 +52,20 @@ async def main() -> None:
             print("   sample: " + sample(j))
     except Exception as exc:                              # noqa: BLE001
         print(f"   failed: {type(exc).__name__}: {exc}")
+    print("1b. Revenue, volume, one protocol's history, one chain's pools")
+    try:
+        got = await S.fetch_llama()
+        print("   " + ", ".join(f"{k}: {len(v)} protocols" for k, v in got.items()))
+        top = max(got["fees"], key=lambda p: p["d1"]) if got.get("fees") else None
+        if top:
+            h = await S.fetch_history(top["slug"], "fees")
+            print(f"   history of {top['name']} (slug {top['slug']}): {len(h)} days")
+        for chain in ("TON", "Solana"):
+            code, j = await raw(S.GECKO_POOLS.format(network=S.GECKO_NETWORK[chain]), {"page": 1, "sort": "h24_volume_usd_desc"})
+            rows = S.parse_pools(j) if isinstance(j, dict) else []
+            print(f"   pools on {chain}: HTTP {code}, {len(rows)} pools" + (f", busiest {rows[0]['name']} ${rows[0]['vol'] / 1e6:.1f}M" if rows else "; sample: " + sample(j)))
+    except Exception as exc:                              # noqa: BLE001
+        print(f"   failed: {type(exc).__name__}: {exc}")
     print("2. Hyperliquid leaderboard")
     try:
         code, j = await raw(S.HL_LEADERBOARD)
