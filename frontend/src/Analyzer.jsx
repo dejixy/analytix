@@ -337,7 +337,7 @@ function Screener({ screen, days, labels, open }) {
         the month's), earnings after incentives not negative, and a price/sales at or below its category's median. It is a list of
         candidates, not a signal: every day's screen is logged so the setups can be scored against the rest once enough days have passed.
         {!screen.priced && " Market caps and TVL couldn't be read, so nothing can be a setup right now."}
-        {!screen.has_earnings && " Earnings after incentives aren't published by the source right now, so that column is empty."}
+        {!screen.has_earnings && " Earnings after incentives aren't served by the free source, so that column is empty and doesn't count against a setup."}
         {" "}A dash means the source doesn't publish that number for the protocol (no token, no TVL, or no volume).
       </p>
     </section>

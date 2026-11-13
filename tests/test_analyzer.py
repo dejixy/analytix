@@ -124,6 +124,12 @@ def test_the_service_keeps_each_source_apart(tmp_path):
     ch = asyncio.run(svc.chain("Solana", "fees"))
     assert ch["protocols"][0]["name"] == "pump.fun" and ch["total"] == 2_000_000 and ch["pools"]["rows"][0]["name"] == "BONK / SOL"
     assert "boom" in asyncio.run(svc.protocol("pump.fun", "fees"))["error"]                       # shown, not raised
+
+    async def thin():
+        return {"fees": S.parse_llama(LLAMA), "revenue": [], "volume": []}                        # revenue throttled this time
+    svc.fetch["fees"] = thin
+    asyncio.run(svc.refresh("fees"))
+    assert "revenue" in svc.public()["maps"]                                                      # the last good read stays
     st = p["status"]
     assert st["DefiLlama fees"]["ok"] and st["Birdeye (Solana traders)"]["ok"] is False and "no key" in st["Birdeye (Solana traders)"]["error"]
     assert "no queries" in st["Dune queries"]["error"]

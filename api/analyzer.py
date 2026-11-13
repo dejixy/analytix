@@ -31,6 +31,7 @@ class AnalyzerService:
         self.dune_file = dune_file
         self.screen_log = screen_log            # one line a day: what the screen said, to score it later
         self.screen: dict | None = None
+        self._last: dict[str, list] = {}
         self.stables: dict[str, dict] = {}
         self._logged_day = self._last_logged()
         self.map: dict | None = None            # the fees map (kept for older callers)
@@ -77,6 +78,10 @@ class AnalyzerService:
         got = await self.fetch["fees"]()
         if not got.get("fees"):
             raise RuntimeError("no protocols in the reply")
+        for k, rows in self._last.items():                # a measure that came back empty keeps its last good read
+            if not got.get(k):
+                got[k] = rows
+        self._last = {k: v for k, v in got.items() if v}
         self.maps = {k: M.money_map(got[k]) for k in S.METRICS if got.get(k)}
         self.map = self.maps["fees"]
         try:
