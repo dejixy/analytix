@@ -42,6 +42,7 @@ from config import (
     WATCH_FILE,
     WATCHERS_FILE,
     ANALYZER_DUNE_FILE,
+    ANALYZER_SCREEN_LOG,
 )
 from api.alerts import AlertService
 from api.baskets import Bot
@@ -133,7 +134,7 @@ class Runtime:
         self.edges = EdgeService(self, log_file=EDGE_LOG_FILE if mode == "live" else None)   # the edge terminal
         self.longtail.on_edge = self.edges.on_message   # the edge markets' live trades, from the socket recording them
         self.watchers = WatcherService(self, WATCHERS_FILE if mode == "live" else None)   # trade tickets, paper-tracked
-        self.analyzer = AnalyzerService(self, ANALYZER_DUNE_FILE)   # where money is being made, by category and chain
+        self.analyzer = AnalyzerService(self, ANALYZER_DUNE_FILE, ANALYZER_SCREEN_LOG if mode == "live" else None)   # where money is being made, by category and chain
         self._saved_fp: dict[tuple, tuple] = {}
 
     # ── pipelines ───────────────────────────────────────────────────────────

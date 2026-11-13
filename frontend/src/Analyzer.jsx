@@ -273,6 +273,105 @@ function Grid({ map, sel, open, metric }) {
   );
 }
 
+const SCREEN_COLS = [
+  ["name", "Protocol", "", null],
+  ["rev30", "Revenue a day", "30-day average of what the protocol keeps", (r) => fmtUsd(r.rev30 / 30)],
+  ["share", "Share of category", "Its share of its category's fees this week", (r) => pct(r.share, 1)],
+  ["share_mom", "Share trend", "This week's share against its share over the month: above 1 is gaining", (r) => x1(r.share_mom)],
+  ["earn30", "After incentives", "Revenue minus token rewards paid out, 30 days: negative means it pays more than it earns", (r) => fmtUsd(r.earn30)],
+  ["holders", "To holders", "The share of revenue that reaches token holders: buybacks, burns, staking payouts", (r) => pct(r.holders)],
+  ["take", "Take rate", "Revenue for every $10,000 traded (venues with volume)", (r) => (r.take == null ? "-" : `${(r.take * 1e4).toFixed(1)} bps`)],
+  ["yield_tvl", "Revenue / TVL", "Yearly revenue as a share of the money deposited: how hard the capital works", (r) => pct(r.yield_tvl)],
+  ["mcap", "Market cap", "", (r) => fmtUsd(r.mcap)],
+  ["ps", "Price / sales", "Market cap divided by yearly revenue: lower is cheaper", (r) => (r.ps == null ? "-" : `${r.ps.toFixed(1)}×`)],
+  ["ps_vs", "vs category", "Its price/sales against the median of its category: under 1 is cheaper than its peers", (r) => x1(r.ps_vs)],
+];
+const screenTone = (k, r) => (k === "share_mom" ? (r.share_mom == null ? "" : r.share_mom >= 1.1 ? "up" : r.share_mom <= 0.9 ? "down" : "")
+  : k === "earn30" ? tone(r.earn30) : k === "ps_vs" ? (r.ps_vs == null ? "" : r.ps_vs <= 1 ? "up" : r.ps_vs >= 2 ? "down" : "") : "");
+
+function Screener({ screen, days, labels, open }) {
+  const [cat, setCat] = useState("all");
+  const [only, setOnly] = useState(false);
+  const [sort, setSort] = useState(["setup", -1]);
+  const cats = [...new Set(screen.rows.map((r) => r.category))];
+  const rows = screen.rows.filter((r) => (cat === "all" || r.category === cat) && (!only || r.setup));
+  const [key, dir] = sort;
+  const val = (r) => (key === "setup" ? (r.setup ? 1 : 0) * 1e6 + (r.share_mom || 0) : key === "name" ? r.name.toLowerCase() : r[key]);
+  const sorted = [...rows].sort((a, b) => {
+    const x = val(a), y = val(b);
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * dir;
+  });
+  const setups = screen.rows.filter((r) => r.setup).length;
+  return (
+    <section className="panel term-wide">
+      <Top title="Screener: is the money real, and is it priced in?"
+        facts={[`${screen.rows.length} protocols earning $10K+ a day`, <span key="s" className="up">{setups} setups</span>,
+          `${days} day${days === 1 ? "" : "s"} logged`]}>
+        <select className="az-select" value={cat} onChange={(e) => setCat(e.target.value)} aria-label="Category">
+          <option value="all">All categories</option>
+          {cats.map((k) => <option key={k} value={k}>{labels[k] || k}</option>)}
+        </select>
+        <label className="az-check"><input type="checkbox" checked={only} onChange={(e) => setOnly(e.target.checked)} /> Setups only</label>
+      </Top>
+      <div className="az-scroll az-tall"><table className="az-table az-click az-screen">
+        <thead><tr>
+          {SCREEN_COLS.map(([k, t, tip], i) => (
+            <th key={k} className={i ? "r" : ""} title={tip}><button className={`az-sort ${key === k ? "on" : ""}`} onClick={() => setSort([k, key === k ? -dir : k === "name" || k === "ps" || k === "ps_vs" ? 1 : -1])}>{t}{key === k ? (dir > 0 ? " ↑" : " ↓") : ""}</button></th>
+          ))}
+        </tr></thead>
+        <tbody>
+          {sorted.map((r) => (
+            <tr key={r.category + r.name} className={r.setup ? "az-setup" : ""} tabIndex={0}
+              onClick={() => { open({ cat: r.category, protocol: r.name }); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
+              <td><b>{r.name}</b>{r.symbol && <span className="muted az-sym">{r.symbol}</span>}{r.setup && <span className="az-flag up">● setup</span>}
+                <span className="muted az-cat">{labels[r.category] || r.category}</span></td>
+              {SCREEN_COLS.slice(1).map(([k, , , f]) => <td key={k} className={`r num ${screenTone(k, r)}`}>{f(r)}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      <p className="az-note">
+        A <span className="up">setup</span> is the classic shape, fixed in advance: gaining share of its category (this week's share 10%+ above
+        the month's), earnings after incentives not negative, and a price/sales at or below its category's median. It is a list of
+        candidates, not a signal: every day's screen is logged so the setups can be scored against the rest once enough days have passed.
+        {!screen.priced && " Market caps and TVL couldn't be read, so nothing can be a setup right now."}
+        {!screen.has_earnings && " Earnings after incentives aren't published by the source right now, so that column is empty."}
+        {" "}A dash means the source doesn't publish that number for the protocol (no token, no TVL, or no volume).
+      </p>
+    </section>
+  );
+}
+
+function Capital({ rows, open }) {
+  const chg = (v, p) => (v == null ? "-" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${fmtUsd(Math.abs(v))}${p == null ? "" : ` (${p > 0 ? "+" : ""}${(p * 100).toFixed(1)}%)`}`);
+  return (
+    <section className="panel term-wide">
+      <Top title="Where capital is moving, and who keeps the money" facts={["stablecoin supply by chain", "apps against the chain itself"]} />
+      <div className="az-scroll"><table className="az-table az-click">
+        <thead><tr><th>Chain</th><th className="r">Stablecoins</th><th className="r" title="Dollars of stablecoins that arrived or left in 7 days">7 days</th><th className="r">30 days</th>
+          <th className="r" title="What the apps on this chain kept, 24 h">Apps' revenue, 24 h</th><th className="r" title="What the chain itself earned in gas, 24 h">Chain's own, 24 h</th>
+          <th className="r" title="Apps' revenue for every dollar the chain earns: above 1, the apps are capturing more than the chain">Apps ÷ chain</th></tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.chain} onClick={() => { open((s) => ({ cat: s.cat, chain: r.chain })); window.scrollTo({ top: 0, behavior: "smooth" }); }} tabIndex={0}>
+              <td><b>{r.chain}</b></td>
+              <td className="r num">{fmtUsd(r.st_supply)}</td>
+              <td className={`r num ${tone(r.st_d7)}`}>{chg(r.st_d7, r.st_d7_pct)}</td>
+              <td className={`r num ${tone(r.st_d30)}`}>{chg(r.st_d30, r.st_d30_pct)}</td>
+              <td className="r num">{fmtUsd(r.apps)}</td>
+              <td className="r num muted">{r.gas ? fmtUsd(r.gas) : "-"}</td>
+              <td className="r num">{r.capture == null ? "-" : `${r.capture.toFixed(1)}×`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      <p className="az-note">Stablecoins arriving on a chain are dry powder: money that came to be used there. Apps ÷ chain shows who is winning the fees: the applications or the chain underneath them.</p>
+    </section>
+  );
+}
+
 function Hot({ map, open, metric }) {
   const hot = map.categories.filter((c) => !c.infra).flatMap((c) => c.protocols.filter((p) => p.flag === "hot" && p.d1 >= 100_000).map((p) => ({ ...p, cat: c })))
     .sort((a, b) => b.ratio - a.ratio).slice(0, 12);
@@ -429,6 +528,8 @@ export default function Analyzer() {
             </div>
           )}
           {map && <Grid map={map} sel={cur} open={setSel} metric={m} />}
+          {d.screen?.rows?.length > 0 && <Screener screen={d.screen} days={d.screen_days || 0} labels={d.labels} open={setSel} />}
+          {d.capital?.length > 0 && <Capital rows={d.capital} open={setSel} />}
           {d.hyperliquid && <div className={d.boards.length ? "tw-7" : "term-wide"}><Perps hl={d.hyperliquid} /></div>}
           {d.boards.length > 0 && <div className="tw-5 term-col">{d.boards.map((b) => <Board key={b.title} b={b} labels={d.labels} />)}</div>}
           <Sources status={d.status} now={now} />
