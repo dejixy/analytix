@@ -82,28 +82,35 @@ def slug_of(name: str) -> str:
 _LEAN = {"excludeTotalDataChart": "true", "excludeTotalDataChartBreakdown": "true"}
 
 
+async def _lean(c: httpx.AsyncClient, url: str, params: dict | None = None, tries: int = 3) -> list[dict]:
+    """One overview, parsed; DefiLlama throttles quick repeats, so an empty or refused reply is asked for again
+    after a pause. [] if it still isn't there."""
+    for k in range(tries):
+        try:
+            r = await c.get(url, params={**_LEAN, **(params or {})})
+            rows = parse_llama(r.json()) if r.status_code == 200 else []
+            if rows:
+                return rows
+        except (httpx.HTTPError, ValueError):
+            pass
+        await asyncio.sleep(2.0 * (k + 1))
+    return []
+
+
 async def fetch_llama() -> dict[str, list[dict]]:
     """{"fees": [...], "revenue": [...], "volume": [...]}: the same protocol rows measured three ways. Volume joins
     spot, perps and options venues; a part that can't be read is left empty rather than failing the rest."""
     out: dict[str, list[dict]] = {}
     async with httpx.AsyncClient(timeout=60, headers=UA) as c:
-        r = await c.get(LLAMA_FEES, params=_LEAN)
-        r.raise_for_status()
-        out["fees"] = parse_llama(r.json())
-        for key, data_type in EXTRA_TYPES.items():      # revenue; earnings (after token incentives); what holders get
-            try:
-                r = await c.get(LLAMA_FEES, params={**_LEAN, "dataType": data_type})
-                out[key] = parse_llama(r.json()) if r.status_code == 200 else []
-            except (httpx.HTTPError, ValueError):
-                out[key] = []
+        out["fees"] = await _lean(c, LLAMA_FEES)
+        for key, data_type in EXTRA_TYPES.items():      # revenue; what token holders get
+            await asyncio.sleep(0.5)
+            out[key] = await _lean(c, LLAMA_FEES, {"dataType": data_type})
         vol: dict[str, dict] = {}
         for url in LLAMA_VOLUME:
-            try:
-                r = await c.get(url, params=_LEAN)
-                for p in parse_llama(r.json()) if r.status_code == 200 else []:
-                    vol.setdefault(p["name"], p)
-            except (httpx.HTTPError, ValueError):
-                continue
+            await asyncio.sleep(0.5)
+            for p in await _lean(c, url, tries=2):
+                vol.setdefault(p["name"], p)
         out["volume"] = list(vol.values())
     return out
 

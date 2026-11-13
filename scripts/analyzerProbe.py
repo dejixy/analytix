@@ -53,6 +53,7 @@ async def main() -> None:
     except Exception as exc:                              # noqa: BLE001
         print(f"   failed: {type(exc).__name__}: {exc}")
     print("1b. Revenue, volume, one protocol's history, one chain's pools")
+    got = {}
     try:
         got = await S.fetch_llama()
         print("   " + ", ".join(f"{k}: {len(v)} protocols" for k, v in got.items()))
@@ -66,9 +67,8 @@ async def main() -> None:
             print(f"   pools on {chain}: HTTP {code}, {len(rows)} pools" + (f", busiest {rows[0]['name']} ${rows[0]['vol'] / 1e6:.1f}M" if rows else "; sample: " + sample(j)))
     except Exception as exc:                              # noqa: BLE001
         print(f"   failed: {type(exc).__name__}: {exc}")
-    print("1c. The screener's inputs: earnings after incentives, holders' revenue, TVL and market caps, stablecoins")
+    print("1c. The screener's inputs: holders' revenue, TVL and market caps, stablecoins")
     try:
-        got = await S.fetch_llama()
         print("   " + ", ".join(f"{k}: {len(v)}" for k, v in got.items()))
         meta = await S.fetch_protocols()
         sc = M.screen(got, meta)
