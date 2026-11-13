@@ -14,19 +14,26 @@ functions; ingestion/moneymap.py reads the sources and api/analyzer.py keeps the
                 made against what losers lost, how much of the winnings the top 10 took)
 """
 CATEGORIES = [
-    ("perps", "Perps", ("derivatives",)),
+    ("perps", "Perps", ("derivatives", "interest rate derivatives")),
     ("spot", "Spot trading", ("dexs", "dexes", "dex aggregator")),
     ("memes", "Memes and launchpads", ("launchpad", "meme")),
-    ("bots", "Trading bots and terminals", ("trading app", "telegram bot")),
-    ("nfts", "NFTs", ("nft marketplace", "nft launchpad", "nft lending", "nft")),
+    ("bots", "Trading bots, terminals and wallets", ("trading app", "telegram bot", "interface", "wallets", "portfolio tracker",
+                                                     "dca tools", "coins tracker")),
+    ("nfts", "NFTs", ("nft marketplace", "nft launchpad", "nft lending", "nft", "nftfi", "nft automated strategies")),
+    ("gaming", "Gaming and betting", ("gaming", "luck games", "gamified mining", "physical tcg")),
+    ("ai", "AI and compute", ("ai agents", "decentralized ai", "depin")),
+    ("payments", "Payments and cards", ("payments", "crypto card issuer")),
     ("prediction", "Prediction markets", ("prediction market",)),
-    ("lending", "Lending", ("lending", "cdp")),
+    ("lending", "Lending", ("lending", "cdp", "cdp manager", "collateral markets")),
     ("yield", "Staking and yield", ("liquid staking", "yield", "restaking", "liquid restaking", "yield aggregator",
-                                    "staking pool", "basis trading", "farm", "rwa")),
+                                    "staking pool", "basis trading", "farm", "rwa", "leveraged farming", "liquidity manager",
+                                    "liquidity automation", "onchain capital allocator", "restaked btc", "anchor btc",
+                                    "decentralized btc", "indexes", "cedefi")),
     ("options", "Options", ("options", "options vault")),
-    ("mev", "MEV and arbitrage", ("mev",)),
-    ("stables", "Stablecoins", ("stablecoin issuer",)),
-    ("bridges", "Bridges", ("bridge", "cross chain bridge", "cross chain")),
+    ("mev", "MEV and arbitrage", ("mev", "block builders")),
+    ("stables", "Stablecoins", ("stablecoin issuer", "algo-stables", "dual-token stablecoin", "reserve currency")),
+    ("bridges", "Bridges", ("bridge", "cross chain bridge", "cross chain", "bridge aggregator", "bridge aggregators",
+                            "canonical bridge")),
     ("chains", "Chains (gas)", ("chain", "rollup")),
 ]
 LABEL = {k: name for k, name, _ in CATEGORIES} | {"other": "Other"}
@@ -86,7 +93,8 @@ def money_map(protocols: list[dict], top: int = 12, per_chain: int = 15) -> dict
         out.append(c)
     out.sort(key=lambda c: (c["infra"], -c["d1"]))
     want = [CHAIN_SHORT.get(c, c) for c in WATCH_CHAINS]
-    rest = sorted((c for c in chain_tot if c not in want), key=lambda c: -chain_tot[c])[:3]
+    rest = sorted((c for c in chain_tot if c not in want and c.lower().replace("_", " ") != "off chain"),
+                  key=lambda c: -chain_tot[c])[:3]
     chains = [c for c in want if chain_tot.get(c)] + rest
     return {"categories": out, "chains": [{"name": c, "d1": chain_tot[c]} for c in chains],
             "chain_totals": {c: v for c, v in sorted(chain_tot.items(), key=lambda kv: -kv[1])[:40]},
@@ -168,7 +176,8 @@ def screen(data: dict[str, list[dict]], meta: dict | None = None) -> dict:
         vol = by.get("volume", {}).get(p["name"])
         earn = by.get("earnings", {}).get(p["name"])
         hold = by.get("holders", {}).get(p["name"])
-        m = meta.get(p["name"]) or meta.get("slug:" + p.get("slug", "")) or meta.get("parent:" + p.get("parent", "")) or {}
+        m = meta.get("id:" + str(p.get("id", ""))) or meta.get("parent:" + str(p.get("id", ""))) or meta.get(p["name"]) \
+            or meta.get("slug:" + p.get("slug", "")) or meta.get("parent:" + p.get("parent", "")) or {}
         s7 = p["d7"] / cat7[k] if cat7.get(k) else None
         s30 = p["d30"] / cat30[k] if cat30.get(k) else None
         tvl, mcap = m.get("tvl") or None, m.get("mcap") or None

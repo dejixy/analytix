@@ -99,7 +99,7 @@ async def main() -> None:
         print(f"   failed: {type(exc).__name__}: {exc}")
     print("3. Polymarket leaderboard")
     try:
-        code, j = await raw(S.POLYMARKET_PROFIT, {"window": "7d", "limit": 5})
+        code, j = await raw(S.POLYMARKET_PROFIT, {"timePeriod": "WEEK", "orderBy": "PNL", "category": "OVERALL", "limit": 5})
         rows = S.parse_polymarket(j)
         print(f"   HTTP {code}, {len(rows)} rows" + ("" if rows else "; sample: " + sample(j)))
         for r in rows[:3]:

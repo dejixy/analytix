@@ -26,7 +26,7 @@ LLAMA_VOLUME = ("https://api.llama.fi/overview/dexs", "https://api.llama.fi/over
 LLAMA_SUMMARY = "https://api.llama.fi/summary/{kind}/{slug}"
 LLAMA_PROTOCOLS = "https://api.llama.fi/protocols"
 LLAMA_STABLE_CHART = "https://stablecoins.llama.fi/stablecoincharts/{chain}"
-EXTRA_TYPES = {"revenue": "dailyRevenue", "earnings": "dailyEarnings", "holders": "dailyHoldersRevenue"}
+EXTRA_TYPES = {"revenue": "dailyRevenue", "holders": "dailyHoldersRevenue"}   # (earnings after incentives isn't served)
 GECKO_POOLS = "https://api.geckoterminal.com/api/v2/networks/{network}/pools"
 GECKO_NETWORK = {"Solana": "solana", "TON": "ton", "Base": "base", "Ethereum": "eth", "BSC": "bsc", "Avalanche": "avax",
                  "Arbitrum": "arbitrum", "Polygon": "polygon_pos", "Tron": "tron", "Sui": "sui-network", "Aptos": "aptos",
@@ -37,7 +37,7 @@ GECKO_NETWORK = {"Solana": "solana", "TON": "ton", "Base": "base", "Ethereum": "
 METRICS = ("fees", "revenue", "volume")
 HL_LEADERBOARD = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
 BIRDEYE_TRADERS = "https://public-api.birdeye.so/trader/gainers-losers"
-POLYMARKET_PROFIT = "https://lb-api.polymarket.com/profit"
+POLYMARKET_PROFIT = "https://data-api.polymarket.com/v2/leaderboard"     # lb-api.polymarket.com was retired
 DUNE_RESULTS = "https://api.dune.com/api/v1/query/{qid}/results"
 UA = {"User-Agent": "Analytix analyzer"}
 WINDOWS = ("day", "week", "month", "allTime")
@@ -56,7 +56,7 @@ def parse_llama(payload: dict) -> list[dict]:
     """[{name, category, chains, d1, d7, d30, by_chain {chain: 24 h fees}}] for protocols with any fees."""
     out = []
     for p in (payload or {}).get("protocols") or []:
-        d1, d7, d30 = num(p.get("total24h")), num(p.get("total7d")), num(p.get("total30d"))
+        d1, d7, d30 = (max(0.0, num(p.get(k)) or 0.0) for k in ("total24h", "total7d", "total30d"))   # no negative fees
         if not (d1 or d7 or d30):
             continue
         chains = [c for c in p.get("chains") or [] if isinstance(c, str)]
@@ -70,7 +70,7 @@ def parse_llama(payload: dict) -> list[dict]:
             by = {chains[0]: d1}
         name = p.get("displayName") or p.get("name") or "?"
         out.append({"name": name, "category": p.get("category") or "", "slug": p.get("slug") or slug_of(p.get("name") or name),
-                    "parent": p.get("parentProtocol") or "",
+                    "parent": p.get("parentProtocol") or "", "id": str(p.get("defillamaId") or p.get("id") or ""),
                     "chains": chains, "d1": d1 or 0.0, "d7": d7 or 0.0, "d30": d30 or 0.0, "by_chain": by})
     return out
 
@@ -117,6 +117,8 @@ def parse_protocols(payload) -> dict:
             continue
         row = {"tvl": num(p.get("tvl")) or 0.0, "mcap": num(p.get("mcap")), "symbol": p.get("symbol") if p.get("symbol") not in (None, "-") else ""}
         out[p["name"]] = row
+        if p.get("id") is not None:
+            out.setdefault("id:" + str(p["id"]), row)
         if p.get("slug"):
             out.setdefault("slug:" + p["slug"], row)
         par = p.get("parentProtocol")
@@ -275,18 +277,19 @@ def parse_polymarket(payload) -> list[dict]:
     for x in rows:
         if not isinstance(x, dict):
             continue
-        pnl = num(x.get("amount") if x.get("amount") is not None else x.get("pnl"))
-        wallet = x.get("proxyWallet") or x.get("address") or x.get("user")
+        pnl = next((num(x[k]) for k in ("amount", "pnl", "profit", "realizedPnl") if x.get(k) is not None), None)
+        wallet = x.get("proxyWallet") or x.get("address") or x.get("user") or x.get("wallet")
         if wallet and pnl is not None:
-            out.append({"wallet": wallet, "name": x.get("name") or x.get("pseudonym") or "", "pnl": pnl})
+            out.append({"wallet": wallet, "name": x.get("name") or x.get("userName") or x.get("pseudonym") or "", "pnl": pnl})
     return out
 
 
 async def fetch_polymarket(window: str = "7d", limit: int = 50) -> list[dict]:
     async with httpx.AsyncClient(timeout=30, headers=UA) as c:
-        r = await c.get(POLYMARKET_PROFIT, params={"window": window, "limit": limit})
+        period = {"1d": "DAY", "7d": "WEEK", "30d": "MONTH"}.get(window, "WEEK")
+        r = await c.get(POLYMARKET_PROFIT, params={"timePeriod": period, "orderBy": "PNL", "category": "OVERALL", "limit": limit})
         r.raise_for_status()
-        return parse_polymarket(r.json())
+        return sorted(parse_polymarket(r.json()), key=lambda x: -x["pnl"])
 
 
 # ── Dune ─────────────────────────────────────────────────────────────────────
