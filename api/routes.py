@@ -227,6 +227,12 @@ async def analyzer_chain(request: Request, name: str, metric: str = "fees"):
     return await _rt(request).analyzer.chain(name[:40], metric if metric in ("fees", "revenue", "volume") else "fees")
 
 
+@router.get("/analyzer/assets")
+async def analyzer_assets(request: Request, slug: str, name: str = "", category: str = "", chain: str = ""):
+    """What is moving inside one protocol: its busiest pools, markets or collections, by its kind."""
+    return await _rt(request).analyzer.assets(slug[:80], (name or slug)[:80], category[:20], chain[:40])
+
+
 @router.get("/analyzer/protocol")
 async def analyzer_protocol(request: Request, slug: str, metric: str = "fees"):
     """One protocol's last 90 days of fees, revenue or volume."""

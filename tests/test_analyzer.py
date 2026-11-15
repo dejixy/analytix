@@ -181,3 +181,66 @@ def test_the_screen_finds_the_classic_setup_and_only_that():
     pm = S.parse_protocols([{"name": "Uni V3", "slug": "uni-v3", "tvl": 5, "mcap": 9, "symbol": "UNI", "parentProtocol": "parent#uni"},
                             {"name": "Uni V2", "tvl": 2, "mcap": 9, "symbol": "UNI", "parentProtocol": "parent#uni"}])
     assert pm["parent:parent#uni"] == {"tvl": 7.0, "mcap": 9.0, "symbol": "UNI"} and pm["slug:uni-v3"]["tvl"] == 5.0
+
+
+def test_assets_in_motion_by_kind(tmp_path):
+    dexes = [{"id": "raydium", "name": "Raydium"}, {"id": "raydium-clmm", "name": "Raydium (CLMM)"}, {"id": "orca", "name": "Orca"},
+             {"id": "pump-fun", "name": "Pump.fun"}, {"id": "pumpswap", "name": "PumpSwap"}, {"id": "uniswap_v3", "name": "Uniswap V3"},
+             {"id": "uniswap_v2", "name": "Uniswap V2"}]
+    assert M.match_dexes("Raydium", dexes) == ["raydium", "raydium-clmm"]
+    assert M.match_dexes("Uniswap V3", dexes) == ["uniswap_v3"] and M.match_dexes("pump.fun", dexes) == ["pump-fun", "pumpswap"]
+    assert M.match_dexes("Aave", dexes) == [] and M.match_dexes("Or", dexes) == []
+    y = S.parse_yields({"data": [{"project": "aave-v3", "chain": "Ethereum", "symbol": "USDC", "tvlUsd": 9e8, "apy": 4.2, "apyPct7D": -0.6},
+                                 {"project": "aave-v3", "chain": "Base", "symbol": "WETH", "tvlUsd": 2e8, "apy": 1.9},
+                                 {"project": "morpho", "chain": "Base", "symbol": "USDC", "tvlUsd": 5e8}, {"project": "x", "tvlUsd": 0}]})
+    t = M.yields_table(y, "aave", "Aave")
+    assert [r["name"] for r in t["rows"]] == ["USDC", "WETH"] and t["rows"][0]["apy_7d"] == -0.6 and M.yields_table(y, "compound", "C") is None
+    pt = M.perps_table({"BTC": {"mark": 100.0, "prev_day": 80.0, "day_volume": 9e9, "funding": 1e-5, "oi": 1000.0},
+                        "DEAD": {"mark": 1.0, "day_volume": 0}})
+    assert pt["rows"] == [{"name": "BTC", "vol": 9e9, "chg": 25.0, "funding": 1e-5 * 24 * 365 * 100, "oi": 100_000.0}]
+    pm = S.parse_poly_markets([{"question": "Rain?", "slug": "rain", "volume24hr": 5, "outcomePrices": "[\"0.62\", \"0.38\"]",
+                                "oneDayPriceChange": -0.04, "liquidityNum": 9}, {"slug": "no-question"}])
+    mt = M.markets_table(pm)
+    assert mt["rows"][0]["yes"] == 62.0 and mt["rows"][0]["chg"] == -4.0 and mt["rows"][0]["url"].endswith("/market/rain")
+    dt = M.dune_table({"id": 7, "title": "TON collections", "explorer": "https://tonviewer.com/"},
+                      S.parse_dune_table({"execution_ended_at": "2026-11-15T10:00:00Z", "result": {
+                          "rows": [{"collection_address": "0:AB", "volume_ton": 5.5, "volume_change": 12.0, "sales_24h": 3}],
+                          "metadata": {"column_names": ["collection_address", "volume_ton", "volume_change", "sales_24h"]}}}))
+    assert [c["fmt"] for c in dt["columns"]] == ["addr", "ton", "chg", "auto"] and dt["as_of"].startswith("2026-11-15")
+
+    (tmp_path / "dune.json").write_text('[{"id": 7, "title": "TON collections", "assets": true, "protocols": ["fragment"], "chains": ["TON"], "refresh_h": 6}]')
+    svc = AnalyzerService(SimpleNamespace(mode="live", scanner=SimpleNamespace(contexts={"ETH": {"mark": 3000.0, "day_volume": 5e9}})),
+                          tmp_path / "dune.json")
+    ran = []
+
+    async def table(qid):
+        return {"columns": ["collection_address", "volume_ton"], "rows": [{"collection_address": "0:AB", "volume_ton": 5.5}],
+                "ended": "2020-01-01T00:00:00Z"}
+
+    async def run(qid):
+        ran.append(qid)
+
+    async def dx(network):
+        return dexes
+
+    async def pools(network, dex):
+        return [{"name": f"X / SOL on {dex}", "dex": dex, "address": "a" + dex, "vol": 10.0 if dex == "raydium" else 30.0, "chg": 1.0,
+                 "trades": 5, "buyers": 2, "liquidity": 1.0, "fdv": 1.0}]
+
+    async def yl():
+        return y
+    svc.fetch_dune_table, svc.run_dune, svc.fetch_dexes, svc.fetch_dex_pools, svc.fetch_yields = table, run, dx, pools, yl
+
+    async def go():
+        await svc.refresh("dune")
+        await svc.refresh("dune")
+        return (await svc.assets("fragment", "Fragment", "nfts", "TON"), await svc.assets("raydium", "Raydium", "spot", "Solana"),
+                await svc.assets("aave", "Aave", "lending", "Ethereum"), await svc.assets("hyperliquid-perps", "Hyperliquid Perps", "perps", ""),
+                await svc.assets("opensea", "OpenSea", "nfts", "Ethereum"), await svc.chain("TON"))
+    frag, ray, aave, hl, sea, ton = asyncio.run(go())
+    assert ran == [7]                                                             # stale result: asked to run again, once
+    assert frag["tables"][0]["title"] == "TON collections" and not frag["notes"]
+    assert [r["name"] for r in ray["tables"][0]["rows"]] == ["X / SOL on raydium-clmm", "X / SOL on raydium"]
+    assert aave["tables"][0]["rows"][0]["name"] == "USDC" and hl["tables"][0]["rows"][0]["name"] == "ETH"
+    assert not sea["tables"] and "Dune query" in sea["notes"][0]
+    assert ton["tables"][0]["title"] == "TON collections"

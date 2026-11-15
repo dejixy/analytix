@@ -1598,3 +1598,7 @@ kbd {
 .term .az-cat { display: block; font-size: 10.5px; margin-top: 1px; }
 .term .az-setup td:first-child { box-shadow: inset 2px 0 0 var(--t-green); }
 .term .az-note .up { color: var(--t-green); }
+.term .az-assets { border-top: 1px solid var(--t-edge); }
+.term .az-sub { padding: 10px 12px 0; font-size: 12.5px; font-weight: 600; color: var(--t-ink); }
+.term .az-asset .az-cap b { color: var(--t-ink); font-weight: 500; font-size: 11.5px; }
+.term .az-asset .az-cap { margin-bottom: 0; padding-bottom: 6px; }

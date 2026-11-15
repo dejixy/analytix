@@ -83,6 +83,27 @@ async def main() -> None:
         print("   stablecoins: " + (", ".join(f"{c} ${v['supply'] / 1e9:.1f}B ({(v['d7_pct'] or 0) * 100:+.1f}% 7d)" for c, v in st.items()) or "none read"))
     except Exception as exc:                              # noqa: BLE001
         print(f"   failed: {type(exc).__name__}: {exc}")
+    print("1d. Assets in motion: one exchange's pools, yield markets, Polymarket's markets")
+    try:
+        dexes = await S.fetch_dexes("solana")
+        ids = M.match_dexes("pump.fun", dexes)
+        print(f"   Solana exchanges: {len(dexes)}; pump.fun matched {ids}; Raydium matched {M.match_dexes('Raydium', dexes)}")
+        if ids:
+            pools = await S.fetch_dex_pools("solana", ids[0])
+            print(f"   {ids[0]} pools: {len(pools)}" + (f", busiest {pools[0]['name']} ${pools[0]['vol'] / 1e6:.1f}M" if pools else ""))
+        ton = await S.fetch_dexes("ton")
+        print(f"   TON exchanges: {[d['id'] for d in ton][:12]}")
+        y = await S.fetch_yields()
+        t = M.yields_table(y, "aave", "Aave")
+        print(f"   yield pools: {len(y)}; Aave's markets matched: {len(t['rows']) if t else 0}")
+    except Exception as exc:                              # noqa: BLE001
+        print(f"   failed: {type(exc).__name__}: {exc}")
+    try:
+        code, j = await raw(S.POLY_MARKETS, {"closed": "false", "active": "true", "order": "volume24hr", "ascending": "false", "limit": 5})
+        pm = S.parse_poly_markets(j)
+        print(f"   Polymarket markets: HTTP {code}, {len(pm)} rows" + (f", busiest: {pm[0]['name'][:60]} ${pm[0]['vol'] / 1e6:.1f}M" if pm else "; sample: " + sample(j)))
+    except Exception as exc:                              # noqa: BLE001
+        print(f"   Polymarket markets failed: {type(exc).__name__}: {exc}")
     print("2. Hyperliquid leaderboard")
     try:
         code, j = await raw(S.HL_LEADERBOARD)
