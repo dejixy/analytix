@@ -65,6 +65,62 @@ function useFetch(url) {
   return state.url === url ? state.data : null;
 }
 
+/* One table of assets, whatever its source: each column says how to show itself. */
+const CELL = {
+  usd: (v) => [fmtUsd(v), "r num"],
+  ton: (v) => [v == null ? "-" : `${Number(v).toLocaleString(undefined, { maximumFractionDigits: v >= 100 ? 0 : 2 })} TON`, "r num"],
+  int: (v) => [v == null || v === 0 ? "-" : Number(v).toLocaleString(), "r num muted"],
+  pct1: (v) => [v == null ? "-" : `${Number(v).toFixed(1)}%`, "r num"],
+  cents: (v) => [v == null ? "-" : `${Number(v).toFixed(0)}¢`, "r num"],
+  chg: (v) => [v == null ? "-" : `${v > 0 ? "+" : ""}${Number(v).toFixed(1)}%`, `r num ${tone(v)}`],
+  pts: (v) => [v == null ? "-" : `${v > 0 ? "+" : ""}${Number(v).toFixed(1)}`, `r num ${tone(v)}`],
+  addr: (v) => [short(String(v ?? "")), "num"],
+  auto: (v) => (typeof v === "number" ? [Math.abs(v) >= 1000 ? Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }) : String(+v.toFixed(4)), "r num"]
+    : [v == null ? "-" : String(v).length > 34 ? short(String(v)) : String(v), ""]),
+  text: (v) => [v == null || v === "" ? "-" : String(v), "muted"],
+};
+function DataTable({ t }) {
+  const right = (c) => ["usd", "ton", "int", "pct1", "cents", "chg", "pts"].includes(c.fmt) || (c.fmt === "auto" && typeof t.rows[0]?.[c.key] === "number");
+  const asOf = t.as_of ? new Date(t.as_of.endsWith("Z") ? t.as_of : `${t.as_of}Z`) : null;
+  return (
+    <div className="az-asset">
+      <div className="az-cap az-pad"><b>{t.title}</b><span className="muted"> · {t.source}{asOf && !Number.isNaN(+asOf) ? ` · as of ${ago(Date.now() - asOf)}` : ""}</span></div>
+      {t.rows.length ? (
+        <div className="az-scroll az-mid"><table className="az-table">
+          <thead><tr>{t.columns.map((c) => <th key={c.key} className={right(c) ? "r" : ""} title={c.tip || ""}>{c.label}</th>)}</tr></thead>
+          <tbody>
+            {t.rows.map((r, i) => (
+              <tr key={i}>
+                {t.columns.map((c, j) => {
+                  const v = r[c.key];
+                  if (c.fmt === "link") return <td key={c.key}>{r.url ? <a href={r.url} target="_blank" rel="noreferrer">{v}</a> : <b>{v}</b>}</td>;
+                  if (c.fmt === "addr" && t.explorer && v) return <td key={c.key} className="num"><a href={`${t.explorer}${v}`} target="_blank" rel="noreferrer" title={v}>{short(String(v))}</a></td>;
+                  const [text, cls] = (CELL[c.fmt] || CELL.auto)(v);
+                  return <td key={c.key} className={j === 0 ? cls.replace("muted", "") : cls} title={typeof v === "string" && v.length > 34 ? v : undefined}>{j === 0 ? <b>{text}</b> : text}</td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      ) : <p className="az-note">No rows in the latest result.</p>}
+    </div>
+  );
+}
+
+/* What is moving inside a protocol: its busiest pools, markets or collections. */
+function Assets({ p, cat, chain }) {
+  const d = useFetch(`/api/analyzer/assets?slug=${encodeURIComponent(p.slug)}&name=${encodeURIComponent(p.name)}&category=${cat}&chain=${encodeURIComponent(chain || "")}`);
+  return (
+    <div className="az-assets">
+      <div className="az-sub">Assets in motion</div>
+      {!d && <p className="az-note">Finding what is moving inside {p.name}…</p>}
+      {d?.error && <p className="az-note">Couldn't read it: {d.error}</p>}
+      {d?.tables?.map((t) => <DataTable key={t.title} t={t} />)}
+      {d?.notes?.map((n) => <p key={n} className="az-note">{n}</p>)}
+    </div>
+  );
+}
+
 function MoneyMap({ map, metric, setMetric, have, sel, open }) {
   const cats = map.categories;
   const max = Math.max(...cats.filter((c) => !c.infra).map((c) => c.d1), 1);
@@ -186,6 +242,7 @@ function Protocol({ map, sel, open, metric }) {
           </tbody>
         </table>
       )}
+      <Assets p={p} cat={c.key} chain={chains[0]?.[0] || p.chains?.[0]} />
     </section>
   );
 }
@@ -216,6 +273,7 @@ function Chain({ map, sel, open, metric }) {
               </tbody>
             </table></div>
           ) : <p className="az-note">No protocol reports {METRIC[metric][0].toLowerCase()} on {sel.chain}.</p>}
+          {d.tables?.map((t) => <DataTable key={t.title} t={t} />)}
           <div className="muted az-cap az-pad">Busiest pools on {sel.chain}, by 24 h volume (GeckoTerminal)</div>
           {pools?.rows?.length ? (
             <div className="az-scroll az-mid"><table className="az-table">
@@ -234,7 +292,7 @@ function Chain({ map, sel, open, metric }) {
                 ))}
               </tbody>
             </table></div>
-          ) : <p className="az-note">No pool list for {sel.chain}{pools?.error ? ` (${pools.error})` : ""}. Chains without token pools (Bitcoin, Hyperliquid's own order book) have none.</p>}
+          ) : d.tables?.length ? null : <p className="az-note">No pool list for {sel.chain}{pools?.error ? ` (${pools.error})` : ""}. Chains without token pools (Bitcoin, Hyperliquid's own order book) have none.</p>}
         </>
       )}
     </section>

@@ -219,3 +219,88 @@ def capital(maps: dict[str, dict], stables: dict[str, dict]) -> list[dict]:
         out.append({"chain": chain, "apps": apps, "gas": gas, "capture": apps / gas if gas else None,
                     "fees": ((maps.get("fees") or {}).get("chain_totals") or {}).get(chain), **{f"st_{k}": v for k, v in st.items()}})
     return sorted(out, key=lambda r: -(r.get("st_supply") or 0))
+
+
+# ── what is moving inside one protocol ───────────────────────────────────────
+def _norm(s: str) -> str:
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+
+def match_dexes(protocol: str, dexes: list[dict], most: int = 3) -> list[str]:
+    """The exchange ids on a network that belong to a protocol, by name: "Raydium" takes raydium and raydium-clmm,
+    "Uniswap V3" takes uniswap_v3 alone, "pump.fun" takes pump-fun and pumpswap."""
+    want = _norm(protocol)
+    if len(want) < 4:
+        return []
+    multi = " " in protocol.strip()                       # "Uniswap V3": a named version, matched exactly first
+    if multi:
+        exact = [d["id"] for d in dexes if _norm(d["name"]) == want or _norm(d["id"]) == want]
+        if exact:
+            return exact[:most]
+    stem = _norm(protocol.split()[0]) if multi else want
+    stem = stem[:-3] if stem.endswith("fun") and len(stem) > 6 else stem          # pump.fun → pump
+    if len(stem) < 4:
+        return []
+    return [d["id"] for d in dexes if _norm(d["name"]).startswith(stem) or _norm(d["id"]).startswith(stem)][:most]
+
+
+def col(key: str, label: str, fmt: str = "text", tip: str = "") -> dict:
+    return {"key": key, "label": label, "fmt": fmt, "tip": tip}
+
+
+POOL_COLS = [col("name", "Pool", "link"), col("dex", "Venue"), col("vol", "Volume, 24 h", "usd"), col("chg", "Price, 24 h", "chg"),
+             col("trades", "Trades", "int"), col("buyers", "Buyers", "int"), col("liquidity", "Liquidity", "usd")]
+
+
+def pools_table(pools: list[dict], network: str, title: str, n: int = 25) -> dict:
+    rows = [{**p, "url": f"https://www.geckoterminal.com/{network}/pools/{p['address']}"} for p in
+            sorted(pools, key=lambda p: -p["vol"])[:n]]
+    return {"title": title, "source": "GeckoTerminal", "columns": POOL_COLS, "rows": rows}
+
+
+def yields_table(pools: list[dict], slug: str, name: str, n: int = 25) -> dict | None:
+    """A lending or yield protocol's biggest markets: deposits, the rate, and how the rate moved in a week."""
+    mine = [p for p in pools if p["project"] == slug or p["project"].startswith(slug + "-")]
+    if not mine:
+        return None
+    rows = [{"name": f"{p['symbol']}{' · ' + p['meta'] if p['meta'] else ''}", "chain": p["chain"], "tvl": p["tvl"], "apy": p["apy"],
+             "apy_7d": p["apy_7d"], "apy_reward": p["apy_reward"], "vol": p["vol"]} for p in sorted(mine, key=lambda p: -p["tvl"])[:n]]
+    return {"title": f"{name}'s biggest markets", "source": "DefiLlama yields", "rows": rows,
+            "columns": [col("name", "Market"), col("chain", "Chain"), col("tvl", "Deposited", "usd"), col("apy", "Rate a year", "pct1"),
+                        col("apy_7d", "Rate, 7-day change", "pts", "How many points the yearly rate moved in a week"),
+                        col("apy_reward", "of it, token rewards", "pct1"), col("vol", "Volume, 24 h", "usd")]}
+
+
+def perps_table(contexts: dict, n: int = 25) -> dict:
+    """Hyperliquid's busiest perps: volume, the day's move, funding as a yearly rate and open interest in dollars."""
+    rows = []
+    for coin, c in contexts.items():
+        if not c.get("mark") or not c.get("day_volume"):
+            continue
+        rows.append({"name": coin, "vol": c["day_volume"], "chg": (c["mark"] / c["prev_day"] - 1) * 100 if c.get("prev_day") else None,
+                     "funding": (c.get("funding") or 0.0) * 24 * 365 * 100, "oi": (c.get("oi") or 0.0) * c["mark"]})
+    rows.sort(key=lambda r: -r["vol"])
+    return {"title": "Hyperliquid's busiest markets", "source": "Hyperliquid", "rows": rows[:n],
+            "columns": [col("name", "Market"), col("vol", "Volume, 24 h", "usd"), col("chg", "Price, 24 h", "chg"),
+                        col("funding", "Funding a year", "chg", "What longs pay shorts, as a yearly rate"), col("oi", "Open interest", "usd")]}
+
+
+def markets_table(markets: list[dict], n: int = 25) -> dict:
+    rows = [{**m, "yes": m["yes"] * 100 if m["yes"] is not None else None, "chg": m["chg"] * 100 if m["chg"] is not None else None,
+             "url": f"https://polymarket.com/market/{m['slug']}" if m["slug"] else ""} for m in markets[:n]]
+    return {"title": "Polymarket's busiest markets", "source": "Polymarket", "rows": rows,
+            "columns": [col("name", "Market", "link"), col("vol", "Volume, 24 h", "usd"), col("yes", "Yes", "cents"),
+                        col("chg", "Yes, 24 h", "pts"), col("liquidity", "Liquidity", "usd")]}
+
+
+def dune_table(q: dict, got: dict) -> dict:
+    """A Dune query's rows as a table: the columns as the query names them, formatted by their names (…_usd dollars,
+    …_ton TON, …_pct or …_change a signed %, address-like text shortened)."""
+    def fmt(c: str) -> str:
+        k = c.lower()
+        return ("usd" if k.endswith("_usd") or k in ("usd", "volume", "volume_24h") else "ton" if k.endswith("_ton")
+                else "chg" if k.endswith(("_pct", "_change")) else "addr" if k.endswith(("address", "_item", "wallet", "buyer", "seller"))
+                else "auto")
+    cols = [col(c, c.replace("_", " ").capitalize(), fmt(c)) for c in got["columns"]]
+    return {"title": q.get("title") or f"Dune {q.get('id')}", "source": "Dune", "columns": cols, "rows": got["rows"][:50],
+            "as_of": got.get("ended"), "explorer": q.get("explorer", "")}

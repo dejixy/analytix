@@ -16,6 +16,7 @@ Every parser takes the raw reply and is forgiving about shapes: scripts/analyzer
 really returns on the server.
 """
 import asyncio
+import json
 import os
 
 import httpx
@@ -331,3 +332,109 @@ async def fetch_dune(query_id: int | str, key: str | None = None, limit: int = 2
         r = await c.get(DUNE_RESULTS.format(qid=query_id), params={"limit": limit})
         r.raise_for_status()
         return parse_dune(r.json())
+
+
+# ── what is moving inside one protocol ───────────────────────────────────────
+GECKO_DEXES = "https://api.geckoterminal.com/api/v2/networks/{network}/dexes"
+GECKO_DEX_POOLS = "https://api.geckoterminal.com/api/v2/networks/{network}/dexes/{dex}/pools"
+LLAMA_YIELDS = "https://yields.llama.fi/pools"
+POLY_MARKETS = "https://gamma-api.polymarket.com/markets"
+DUNE_EXECUTE = "https://api.dune.com/api/v1/query/{qid}/execute"
+
+
+def parse_dexes(payload: dict) -> list[dict]:
+    return [{"id": x["id"], "name": (x.get("attributes") or {}).get("name") or x["id"]}
+            for x in (payload or {}).get("data") or [] if x.get("id")]
+
+
+async def fetch_dexes(network: str) -> list[dict]:
+    """Every exchange GeckoTerminal follows on a network: [{id, name}] (a few pages at most)."""
+    out = []
+    async with httpx.AsyncClient(timeout=30, headers={**UA, "accept": "application/json"}) as c:
+        for page in range(1, 4):
+            r = await c.get(GECKO_DEXES.format(network=network), params={"page": page})
+            r.raise_for_status()
+            got = parse_dexes(r.json())
+            out += got
+            if len(got) < 100:
+                break
+            await asyncio.sleep(0.5)
+    return out
+
+
+async def fetch_dex_pools(network: str, dex: str) -> list[dict]:
+    async with httpx.AsyncClient(timeout=30, headers={**UA, "accept": "application/json"}) as c:
+        r = await c.get(GECKO_DEX_POOLS.format(network=network, dex=dex), params={"page": 1, "sort": "h24_volume_usd_desc"})
+        r.raise_for_status()
+        return parse_pools(r.json())
+
+
+def parse_yields(payload: dict) -> list[dict]:
+    """DefiLlama's yield pools: [{project, chain, symbol, tvl, apy, apy_base, apy_reward, apy_7d (change), vol}]."""
+    out = []
+    for x in (payload or {}).get("data") or []:
+        tvl = num(x.get("tvlUsd"))
+        if not x.get("project") or not tvl:
+            continue
+        out.append({"project": x["project"], "chain": x.get("chain") or "", "symbol": x.get("symbol") or "?",
+                    "meta": x.get("poolMeta") or "", "tvl": tvl, "apy": num(x.get("apy")), "apy_base": num(x.get("apyBase")),
+                    "apy_reward": num(x.get("apyReward")), "apy_7d": num(x.get("apyPct7D")), "vol": num(x.get("volumeUsd1d"))})
+    return out
+
+
+async def fetch_yields() -> list[dict]:
+    async with httpx.AsyncClient(timeout=90, headers=UA) as c:
+        r = await c.get(LLAMA_YIELDS)
+        r.raise_for_status()
+        return parse_yields(r.json())
+
+
+def parse_poly_markets(payload) -> list[dict]:
+    out = []
+    for x in payload if isinstance(payload, list) else (payload or {}).get("data") or []:
+        if not isinstance(x, dict) or not x.get("question"):
+            continue
+        try:
+            prices = json.loads(x["outcomePrices"]) if isinstance(x.get("outcomePrices"), str) else x.get("outcomePrices") or []
+        except ValueError:
+            prices = []
+        out.append({"name": x["question"], "slug": x.get("slug") or "", "vol": num(x.get("volume24hr")) or 0.0,
+                    "yes": num(prices[0]) if prices else None, "chg": num(x.get("oneDayPriceChange")),
+                    "liquidity": num(x.get("liquidityNum") if x.get("liquidityNum") is not None else x.get("liquidity"))})
+    return sorted(out, key=lambda m: -m["vol"])
+
+
+async def fetch_poly_markets(limit: int = 25) -> list[dict]:
+    async with httpx.AsyncClient(timeout=30, headers=UA) as c:
+        r = await c.get(POLY_MARKETS, params={"closed": "false", "active": "true", "order": "volume24hr", "ascending": "false",
+                                              "limit": limit})
+        r.raise_for_status()
+        return parse_poly_markets(r.json())
+
+
+def parse_dune_table(payload: dict) -> dict:
+    """A saved query's latest result as it is: {"columns": [...], "rows": [...], "ended": ISO time or None}."""
+    res = (payload or {}).get("result") or {}
+    rows = res.get("rows") or []
+    cols = (res.get("metadata") or {}).get("column_names") or (list(rows[0]) if rows else [])
+    return {"columns": cols, "rows": rows, "ended": (payload or {}).get("execution_ended_at")}
+
+
+async def fetch_dune_table(query_id: int | str, key: str | None = None, limit: int = 100) -> dict:
+    key = key or os.getenv("ANALYTIX_DUNE_KEY", "")
+    if not key:
+        raise RuntimeError("no key: set ANALYTIX_DUNE_KEY (free at dune.com)")
+    async with httpx.AsyncClient(timeout=60, headers={**UA, "X-Dune-API-Key": key}) as c:
+        r = await c.get(DUNE_RESULTS.format(qid=query_id), params={"limit": limit})
+        r.raise_for_status()
+        return parse_dune_table(r.json())
+
+
+async def run_dune(query_id: int | str, key: str | None = None) -> None:
+    """Ask Dune to run a saved query again (its result is read on a later pass). Each run spends Dune credits."""
+    key = key or os.getenv("ANALYTIX_DUNE_KEY", "")
+    if not key:
+        return
+    async with httpx.AsyncClient(timeout=30, headers={**UA, "X-Dune-API-Key": key}) as c:
+        r = await c.post(DUNE_EXECUTE.format(qid=query_id))
+        r.raise_for_status()

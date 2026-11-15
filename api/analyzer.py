@@ -6,8 +6,17 @@ and any Dune queries listed in data/analyzer_dune.json) fresh in the background,
 Each source refreshes on its own clock and reports its own state (ok, when, or why not), so the page can say what
 it's missing: a source without its key says which key to set.
 
-data/analyzer_dune.json: [{"id": 1234567, "title": "NFT traders, 7 days", "category": "nfts", "chain": "Ethereum"}]
-(any saved Dune query with a wallet column and a profit column in dollars).
+data/analyzer_dune.json lists saved Dune queries of two kinds:
+    a profit board   {"id": 1234567, "title": "NFT traders, 7 days", "category": "nfts", "chain": "Ethereum"}
+                     (a wallet column and a profit column in dollars)
+    an asset table   {"id": 2345678, "title": "TON collections selling now", "assets": true, "protocols": ["fragment"],
+                      "chains": ["TON"], "refresh_h": 6, "explorer": "https://tonviewer.com/"}
+                     (any columns; shown as they are under those protocols and chains; with refresh_h the query is
+                     run again on Dune when its result is older than that, which spends Dune credits)
+
+Assets in motion (/api/analyzer/assets): what is moving inside one protocol, by its kind: a DEX's or launchpad's
+busiest pools (GeckoTerminal), a lending or yield protocol's biggest markets (DefiLlama yields), Hyperliquid's
+busiest perps (the scanner), Polymarket's busiest markets, and any Dune asset table listed for it.
 """
 import asyncio
 import json
@@ -43,6 +52,10 @@ class AnalyzerService:
         self._tasks: list[asyncio.Task] = []
         self.fetch_pools, self.fetch_history = S.fetch_pools, S.fetch_history
         self.fetch_protocols, self.fetch_stables = S.fetch_protocols, S.fetch_stables
+        self.fetch_dexes, self.fetch_dex_pools, self.fetch_yields = S.fetch_dexes, S.fetch_dex_pools, S.fetch_yields
+        self.fetch_poly_markets, self.fetch_dune_table, self.run_dune = S.fetch_poly_markets, S.fetch_dune_table, S.run_dune
+        self.dune_tables: dict[str, dict] = {}       # asset tables from Dune, by query id
+        self._dune_ran: dict[str, float] = {}
         self.fetch = {"fees": S.fetch_llama, "capital": None, "hyperliquid": S.fetch_hl_leaderboard, "solana": S.fetch_birdeye,
                       "polymarket": S.fetch_polymarket, "dune": S.fetch_dune}     # swappable in tests
 
@@ -151,6 +164,7 @@ class AnalyzerService:
             network, rows = await self.fetch_pools(name)
             return {"network": network, "rows": rows}
         return {"chain": name, "metric": metric, "total": (m.get("chain_totals") or {}).get(name),
+                "tables": self._dune_for(chain=name),
                 "protocols": (m.get("on_chain") or {}).get(name, []),
                 "pools": await self._cached(("pools", name), 300, pools)}
 
@@ -187,6 +201,10 @@ class AnalyzerService:
         errors = []
         for q in queries:
             try:
+                if q.get("assets"):
+                    await self._dune_assets(q)
+                    await asyncio.sleep(1)
+                    continue
                 rows = await self.fetch["dune"](q["id"])
                 self.boards[f"dune-{q['id']}"] = {"title": q.get("title") or f"Dune {q['id']}", "category": q.get("category", "other"),
                                                   "chain": q.get("chain", ""), "source": "Dune", **M.board(rows)}
@@ -195,6 +213,70 @@ class AnalyzerService:
             await asyncio.sleep(1)
         if errors:
             raise RuntimeError("; ".join(errors))
+
+    async def _dune_assets(self, q: dict) -> None:
+        qid = str(q["id"])
+        got = await self.fetch_dune_table(q["id"])
+        self.dune_tables[qid] = {"q": q, "table": M.dune_table(q, got)}
+        hours = float(q.get("refresh_h") or 0)
+        if hours > 0:
+            try:
+                age_h = (time.time() - time.mktime(time.strptime(got["ended"][:19], "%Y-%m-%dT%H:%M:%S")) + time.timezone) / 3600 \
+                    if got.get("ended") else 1e9
+            except ValueError:
+                age_h = 1e9
+            if age_h >= hours and time.time() - self._dune_ran.get(qid, 0) >= hours * 3600:
+                self._dune_ran[qid] = time.time()
+                await self.run_dune(q["id"])               # its result is read on the next pass
+
+    def _dune_for(self, protocol: str = "", chain: str = "") -> list[dict]:
+        out = []
+        for x in self.dune_tables.values():
+            q = x["q"]
+            if (protocol and protocol in [str(p).lower() for p in q.get("protocols") or []]) or \
+                    (chain and chain.lower() in [str(c).lower() for c in q.get("chains") or []]):
+                out.append(x["table"])
+        return out
+
+    async def assets(self, slug: str, name: str, category: str, chain: str = "") -> dict:
+        """What is moving inside one protocol: a list of tables, by the protocol's kind (see the module note)."""
+        async def make():
+            tables, notes = list(self._dune_for(protocol=slug.lower())), []
+            low = slug.lower()
+            if category == "perps" and "hyperliquid" in low:
+                ctx = getattr(getattr(self.rt, "scanner", None), "contexts", None) or {}
+                if ctx:
+                    tables.append(M.perps_table(ctx))
+            elif category == "prediction" and "polymarket" in low:
+                tables.append(M.markets_table(await self.fetch_poly_markets()))
+            elif category in ("lending", "yield", "stables", "options"):
+                async def pools():
+                    return {"rows": await self.fetch_yields()}
+                got = await self._cached(("yields",), 3600, pools)
+                t = M.yields_table(got.get("rows") or [], low, name)
+                if t:
+                    tables.append(t)
+            elif chain and category not in ("nfts",):
+                network = S.GECKO_NETWORK.get(chain) or S.slug_of(chain)
+
+                async def dexes():
+                    return {"rows": await self.fetch_dexes(network)}
+                ids = M.match_dexes(name, (await self._cached(("dexes", network), 86400, dexes)).get("rows") or [])
+                pools = []
+                for dex in ids:
+                    pools += await self.fetch_dex_pools(network, dex)
+                    await asyncio.sleep(0.4)
+                if pools:
+                    tables.append(M.pools_table(pools, network, f"{name}'s busiest pools on {chain}"))
+            if not tables:
+                notes.append({"nfts": "Which collections and items are selling needs a Dune query listed for this protocol "
+                                      "(data/analyzer_dune.json); none is yet.",
+                              "perps": "Market-by-market numbers are read for Hyperliquid only so far.",
+                              "prediction": "Market-by-market numbers are read for Polymarket only so far.",
+                              "bots": "A bot or terminal has no assets of its own; open its chain to see what is trading there."
+                              }.get(category, "No asset-level source matched this protocol; open its chain to see what is trading there."))
+            return {"tables": tables, "notes": notes}
+        return await self._cached(("assets", slug, chain), 300, make)
 
     def public(self) -> dict:
         return {"now_ms": int(time.time() * 1000), "enabled": self.rt.mode == "live", "map": self.map, "maps": self.maps,
