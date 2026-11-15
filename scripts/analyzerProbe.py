@@ -112,6 +112,7 @@ async def main() -> None:
             by[chain] = (network, tr)
             print(f"   {chain}: {len(tr)} trending pools, {sum(1 for p in tr if p.get('vol_h1'))} with a last-hour volume, "
                   f"{sum(1 for p in tr if p.get('buyers_h1'))} with last-hour buyers")
+        print("   (requests to GeckoTerminal are paced, so this part takes about half a minute)")
         t = M.heating_table(by, "Memes heating up")
         print(f"   heating up by the rule: {len(t['rows'])}, of them early: {sum(1 for r in t['rows'] if r['early'])}")
         for r in t["rows"][:8]:

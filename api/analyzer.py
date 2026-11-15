@@ -28,8 +28,8 @@ from ingestion import moneymap as S
 
 log = logging.getLogger("analytix.analyzer")
 
-EVERY_S = {"fees": 900, "capital": 3600, "hyperliquid": 1800, "solana": 1800, "polymarket": 1800, "dune": 3600}
-SOURCE_NAME = {"fees": "DefiLlama fees", "capital": "DefiLlama stablecoins", "hyperliquid": "Hyperliquid leaderboard", "solana": "Birdeye (Solana traders)",
+EVERY_S = {"fees": 900, "heating": 600, "capital": 3600, "hyperliquid": 1800, "solana": 1800, "polymarket": 1800, "dune": 3600}
+SOURCE_NAME = {"fees": "DefiLlama fees", "heating": "GeckoTerminal (heating up)", "capital": "DefiLlama stablecoins", "hyperliquid": "Hyperliquid leaderboard", "solana": "Birdeye (Solana traders)",
                "polymarket": "Polymarket leaderboard", "dune": "Dune queries"}
 HL_WINDOWS = ("day", "week", "month")
 
@@ -59,7 +59,8 @@ class AnalyzerService:
         self.fetch_poly_markets, self.fetch_dune_table, self.run_dune = S.fetch_poly_markets, S.fetch_dune_table, S.run_dune
         self.dune_tables: dict[str, dict] = {}       # asset tables from Dune, by query id
         self._dune_ran: dict[str, float] = {}
-        self.fetch = {"fees": S.fetch_llama, "capital": None, "hyperliquid": S.fetch_hl_leaderboard, "solana": S.fetch_birdeye,
+        self.heat_pools: dict | None = None     # each chain's trending and busiest pools, refreshed in the background
+        self.fetch = {"fees": S.fetch_llama, "heating": None, "capital": None, "hyperliquid": S.fetch_hl_leaderboard, "solana": S.fetch_birdeye,
                       "polymarket": S.fetch_polymarket, "dune": S.fetch_dune}     # swappable in tests
 
     async def start(self) -> None:
@@ -284,26 +285,37 @@ class AnalyzerService:
             return {"tables": tables, "notes": notes}
         return await self._cached(("assets", slug, chain), 300, make)
 
+    async def _heating(self) -> None:
+        """Each main chain's trending and busiest pools, read in the background every 10 minutes (the requests are
+        paced, so a page never waits on them). A chain that can't be read keeps its last pools."""
+        by = dict((self.heat_pools or {}).get("by") or {})
+        errors = []
+        for chain in M.HEAT_CHAINS:
+            try:
+                network, trending = await self.fetch_trending(chain)
+                _n, busiest = await self.fetch_pools(chain)
+                seen = {p["address"] for p in trending}
+                by[chain] = (network, trending + [p for p in busiest if p["address"] not in seen])
+            except Exception as exc:                      # noqa: BLE001 - the other chains still show
+                errors.append(f"{chain}: {type(exc).__name__}"[:60])
+        if not by:
+            raise RuntimeError("; ".join(errors) or "no chain could be read")
+        self.heat_pools = {"by": by, "errors": errors, "at": int(time.time() * 1000)}
+        self._log_heat(M.heating_table(by, "", memes_only=True)["rows"])
+        if len(errors) == len(M.HEAT_CHAINS):
+            raise RuntimeError("; ".join(errors))
+
     async def heating(self, category: str = "memes") -> dict:
-        """Tokens heating up across the main chains, from each chain's trending and busiest pools (5-minute cache)."""
-        async def make():
-            by, errors = {}, []
-            for chain in M.HEAT_CHAINS:
-                try:
-                    network, trending = await self.fetch_trending(chain)
-                    _n, busiest = await self.fetch_pools(chain)
-                    seen = {p["address"] for p in trending}
-                    by[chain] = (network, trending + [p for p in busiest if p["address"] not in seen])
-                except Exception as exc:                  # noqa: BLE001 - the other chains still show
-                    errors.append(f"{chain}: {type(exc).__name__}"[:60])
-                await asyncio.sleep(0.5)
-            if not by:
-                raise RuntimeError("; ".join(errors) or "no chain could be read")
-            memes = category in ("memes", "bots")
-            t = M.heating_table(by, "Memes heating up right now" if memes else "Tokens heating up right now", memes_only=memes)
-            self._log_heat(t["rows"])
-            return {"table": t, "chains": list(by), "errors": errors}
-        return await self._cached(("heating", category in ("memes", "bots")), 300, make)
+        """Tokens heating up across the main chains, from the pools the background pass last read."""
+        if self.heat_pools is None:
+            if self.rt.mode != "live":
+                return {"error": "read in live mode only"}
+            return {"pending": True}
+        memes = category in ("memes", "bots")
+        t = M.heating_table(self.heat_pools["by"], "Memes heating up right now" if memes else "Tokens heating up right now",
+                            memes_only=memes)
+        return {"table": {**t, "as_of_ms": self.heat_pools["at"]}, "chains": list(self.heat_pools["by"]),
+                "errors": self.heat_pools["errors"]}
 
     def _log_heat(self, rows: list[dict]) -> None:
         if not self.heat_log or not rows or time.time() - self._heat_logged < 3600:
