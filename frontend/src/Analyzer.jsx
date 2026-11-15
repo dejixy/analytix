@@ -68,6 +68,9 @@ function useFetch(url) {
 /* One table of assets, whatever its source: each column says how to show itself. */
 const CELL = {
   usd: (v) => [fmtUsd(v), "r num"],
+  x: (v) => [v == null ? "-" : `${Number(v).toFixed(1)}×`, "r num up"],
+  pct0: (v) => [v == null ? "-" : `${Number(v).toFixed(0)}%`, "r num"],
+  mark: (v) => [v || "", "az-early up"],
   ton: (v) => [v == null ? "-" : `${Number(v).toLocaleString(undefined, { maximumFractionDigits: v >= 100 ? 0 : 2 })} TON`, "r num"],
   int: (v) => [v == null || v === 0 ? "-" : Number(v).toLocaleString(), "r num muted"],
   pct1: (v) => [v == null ? "-" : `${Number(v).toFixed(1)}%`, "r num"],
@@ -80,7 +83,7 @@ const CELL = {
   text: (v) => [v == null || v === "" ? "-" : String(v), "muted"],
 };
 function DataTable({ t }) {
-  const right = (c) => ["usd", "ton", "int", "pct1", "cents", "chg", "pts"].includes(c.fmt) || (c.fmt === "auto" && typeof t.rows[0]?.[c.key] === "number");
+  const right = (c) => ["usd", "ton", "int", "pct1", "pct0", "x", "cents", "chg", "pts"].includes(c.fmt) || (c.fmt === "auto" && typeof t.rows[0]?.[c.key] === "number");
   const asOf = t.as_of ? new Date(t.as_of.endsWith("Z") ? t.as_of : `${t.as_of}Z`) : null;
   return (
     <div className="az-asset">
@@ -102,7 +105,23 @@ function DataTable({ t }) {
             ))}
           </tbody>
         </table></div>
-      ) : <p className="az-note">No rows in the latest result.</p>}
+      ) : <p className="az-note">{t.heating ? "Nothing is heating up by the rule right now." : "No rows in the latest result."}</p>}
+      {t.note && <p className="az-note">{t.note}</p>}
+    </div>
+  );
+}
+
+/* Tokens heating up across the main chains, for the categories where tokens are the asset. */
+const HEAT_CATS = ["memes", "spot", "bots"];
+function Heating({ cat }) {
+  const d = useFetch(HEAT_CATS.includes(cat) ? `/api/analyzer/heating?category=${cat}` : null);
+  if (!HEAT_CATS.includes(cat)) return null;
+  return (
+    <div className="az-assets">
+      {!d && <p className="az-note">Looking for what is heating up…</p>}
+      {d?.error && <p className="az-note">Couldn't read it: {d.error}</p>}
+      {d?.table && <DataTable t={d.table} />}
+      {d?.errors?.length > 0 && <p className="az-note">Not read this time: {d.errors.join(", ")}.</p>}
     </div>
   );
 }
@@ -203,6 +222,7 @@ function Category({ map, sel, open, metric }) {
       {chains.length > 0 && (
         <p className="az-note">By chain: {chains.map(([n, v]) => <Go key={n} onClick={() => open({ cat: c.key, chain: n })} title={`What's driving ${n}`}>{n} {fmtUsd(v)}</Go>)}</p>
       )}
+      <Heating cat={c.key} />
     </section>
   );
 }

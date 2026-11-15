@@ -104,6 +104,21 @@ async def main() -> None:
         print(f"   Polymarket markets: HTTP {code}, {len(pm)} rows" + (f", busiest: {pm[0]['name'][:60]} ${pm[0]['vol'] / 1e6:.1f}M" if pm else "; sample: " + sample(j)))
     except Exception as exc:                              # noqa: BLE001
         print(f"   Polymarket markets failed: {type(exc).__name__}: {exc}")
+    print("1e. Heating up: trending pools and the rule")
+    try:
+        by = {}
+        for chain in M.HEAT_CHAINS:
+            network, tr = await S.fetch_trending(chain)
+            by[chain] = (network, tr)
+            print(f"   {chain}: {len(tr)} trending pools, {sum(1 for p in tr if p.get('vol_h1'))} with a last-hour volume, "
+                  f"{sum(1 for p in tr if p.get('buyers_h1'))} with last-hour buyers")
+        t = M.heating_table(by, "Memes heating up")
+        print(f"   heating up by the rule: {len(t['rows'])}, of them early: {sum(1 for r in t['rows'] if r['early'])}")
+        for r in t["rows"][:8]:
+            print(f"   {'early' if r['early'] else '     '} {r['name'][:22]:<22} {r['chain']:<9} pace {r['pace']:.1f}x  1h ${r['vol_h1'] / 1e3:,.0f}K  "
+                  f"price 1h {r['chg_h1'] or 0:+.0f}% 24h {r['chg'] or 0:+.0f}%  buyers {r['buy_share'] or 0:.0f}%  liq ${(r['liquidity'] or 0) / 1e3:,.0f}K")
+    except Exception as exc:                              # noqa: BLE001
+        print(f"   failed: {type(exc).__name__}: {exc}")
     print("2. Hyperliquid leaderboard")
     try:
         code, j = await raw(S.HL_LEADERBOARD)

@@ -14,6 +14,7 @@ data/watch.json
 data/watchers.json
 data/analyzer_dune.json
 data/analyzer_screen.jsonl
+data/analyzer_heating.jsonl
 data/bot.json
 data/*.tmp
 data/bigmovers.json

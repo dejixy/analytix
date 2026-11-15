@@ -208,13 +208,42 @@ def parse_pools(payload: dict) -> list[dict]:
         if not a.get("name") or not vol:
             continue
         tx = (a.get("transactions") or {}).get("h24") or {}
+        t1 = (a.get("transactions") or {}).get("h1") or {}
         dex = (((x.get("relationships") or {}).get("dex") or {}).get("data") or {}).get("id") or ""
+        chg = a.get("price_change_percentage") or {}
         out.append({"name": a["name"], "dex": dex.replace("-", " ").replace("_", " "), "address": a.get("address") or "",
-                    "vol": vol, "chg": num((a.get("price_change_percentage") or {}).get("h24")),
+                    "vol": vol, "chg": num(chg.get("h24")),
                     "trades": int((num(tx.get("buys")) or 0) + (num(tx.get("sells")) or 0)),
                     "buyers": int(num(tx.get("buyers")) or 0), "liquidity": num(a.get("reserve_in_usd")),
-                    "fdv": num(a.get("fdv_usd"))})
+                    "fdv": num(a.get("fdv_usd")),
+                    # the last hour, for what is heating up
+                    "vol_h1": num((a.get("volume_usd") or {}).get("h1")), "chg_h1": num(chg.get("h1")), "chg_h6": num(chg.get("h6")),
+                    "buyers_h1": int(num(t1.get("buyers")) or num(t1.get("buys")) or 0),
+                    "sellers_h1": int(num(t1.get("sellers")) or num(t1.get("sells")) or 0),
+                    "price": num(a.get("base_token_price_usd")), "created": a.get("pool_created_at") or ""})
     return sorted(out, key=lambda p: -p["vol"])
+
+
+GECKO_TRENDING = "https://api.geckoterminal.com/api/v2/networks/{network}/trending_pools"
+
+
+async def fetch_trending(chain: str) -> tuple[str, list[dict]]:
+    """(network id, the pools GeckoTerminal lists as trending on a chain, two pages)."""
+    network = GECKO_NETWORK.get(chain) or slug_of(chain)
+    out = []
+    async with httpx.AsyncClient(timeout=30, headers={**UA, "accept": "application/json"}) as c:
+        for page in (1, 2):
+            r = await c.get(GECKO_TRENDING.format(network=network), params={"page": page})
+            if r.status_code != 200:
+                if page == 1:
+                    r.raise_for_status()
+                break
+            got = parse_pools(r.json())
+            out += got
+            if len(got) < 20:
+                break
+            await asyncio.sleep(0.4)
+    return network, out
 
 
 async def fetch_pools(chain: str) -> tuple[str, list[dict]]:
