@@ -275,11 +275,45 @@ def test_heating_up_is_a_fixed_rule_on_the_last_hour(tmp_path):
     async def busiest(chain):
         return chain.lower(), [ran, hot]
     svc.fetch_trending, svc.fetch_pools = trending, busiest
+    assert asyncio.run(svc.heating("memes")) == {"pending": True}                # nothing read yet: the page says so
+    asyncio.run(svc.refresh("heating"))
     d = asyncio.run(svc.heating("memes"))
     assert d["chains"] == ["Solana", "Base", "Ethereum"] and d["errors"] == ["BSC: RuntimeError"]
     assert [r["chain"] for r in d["table"]["rows"]].count("Solana") == 2 and (tmp_path / "heat.jsonl").read_text().count("\n") == 1
-    asyncio.run(svc.heating("memes"))
-    assert (tmp_path / "heat.jsonl").read_text().count("\n") == 1                # cached, and logged at most hourly
+    assert svc.public()["status"]["GeckoTerminal (heating up)"]["ok"]
+    asyncio.run(svc.refresh("heating"))
+    assert (tmp_path / "heat.jsonl").read_text().count("\n") == 1                # logged at most hourly
+
+    async def all_down(chain):
+        raise RuntimeError("429")
+    svc.fetch_trending = all_down
+    asyncio.run(svc.refresh("heating"))
+    assert not svc.public()["status"]["GeckoTerminal (heating up)"]["ok"]
+    assert len(asyncio.run(svc.heating("memes"))["table"]["rows"]) == 6          # the last good pools stay on the page
+
+    calls = []
+
+    class FakeClient:
+        async def get(self, url, params=None):
+            calls.append(url)
+            return SimpleNamespace(status_code=429 if len(calls) == 1 else 200)
+
+    async def paced():
+        S._gecko.update(lock=None, last=0.0)
+        real = S.asyncio.sleep
+        slept = []
+
+        async def nap(x):
+            slept.append(x)
+        S.asyncio.sleep = nap
+        try:
+            r = await S.gecko_get(FakeClient(), "u")
+            await S.gecko_get(FakeClient(), "v")
+        finally:
+            S.asyncio.sleep = real
+        return r, slept
+    r, slept = asyncio.run(paced())
+    assert r.status_code == 200 and len(calls) == 3 and 20.0 in slept and any(0 < x <= S.GECKO_GAP_S for x in slept)
     full = S.parse_pools({"data": [{"attributes": {"name": "A / SOL", "address": "x", "volume_usd": {"h24": "100", "h1": "9"},
                                                    "price_change_percentage": {"h24": "1", "h1": "2", "h6": "3"},
                                                    "transactions": {"h1": {"buys": 7, "sells": 2, "buyers": 5, "sellers": 1}},

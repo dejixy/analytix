@@ -87,7 +87,7 @@ function DataTable({ t }) {
   const asOf = t.as_of ? new Date(t.as_of.endsWith("Z") ? t.as_of : `${t.as_of}Z`) : null;
   return (
     <div className="az-asset">
-      <div className="az-cap az-pad"><b>{t.title}</b><span className="muted"> · {t.source}{asOf && !Number.isNaN(+asOf) ? ` · as of ${ago(Date.now() - asOf)}` : ""}</span></div>
+      <div className="az-cap az-pad"><b>{t.title}</b><span className="muted"> · {t.source}{asOf && !Number.isNaN(+asOf) ? ` · as of ${ago(Date.now() - asOf)}` : ""}{t.as_of_ms ? ` · read ${ago(Date.now() - t.as_of_ms)}` : ""}</span></div>
       {t.rows.length ? (
         <div className="az-scroll az-mid"><table className="az-table">
           <thead><tr>{t.columns.map((c) => <th key={c.key} className={right(c) ? "r" : ""} title={c.tip || ""}>{c.label}</th>)}</tr></thead>
@@ -118,7 +118,7 @@ function Heating({ cat }) {
   if (!HEAT_CATS.includes(cat)) return null;
   return (
     <div className="az-assets">
-      {!d && <p className="az-note">Looking for what is heating up…</p>}
+      {(!d || d.pending) && <p className="az-note">Looking for what is heating up (the first read takes about a minute after the server starts)…</p>}
       {d?.error && <p className="az-note">Couldn't read it: {d.error}</p>}
       {d?.table && <DataTable t={d.table} />}
       {d?.errors?.length > 0 && <p className="az-note">Not read this time: {d.errors.join(", ")}.</p>}

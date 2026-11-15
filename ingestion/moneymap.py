@@ -200,6 +200,30 @@ async def fetch_history(slug: str, metric: str = "fees") -> list[list[float]]:
 
 
 # ── GeckoTerminal: what is trading on a chain ────────────────────────────────
+GECKO_GAP_S = 2.4                  # GeckoTerminal's free limit is about 30 requests a minute for the whole server
+_gecko = {"lock": None, "last": 0.0}
+
+
+async def gecko_get(c: httpx.AsyncClient, url: str, params: dict | None = None, tries: int = 3) -> httpx.Response:
+    """Every GeckoTerminal request goes through here, one at a time and GECKO_GAP_S apart, so the pages, the
+    background refresh and the probe can't push each other over the limit; a 429 waits and asks again."""
+    import time
+    if _gecko["lock"] is None or getattr(_gecko["lock"], "_loop", None) not in (None, asyncio.get_running_loop()):
+        _gecko["lock"] = asyncio.Lock()
+    r = None
+    for k in range(tries):
+        async with _gecko["lock"]:
+            wait = GECKO_GAP_S - (time.monotonic() - _gecko["last"])
+            if wait > 0:
+                await asyncio.sleep(wait)
+            r = await c.get(url, params=params)
+            _gecko["last"] = time.monotonic()
+        if r.status_code != 429:
+            return r
+        await asyncio.sleep(20.0 * (k + 1))
+    return r
+
+
 def parse_pools(payload: dict) -> list[dict]:
     out = []
     for x in (payload or {}).get("data") or []:
@@ -232,8 +256,8 @@ async def fetch_trending(chain: str) -> tuple[str, list[dict]]:
     network = GECKO_NETWORK.get(chain) or slug_of(chain)
     out = []
     async with httpx.AsyncClient(timeout=30, headers={**UA, "accept": "application/json"}) as c:
-        for page in (1, 2):
-            r = await c.get(GECKO_TRENDING.format(network=network), params={"page": page})
+        for page in (1,):
+            r = await gecko_get(c, GECKO_TRENDING.format(network=network), {"page": page})
             if r.status_code != 200:
                 if page == 1:
                     r.raise_for_status()
@@ -250,7 +274,7 @@ async def fetch_pools(chain: str) -> tuple[str, list[dict]]:
     """(network id, a chain's 20 busiest pools by 24 h volume)."""
     network = GECKO_NETWORK.get(chain) or slug_of(chain)
     async with httpx.AsyncClient(timeout=30, headers={**UA, "accept": "application/json"}) as c:
-        r = await c.get(GECKO_POOLS.format(network=network), params={"page": 1, "sort": "h24_volume_usd_desc"})
+        r = await gecko_get(c, GECKO_POOLS.format(network=network), {"page": 1, "sort": "h24_volume_usd_desc"})
         r.raise_for_status()
         return network, parse_pools(r.json())
 
@@ -381,7 +405,7 @@ async def fetch_dexes(network: str) -> list[dict]:
     out = []
     async with httpx.AsyncClient(timeout=30, headers={**UA, "accept": "application/json"}) as c:
         for page in range(1, 4):
-            r = await c.get(GECKO_DEXES.format(network=network), params={"page": page})
+            r = await gecko_get(c, GECKO_DEXES.format(network=network), {"page": page})
             r.raise_for_status()
             got = parse_dexes(r.json())
             out += got
@@ -393,7 +417,7 @@ async def fetch_dexes(network: str) -> list[dict]:
 
 async def fetch_dex_pools(network: str, dex: str) -> list[dict]:
     async with httpx.AsyncClient(timeout=30, headers={**UA, "accept": "application/json"}) as c:
-        r = await c.get(GECKO_DEX_POOLS.format(network=network, dex=dex), params={"page": 1, "sort": "h24_volume_usd_desc"})
+        r = await gecko_get(c, GECKO_DEX_POOLS.format(network=network, dex=dex), {"page": 1, "sort": "h24_volume_usd_desc"})
         r.raise_for_status()
         return parse_pools(r.json())
 
