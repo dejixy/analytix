@@ -304,3 +304,59 @@ def dune_table(q: dict, got: dict) -> dict:
     cols = [col(c, c.replace("_", " ").capitalize(), fmt(c)) for c in got["columns"]]
     return {"title": q.get("title") or f"Dune {q.get('id')}", "source": "Dune", "columns": cols, "rows": got["rows"][:50],
             "as_of": got.get("ended"), "explorer": q.get("explorer", "")}
+
+
+# ── tokens heating up ────────────────────────────────────────────────────────
+HEAT_PACE = 1.5                    # the last hour's volume at 1.5x the pool's own hourly average over the day
+HEAT_MIN_LIQ = 50_000              # dollars in the pool: enough to get in and out
+HEAT_MIN_VOL = 250_000             # dollars traded in 24 h
+EARLY_PACE, EARLY_MOVE = 2.0, 15.0     # "early": volume at 2x pace while the price is within 15% of a day ago
+MAJORS = {"SOL", "WSOL", "ETH", "WETH", "BTC", "WBTC", "CBBTC", "BNB", "WBNB", "USDC", "USDT", "USD₮", "DAI", "USDE", "USD1", "PYUSD",
+          "FDUSD", "TON", "AVAX", "WAVAX", "HYPE", "WHYPE", "JITOSOL", "MSOL", "JUPSOL", "STETH", "WSTETH", "BNSOL", "TRX"}
+HEAT_CHAINS = ("Solana", "Base", "BSC", "Ethereum")
+
+
+def base_token(pool_name: str) -> str:
+    return pool_name.split("/")[0].strip().split(" ")[0].upper()
+
+
+def heat_of(p: dict) -> dict | None:
+    """A pool's reading if it is heating up, else None. Fixed rule: the last hour's volume at HEAT_PACE times the
+    pool's own hourly average over the day or more, more buyers than sellers in that hour, and at least HEAT_MIN_LIQ in
+    the pool and HEAT_MIN_VOL traded in 24 h. `early` marks volume running well ahead of a price that hasn't moved."""
+    if not p.get("vol_h1") or not p.get("vol") or (p.get("liquidity") or 0) < HEAT_MIN_LIQ or p["vol"] < HEAT_MIN_VOL:
+        return None
+    pace = p["vol_h1"] * 24 / p["vol"]
+    if pace < HEAT_PACE or p.get("buyers_h1", 0) <= p.get("sellers_h1", 0):
+        return None
+    both = p["buyers_h1"] + p["sellers_h1"]
+    return {**p, "pace": pace, "buy_share": p["buyers_h1"] / both * 100 if both else None,
+            "early": pace >= EARLY_PACE and p.get("chg") is not None and abs(p["chg"]) <= EARLY_MOVE}
+
+
+HEAT_COLS = [col("name", "Token", "link"), col("mark", "", "mark"), col("chain", "Chain"), col("dex", "Venue"),
+             col("pace", "Volume pace", "x", "The last hour's volume against this pool's own hourly average over the day"),
+             col("vol_h1", "Volume, 1 h", "usd"), col("chg_h1", "Price, 1 h", "chg"), col("chg", "Price, 24 h", "chg"),
+             col("buy_share", "Buyers, 1 h", "pct0", "Buyers as a share of everyone who traded it in the last hour"),
+             col("liquidity", "Liquidity", "usd"), col("fdv", "Valuation", "usd")]
+
+
+def heating_table(pools_by_chain: dict[str, tuple[str, list[dict]]], title: str, memes_only: bool = True, n: int = 25) -> dict:
+    """Tokens heating up across chains ({chain: (network, pools)}), the fastest pace first; one row a token."""
+    rows, seen = [], set()
+    for chain, (network, pools) in pools_by_chain.items():
+        for p in pools:
+            tok = base_token(p["name"])
+            if (memes_only and tok in MAJORS) or (chain, tok) in seen:
+                continue
+            h = heat_of(p)
+            if h:
+                seen.add((chain, tok))
+                rows.append({**h, "chain": chain, "mark": "early" if h["early"] else "",
+                             "url": f"https://www.geckoterminal.com/{network}/pools/{p['address']}"})
+    rows.sort(key=lambda r: -r["pace"])
+    return {"title": title, "source": "GeckoTerminal", "columns": HEAT_COLS, "rows": rows[:n], "heating": True,
+            "note": f"Heating up: the last hour's volume at {HEAT_PACE}× the pool's own daily pace or more, more buyers than sellers "
+                    f"in that hour, ${HEAT_MIN_LIQ / 1e3:.0f}K+ of liquidity. \"Early\": volume at {EARLY_PACE:.0f}×+ while the price is still "
+                    f"within {EARLY_MOVE:.0f}% of a day ago. Candidates to look at, not signals: new tokens can go to zero, and every "
+                    "list is logged so the rule can be scored."}

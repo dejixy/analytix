@@ -35,10 +35,13 @@ HL_WINDOWS = ("day", "week", "month")
 
 
 class AnalyzerService:
-    def __init__(self, runtime, dune_file=None, screen_log=None):
+    def __init__(self, runtime, dune_file=None, screen_log=None, heat_log=None):
         self.rt = runtime
         self.dune_file = dune_file
         self.screen_log = screen_log            # one line a day: what the screen said, to score it later
+        self.heat_log = heat_log                # each hour's flagged tokens with their prices, to score the rule later
+        self._heat_logged = 0.0
+        self.fetch_trending = S.fetch_trending
         self.screen: dict | None = None
         self._last: dict[str, list] = {}
         self.stables: dict[str, dict] = {}
@@ -267,6 +270,9 @@ class AnalyzerService:
                     pools += await self.fetch_dex_pools(network, dex)
                     await asyncio.sleep(0.4)
                 if pools:
+                    hot = M.heating_table({chain: (network, pools)}, f"Heating up on {name}", memes_only=category in ("memes", "bots"))
+                    if hot["rows"]:
+                        tables.append(hot)
                     tables.append(M.pools_table(pools, network, f"{name}'s busiest pools on {chain}"))
             if not tables:
                 notes.append({"nfts": "Which collections and items are selling needs a Dune query listed for this protocol "
@@ -277,6 +283,40 @@ class AnalyzerService:
                               }.get(category, "No asset-level source matched this protocol; open its chain to see what is trading there."))
             return {"tables": tables, "notes": notes}
         return await self._cached(("assets", slug, chain), 300, make)
+
+    async def heating(self, category: str = "memes") -> dict:
+        """Tokens heating up across the main chains, from each chain's trending and busiest pools (5-minute cache)."""
+        async def make():
+            by, errors = {}, []
+            for chain in M.HEAT_CHAINS:
+                try:
+                    network, trending = await self.fetch_trending(chain)
+                    _n, busiest = await self.fetch_pools(chain)
+                    seen = {p["address"] for p in trending}
+                    by[chain] = (network, trending + [p for p in busiest if p["address"] not in seen])
+                except Exception as exc:                  # noqa: BLE001 - the other chains still show
+                    errors.append(f"{chain}: {type(exc).__name__}"[:60])
+                await asyncio.sleep(0.5)
+            if not by:
+                raise RuntimeError("; ".join(errors) or "no chain could be read")
+            memes = category in ("memes", "bots")
+            t = M.heating_table(by, "Memes heating up right now" if memes else "Tokens heating up right now", memes_only=memes)
+            self._log_heat(t["rows"])
+            return {"table": t, "chains": list(by), "errors": errors}
+        return await self._cached(("heating", category in ("memes", "bots")), 300, make)
+
+    def _log_heat(self, rows: list[dict]) -> None:
+        if not self.heat_log or not rows or time.time() - self._heat_logged < 3600:
+            return
+        try:
+            self.heat_log.parent.mkdir(parents=True, exist_ok=True)
+            with self.heat_log.open("a") as fh:
+                fh.write(json.dumps({"t_ms": int(time.time() * 1000), "rows": [
+                    {k: r.get(k) for k in ("name", "chain", "address", "price", "pace", "chg", "chg_h1", "liquidity", "fdv", "early")}
+                    for r in rows]}) + "\n")
+            self._heat_logged = time.time()
+        except OSError as exc:
+            log.warning("analyzer heat log: %s", exc)
 
     def public(self) -> dict:
         return {"now_ms": int(time.time() * 1000), "enabled": self.rt.mode == "live", "map": self.map, "maps": self.maps,

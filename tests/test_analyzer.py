@@ -145,8 +145,9 @@ def test_pools_and_history_parse():
          "relationships": {"dex": {"data": {"id": "pump-fun"}}}},
         {"attributes": {"name": "B / SOL", "volume_usd": {"h24": "900"}}}, {"attributes": {"name": "dead", "volume_usd": {}}}]})
     assert [p["name"] for p in pools] == ["B / SOL", "A / SOL"]
-    assert pools[1] == {"name": "A / SOL", "dex": "pump fun", "address": "x1", "vol": 100.0, "chg": -5.0, "trades": 5, "buyers": 2,
-                        "liquidity": 50.0, "fdv": 9.0}
+    assert {k: pools[1][k] for k in ("name", "dex", "address", "vol", "chg", "trades", "buyers", "liquidity", "fdv")} == \
+        {"name": "A / SOL", "dex": "pump fun", "address": "x1", "vol": 100.0, "chg": -5.0, "trades": 5, "buyers": 2,
+         "liquidity": 50.0, "fdv": 9.0}
     assert S.parse_history({"totalDataChart": [[1, 5], ["x", 1], [2, 7]]}, days=1) == [[2000, 7.0]]
     ps = S.parse_llama(LLAMA)
     assert ps[1]["slug"] == "pump.fun" and S.slug_of("Jito MEV") == "jito-mev"
@@ -244,3 +245,43 @@ def test_assets_in_motion_by_kind(tmp_path):
     assert aave["tables"][0]["rows"][0]["name"] == "USDC" and hl["tables"][0]["rows"][0]["name"] == "ETH"
     assert not sea["tables"] and "Dune query" in sea["notes"][0]
     assert ton["tables"][0]["title"] == "TON collections"
+
+
+def test_heating_up_is_a_fixed_rule_on_the_last_hour(tmp_path):
+    def pool(name, vol, vol_h1, buyers, sellers, liq=200_000, chg=5.0, addr=None):
+        return {"name": name, "dex": "pumpswap", "address": addr or name, "vol": vol, "vol_h1": vol_h1, "chg": chg, "chg_h1": 3.0,
+                "buyers_h1": buyers, "sellers_h1": sellers, "liquidity": liq, "fdv": 5e6, "price": 0.01, "trades": 10, "buyers": 5}
+    hot = pool("DOG / SOL", 2_400_000, 300_000, 400, 250)                       # 3x pace, more buyers, price flat: early
+    assert M.heat_of(hot)["pace"] == 3.0 and M.heat_of(hot)["early"] and round(M.heat_of(hot)["buy_share"], 1) == 61.5
+    ran = pool("CAT / SOL", 2_400_000, 300_000, 400, 250, chg=180.0)            # same heat, but it already ran: not early
+    assert M.heat_of(ran) and not M.heat_of(ran)["early"]
+    assert M.heat_of(pool("SLOW / SOL", 2_400_000, 100_000, 400, 250)) is None  # only the day's average pace
+    assert M.heat_of(pool("DUMP / SOL", 2_400_000, 300_000, 200, 300)) is None  # sellers outnumber buyers
+    assert M.heat_of(pool("THIN / SOL", 2_400_000, 300_000, 400, 250, liq=10_000)) is None
+    assert M.heat_of(pool("TINY / SOL", 100_000, 30_000, 400, 250)) is None
+    major = pool("SOL / USDC", 9e8, 9e7, 900, 100)
+    t = M.heating_table({"Solana": ("solana", [hot, ran, major, pool("DOG / USDC", 2_400_000, 200_000, 9, 1, addr="dup")])}, "Memes")
+    assert [r["name"] for r in t["rows"]] == ["DOG / SOL", "CAT / SOL"] and t["rows"][0]["mark"] == "early" and t["rows"][1]["mark"] == ""
+    assert t["rows"][0]["url"].endswith("/solana/pools/DOG / SOL") and M.base_token("USELESS / SOL 0.3%") == "USELESS"
+    assert len(M.heating_table({"Solana": ("solana", [major])}, "All", memes_only=False)["rows"]) == 1
+
+    svc = AnalyzerService(SimpleNamespace(mode="live"), None, None, tmp_path / "heat.jsonl")
+
+    async def trending(chain):
+        if chain == "BSC":
+            raise RuntimeError("down")
+        return chain.lower(), [hot] if chain == "Solana" else []
+
+    async def busiest(chain):
+        return chain.lower(), [ran, hot]
+    svc.fetch_trending, svc.fetch_pools = trending, busiest
+    d = asyncio.run(svc.heating("memes"))
+    assert d["chains"] == ["Solana", "Base", "Ethereum"] and d["errors"] == ["BSC: RuntimeError"]
+    assert [r["chain"] for r in d["table"]["rows"]].count("Solana") == 2 and (tmp_path / "heat.jsonl").read_text().count("\n") == 1
+    asyncio.run(svc.heating("memes"))
+    assert (tmp_path / "heat.jsonl").read_text().count("\n") == 1                # cached, and logged at most hourly
+    full = S.parse_pools({"data": [{"attributes": {"name": "A / SOL", "address": "x", "volume_usd": {"h24": "100", "h1": "9"},
+                                                   "price_change_percentage": {"h24": "1", "h1": "2", "h6": "3"},
+                                                   "transactions": {"h1": {"buys": 7, "sells": 2, "buyers": 5, "sellers": 1}},
+                                                   "base_token_price_usd": "0.5", "pool_created_at": "2026-11-15T00:00:00Z"}}]})[0]
+    assert (full["vol_h1"], full["chg_h1"], full["buyers_h1"], full["sellers_h1"], full["price"]) == (9.0, 2.0, 5, 1, 0.5)

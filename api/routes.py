@@ -227,6 +227,12 @@ async def analyzer_chain(request: Request, name: str, metric: str = "fees"):
     return await _rt(request).analyzer.chain(name[:40], metric if metric in ("fees", "revenue", "volume") else "fees")
 
 
+@router.get("/analyzer/heating")
+async def analyzer_heating(request: Request, category: str = "memes"):
+    """Tokens heating up right now across the main chains (a fixed rule on the last hour against the day)."""
+    return await _rt(request).analyzer.heating(category[:20])
+
+
 @router.get("/analyzer/assets")
 async def analyzer_assets(request: Request, slug: str, name: str = "", category: str = "", chain: str = ""):
     """What is moving inside one protocol: its busiest pools, markets or collections, by its kind."""
