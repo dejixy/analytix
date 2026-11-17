@@ -6,7 +6,9 @@ Pure functions and a small paper book; ingestion/football.py reads the data, api
                  taken out in proportion; double chance is the sum of its two outcomes
     history      three seasons of every covered league (football-data.co.uk): how often favourites at each price actually
                  won, by league and side, against what the price said. The difference, shrunk toward zero so a thin
-                 sample can't move it much, adjusts the fair chance
+                 sample can't move it much, adjusts the fair chance. Kept apart by the kind of price it was measured
+                 on: a sharp price (Pinnacle, an exchange) is only adjusted by history measured on sharp prices, because
+                 the market average carries a bigger margin and taking it out understates favourites more
     stats        each team's last six league games: points, goals and shots on target for and against. A favourite's
                  numbers "agree" when it has more points a game and a bigger share of the shots on target than its
                  opponent, and hasn't lost two of its last four
@@ -128,55 +130,73 @@ def bucket_of(p: float) -> int | None:
     return next((i for i, (lo, hi) in enumerate(BUCKETS) if lo <= p < hi), None)
 
 
-def hist_fair(row: dict) -> dict[str, float] | None:
-    """A past game's fair 1X2 chances from the sharpest prices it carries: Pinnacle's close, Pinnacle, the market's
-    average close, the market's average."""
-    for h, d, a in (("PSCH", "PSCD", "PSCA"), ("PSH", "PSD", "PSA"), ("AvgCH", "AvgCD", "AvgCA"), ("AvgH", "AvgD", "AvgA"),
-                    ("B365H", "B365D", "B365A")):
-        p = devig({"1": row.get(h), "X": row.get(d), "2": row.get(a)})
-        if p:
-            return p
+HIST_PRICES = {"sharp": (("PSCH", "PSCD", "PSCA"), ("PSH", "PSD", "PSA")),
+               "avg": (("AvgCH", "AvgCD", "AvgCA"), ("AvgH", "AvgD", "AvgA"), ("B365H", "B365D", "B365A"))}
+
+
+def hist_fair(row: dict, kind: str | None = None) -> dict[str, float] | None:
+    """A past game's fair 1X2 chances from its prices of one kind ("sharp": Pinnacle's close, else Pinnacle; "avg":
+    the market's average close, else its average, else Bet365), or the sharpest it has when no kind is given."""
+    for k in ([kind] if kind else ["sharp", "avg"]):
+        for h, d, a in HIST_PRICES[k]:
+            p = devig({"1": row.get(h), "X": row.get(d), "2": row.get(a)})
+            if p:
+                return p
     return None
 
 
+def price_kind(src: str) -> str:
+    """Which history a live price is judged against: "sharp" for Pinnacle, an exchange or Matchbook, else "avg"."""
+    s = (src or "").lower()
+    return "sharp" if any(k in s for k in ("pinnacle", "betfair", "exchange", "matchbook")) else "avg"
+
+
 def calibration(history: list[dict]) -> dict:
-    """{(league, market, bucket): [n, wins, expected]} and the pooled (“*”, market, bucket): how often a bet at each
-    fair chance actually won. Favourite markets only (home or away win, and the double chances that include them)."""
+    """{(kind, league, market, bucket): [n, wins, expected]} and the pooled (kind, "*", market, bucket), for each kind
+    of price: how often a bet at each fair chance actually won. Favourite markets only."""
     out: dict = {}
     for g in history:
-        p = hist_fair(g)
-        if not p or g.get("hg") is None:
+        if g.get("hg") is None:
             continue
-        for m, q in markets_from_1x2(p).items():
-            if m == "X":
-                continue
-            b = bucket_of(q)
-            if b is None:
-                continue
-            won = wins(m, g["hg"], g["ag"])
-            for key in ((g["league"], m, b), ("*", m, b)):
-                c = out.setdefault(key, [0, 0, 0.0])
-                c[0] += 1
-                c[1] += won
-                c[2] += q
+        for kind in HIST_PRICES:
+            p = hist_fair(g, kind)
+            if p:
+                _count(out, kind, g, p)
     return out
 
 
-def adjust(p: float, market: str, league: str, cal: dict) -> tuple[float, dict | None]:
-    """The fair chance moved by history: the league's bucket if it has 40+ games, else every league's; shrunk."""
+def _count(out: dict, kind: str, g: dict, p: dict) -> None:
+    """Count one game's favourite markets under its price kind."""
+    for m, q in markets_from_1x2(p).items():
+        if m == "X":
+            continue
+        b = bucket_of(q)
+        if b is None:
+            continue
+        won = wins(m, g["hg"], g["ag"])
+        for key in ((kind, g["league"], m, b), (kind, "*", m, b)):
+            c = out.setdefault(key, [0, 0, 0.0])
+            c[0] += 1
+            c[1] += won
+            c[2] += q
+
+
+def adjust(p: float, market: str, league: str, cal: dict, kind: str = "sharp") -> tuple[float, dict | None]:
+    """The fair chance moved by history measured on the same kind of price: the league's bucket if it has 40+ games,
+    else every league's; shrunk. No adjustment without 40 games of that kind."""
     b = bucket_of(p)
     if b is None:
         return p, None
-    c = cal.get((league, market, b))
+    c = cal.get((kind, league, market, b))
     scope = league
     if not c or c[0] < 40:
-        c, scope = cal.get(("*", market, b)), "all leagues"
+        c, scope = cal.get((kind, "*", market, b)), "all leagues"
     if not c or c[0] < 40:
         return p, None
     n, w, e = c
     shift = (w - e) / (n + SHRINK)
     lo, hi = BUCKETS[b]
-    return min(0.99, max(0.01, p + shift)), {"n": n, "won": w, "rate": w / n, "implied": e / n, "scope": scope,
+    return min(0.99, max(0.01, p + shift)), {"n": n, "won": w, "rate": w / n, "implied": e / n, "scope": scope, "kind": kind,
                                              "range": [round(1 / hi, 2), round(1 / lo, 2)], "shift": shift}
 
 
@@ -266,7 +286,7 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
             for m, price in r["odds"].items():
                 if m not in fair or not price or price <= 1:
                     continue
-                p_adj, pat = adjust(fair[m], m, s.get("league", ""), cal)
+                p_adj, pat = adjust(fair[m], m, s.get("league", ""), cal, price_kind(s["src"]))
                 out.append({"key": f"{s['id']}:{m}", "match_id": s["id"], "home": s["home"], "away": s["away"],
                             "league": s.get("league", ""), "league_name": s.get("league_name", ""), "t_ms": s["t_ms"],
                             "market": m, "book": book, "odds": price, "odds_age_h": age_h, "fair_p": fair[m], "p": p_adj,
