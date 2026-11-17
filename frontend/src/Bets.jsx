@@ -148,13 +148,16 @@ function Value({ d }) {
         </table></div>
       ) : (
         <p className="az-note">
-          {d.board_n ? `None of the ${d.board_n} prices matched to a sharp line is above fair by ${pct(edge)} or more right now. "Everything" shows the closest.`
-            : "No Nigerian odds matched yet. Run the collector on your laptop (see Sources), and the board fills within a minute."}
+          {d.board_n ? `None of the ${d.board_n} prices in the next ${d.show_days} days is above fair by ${pct(edge)} or more right now. "Everything" shows them all.`
+            : Object.values(d.matched || {}).some((n) => n > 0) ? `Your books' games matched their sharp lines, but none kicks off in the next ${d.show_days} days with fresh odds. Check the collector is still running.`
+            : Object.keys(d.sources.books).length ? "Your books' games haven't matched a sharp line yet: the sharp prices may still be loading (a few minutes after a restart)."
+            : "No Nigerian odds received yet. Run the collector on your laptop (see Sources), and the board fills within a minute."}
         </p>
       )}
       <p className="az-note">
         Edge is the odds times the history-adjusted chance, minus one: what each ₦1 staked returns on average if the sharp price is right.
-        Fair odds are one over that chance. Click a row for the reasoning. Booked on paper at {naira(stake)} each the first time it appears.
+        Fair odds are one over that chance. Click a row for the reasoning. Booked on paper at {naira(stake)} each the first time it appears
+        within {d.book_days} days of kick-off.
       </p>
     </section>
   );
@@ -205,7 +208,7 @@ function Patterns({ rows: all }) {
   const rows = all.filter((r) => r.kind === k);
   return (
     <section className="panel">
-      <Top title="What history says" facts={["three seasons, 12 leagues"]}>
+      <Top title="What history says" facts={["three seasons, 14 leagues"]}>
         {kinds.length > 1 && <Seg value={k} set={setKind} opts={[["sharp", "Pinnacle's prices"], ["avg", "Market average"]].filter(([x]) => kinds.includes(x))} />}
       </Top>
       {rows.length ? (
@@ -231,7 +234,7 @@ function Patterns({ rows: all }) {
   );
 }
 
-function Sources({ s, now }) {
+function Sources({ s, now, d }) {
   const books = Object.entries(s.books);
   const st = s.status;
   const line = (k, label, extra) => {
@@ -255,7 +258,7 @@ function Sources({ s, now }) {
           <div key={k}>
             <i className={`az-dot ${now - v.t_ms < 2 * 3600_000 ? "up" : "down"}`} />
             <b>{BOOK[k] || k}</b>
-            <span className="muted">{v.games} games · sent {ago(now - v.t_ms)}{now - v.t_ms >= 2 * 3600_000 ? " (too old to bet on)" : ""}</span>
+            <span className="muted">{v.games} games, {(d.matched || {})[k] ?? "-"} matched · sent {ago(now - v.t_ms)}{now - v.t_ms >= 2 * 3600_000 ? " (too old to bet on)" : ""}</span>
           </div>
         )) : (
           <div><i className="az-dot" /><b>Nigerian books</b><span className="muted">nothing received yet</span></div>
@@ -324,7 +327,7 @@ export default function Bets() {
           <div className="tw-7"><Value d={d} /></div>
           <Record rec={d.record} recent={d.flat_recent} />
           <div className="tw-6"><Patterns rows={d.patterns} /></div>
-          <div className="tw-6"><Sources s={d.sources} now={now} /></div>
+          <div className="tw-6"><Sources s={d.sources} now={now} d={d} /></div>
           <p className="az-note term-wide">
             Everything here is a paper bet until you place it yourself. Short odds are not safe odds: at 1.25 the favourite still
             loses about one game in five, and a rollover needs every one to win. Bet only what you can lose.
