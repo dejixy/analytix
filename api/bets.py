@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from api.public import scrub
 from engine import betting as B
 from ingestion import football as F
 
@@ -87,9 +88,9 @@ class BetsService:
         except Exception as exc:                          # noqa: BLE001 - one part down must not stop the rest
             setup = "no key" in str(exc)
             self.status[key] = {"ok": False, "at": self.status[key]["at"], "setup": setup,
-                                "error": (str(exc) if setup else f"{type(exc).__name__}: {exc}")[:200]}
+                                "error": scrub(str(exc) if setup else f"{type(exc).__name__}: {exc}")[:200]}
             if not setup:
-                log.warning("bets %s: %s", key, exc)
+                log.warning("bets %s: %s", key, scrub(exc))
 
     async def _history(self) -> None:
         games, errors = await self.fetch_history()
@@ -116,7 +117,7 @@ class BetsService:
         except Exception as exc:                          # noqa: BLE001 - the leagues still read without it
             if "no key" in str(exc):
                 raise
-            log.warning("bets: the list of competitions: %s", exc)
+            log.warning("bets: the list of competitions: %s", scrub(exc))
         sports.update(self.intl)
         got, left, errors = await self.fetch_odds_api(sports, "odds")
         self.credits = left if left is not None else self.credits
@@ -245,11 +246,11 @@ class BetsService:
                 return self._board[2]
             return await asyncio.to_thread(self._rebuild, now or int(time.time() * 1000))
 
-    async def snapshot(self) -> dict:
-        """What the page shows, with the slow parts done off the event loop."""
+    async def snapshot(self, public: bool = False) -> dict:
+        """What the page shows, with the slow parts done off the event loop (public: opened through the public link)."""
         board = await self.board_async() if self.books else []
         await asyncio.to_thread(lambda: [self._matched(k) for k in list(self.books)])
-        return self.public(board)
+        return {**self.public(board), "public": public}
 
     def public(self, board: list[dict] | None = None) -> dict:
         now = int(time.time() * 1000)

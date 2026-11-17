@@ -309,9 +309,11 @@ export default function Bets() {
           <span className="brand-tag">bets · value and rollover</span>
         </div>
         <div className="header-right">
-          <a className="alerts-open term-link" href="/analyzer">‹ Analyzer</a>
-          <a className="alerts-open term-link" href="/terminal">‹ Terminal</a>
-          <a className="alerts-open term-link" href="/">‹ Dashboard</a>
+          {d && !d.public && <>
+            <a className="alerts-open term-link" href="/analyzer">‹ Analyzer</a>
+            <a className="alerts-open term-link" href="/terminal">‹ Terminal</a>
+            <a className="alerts-open term-link" href="/">‹ Dashboard</a>
+          </>}
           <span className="badge" title={error || ""}>
             <span className={`dot ${error ? "critical" : "good pulse"}`} />
             {error ? "Server offline" : d?.enabled === false ? "Replay" : "Live"}

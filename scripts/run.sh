@@ -9,6 +9,7 @@
 #   bash ~/analytix/scripts/run.sh carry     the funding-carry watcher's rule on Hyperliquid's history (a few minutes)
 #   bash ~/analytix/scripts/run.sh analyzer  check each of the Analyzer's sources from this server (a minute)
 #   bash ~/analytix/scripts/run.sh bets      check the bets suite's sources from this server (a minute or two)
+#   bash ~/analytix/scripts/run.sh link      the bets page's public address (installs and starts the link if needed)
 #   bash ~/analytix/scripts/run.sh map       (re)start the HYPE map in the background (keeps what it already read)
 #   bash ~/analytix/scripts/run.sh top       the biggest wallets in the latest HYPE map, to look up and name
 #   bash ~/analytix/scripts/run.sh fresh     (re)start fresh money in the background (store build, then the study)
@@ -53,6 +54,26 @@ case "${1:-status}" in
     ;;
   top)
     "$PY" -m scripts.hypeTop "${@:2}"
+    ;;
+  link)
+    if ! command -v cloudflared >/dev/null; then
+      arch="$(dpkg --print-architecture)"
+      echo "installing cloudflared ($arch) from Cloudflare's GitHub releases"
+      curl -fsSL -o /tmp/cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$arch.deb" \
+        && sudo dpkg -i /tmp/cloudflared.deb || { echo "couldn't install cloudflared"; exit 1; }
+    fi
+    if ! systemctl is-active --quiet analytix-link; then
+      sudo cp /opt/analytix/deploy/analytix-link.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+        && sudo systemctl enable --now analytix-link || { echo "couldn't start the link"; exit 1; }
+      echo "starting the link..."
+    fi
+    url=""
+    for _ in $(seq 1 30); do
+      url="$(sudo journalctl -u analytix-link --no-pager -n 200 | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1)"
+      [ -n "$url" ] && break
+      sleep 2
+    done
+    [ -n "$url" ] && echo "the bets page: $url/bets" || echo "no address yet: sudo journalctl -u analytix-link -n 50"
     ;;
   bets)
     "$PY" -m scripts.betsProbe 2>&1 | tee /tmp/bets_probe.txt
