@@ -92,10 +92,7 @@ function Rollover({ r }) {
           <div><span className="muted">Spent so far</span><b className="num">{naira(r.start * (c.refills + 1))}</b></div>
           <div><span className="muted">Chance of day {r.target} from here</span><b className="num">{r.p_finish == null ? "-" : r.p_finish < 0.0001 ? "under 0.01%" : pct(r.p_finish, 2)}</b></div>
         </div>
-        <p className="az-note">
-          The chance of reaching day {r.target} is today's chance raised to the {r.days_left} wins still needed, assuming every
-          pick is as likely as today's. {used ? "The six refills are used up: no new chain is started." : ""}
-        </p>
+        {used && <p className="az-note">The six refills are used up: no new chain is started.</p>}
         {r.history.length > 0 && (
           <div className="az-scroll az-mid"><table className="az-table">
             <thead><tr><th>Day</th><th>Chain · leg</th><th>Pick</th><th className="r">Odds</th><th className="r">Stake</th><th>Result</th></tr></thead>
@@ -151,14 +148,10 @@ function Value({ d }) {
           {d.board_n ? `None of the ${d.board_n} prices in the next ${d.show_days} days is above fair by ${pct(edge)} or more right now. "Everything" shows them all.`
             : Object.values(d.matched || {}).some((n) => n > 0) ? `Your books' games matched their sharp lines, but none kicks off in the next ${d.show_days} days with fresh odds. Check the collector is still running.`
             : Object.keys(d.sources.books).length ? "Your books' games haven't matched a sharp line yet: the sharp prices may still be loading (a few minutes after a restart)."
+            : d.public ? "No prices in from the Nigerian books right now."
             : "No Nigerian odds received yet. Run the collector on your laptop (see Sources), and the board fills within a minute."}
         </p>
       )}
-      <p className="az-note">
-        Edge is the odds times the history-adjusted chance, minus one: what each ₦1 staked returns on average if the sharp price is right.
-        Fair odds are one over that chance. Click a row for the reasoning. Booked on paper at {naira(stake)} each the first time it appears
-        within {d.book_days} days of kick-off.
-      </p>
     </section>
   );
 }
@@ -193,10 +186,70 @@ function Record({ rec, recent }) {
           </tbody>
         </table></div>
       )}
-      <p className="az-note">
-        Judge it by "beat the close" first: after 50 or more bets, consistently getting better odds than the sharp closing price is the
-        clearest sign the edge is real. Profit over a few dozen short-priced bets is mostly luck.
-      </p>
+    </section>
+  );
+}
+
+const BOOKS_STUDY = { bet365: "One big book (Bet365)", best: "Best price anywhere" };
+const METHOD = { proportional: "proportional", power: "power", shin: "Shin's" };
+
+function Study({ s, methods, method }) {
+  const books = Object.keys(s.books || {});
+  const [book, setBook] = useState(null);
+  const b = book && books.includes(book) ? book : books[0];
+  const x = b && s.books[b];
+  const sure = (r, v) => r.se != null && Math.abs(v) >= 2 * r.se;            // two standard errors from zero
+  const ret = (r) => r.n > 1 ? <><span className={sure(r, r.roi) ? tone(r.roi) : ""}>{sgn(r.roi)}</span> <span className="muted">± {pct(r.se, 1)}</span></> : "-";
+  const run = (r) => r && r.n ? `${r.n} picks, ${r.won} won (${pct(r.won / r.n)}); longest run ${r.longest}, runs of 10+ ${r.to10}, runs of 30 ${r.to30}` : "no picks";
+  const ms = Object.entries(methods || {}).filter(([, v]) => v.n);
+  const fav = ms.length ? ms[0][1] : null;
+  const won = fav && fav.fav_n ? fav.fav_won / fav.fav_n : null;
+  const seasons = s.seasons || [];
+  return (
+    <section className="panel term-wide">
+      <Top title="The rules on three seasons" facts={[s.games ? `${s.games.toLocaleString()} games` : null,
+        seasons.length ? `${seasons[0]}/${String(seasons[0] + 1).slice(2)} to now` : null]}>
+        {books.length > 1 && <Seg value={b} set={setBook} opts={books.map((k) => [k, BOOKS_STUDY[k] || k])} />}
+      </Top>
+      {x ? (
+        <>
+          <div className="az-scroll"><table className="az-table">
+            <thead><tr><th>Rule</th><th className="r">Bets</th><th className="r">Won</th><th className="r">Avg odds</th><th className="r">Return a bet</th>
+              <th className="r" title="The price against Pinnacle's fair closing price: above zero means it beat the close">Beat the close</th></tr></thead>
+            <tbody>
+              {x.rules.map((r, i) => (
+                <tr key={r.rule} className={i === 0 ? "bt-lead" : ""}>
+                  <td>{r.rule}</td><td className="r num muted">{r.n.toLocaleString()}</td>
+                  <td className="r num">{r.n ? pct(r.won / r.n, 1) : "-"}</td><td className="r num muted">{r.n ? odd(r.odds) : "-"}</td>
+                  <td className="r num">{ret(r)}</td><td className={`r num ${r.clv == null ? "" : tone(r.clv)}`}>{r.clv == null ? "-" : sgn(r.clv)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+          <p className="az-note">
+            Rollover, one pick a day by today's rule: {run(x.rollover)}. Without the form check: {run(x.rollover_no_form)}.
+            {won != null && <> Favourites priced 1.15–1.50 actually won {pct(won, 1)} of {fav.fav_n.toLocaleString()} games.</>}
+          </p>
+        </>
+      ) : <p className="az-note">Worked out each time the history is read: a minute or so after the history arrives.</p>}
+      {ms.length > 0 && (
+        <div className="az-scroll"><table className="az-table">
+          <thead><tr><th>Taking the margin out</th><th className="r" title="Average surprise at the actual result: lower fits better">Fit (log loss)</th>
+            <th className="r">Said favourites at 1.15–1.50 win</th>
+            <th className="r" title={won == null ? "" : `They won ${pct(won, 1)} of ${fav.fav_n.toLocaleString()} games`}>Off by</th></tr></thead>
+          <tbody>
+            {ms.map(([m, v]) => {
+              const said = v.fav_n ? v.fav_said / v.fav_n : null;
+              return (
+                <tr key={m}>
+                  <td>{METHOD[m] || m}{m === method ? <b> · in use</b> : null}</td><td className="r num">{v.logloss.toFixed(5)}</td>
+                  <td className="r num">{pct(said, 1)}</td><td className="r num muted">{said == null || won == null ? "-" : sgn(said - won)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table></div>
+      )}
     </section>
   );
 }
@@ -224,12 +277,7 @@ function Patterns({ rows: all }) {
             ))}
           </tbody>
         </table></div>
-      ) : <p className="az-note">The history is read once a day; the first read takes a minute or two after the server starts.</p>}
-      <p className="az-note">
-        A positive difference means bets at that price won more often than the price said. Each pick's chance is moved by its
-        league's difference, shrunk so a small sample can't move it much, and only by history measured on the same kind of price:
-        the market average carries a bigger margin, and taking it out understates favourites, so it would overstate every edge.
-      </p>
+      ) : <p className="az-note">The history is read once a day; the first read takes a few minutes after the server starts.</p>}
     </section>
   );
 }
@@ -264,10 +312,6 @@ function Sources({ s, now, d }) {
           <div><i className="az-dot" /><b>Nigerian books</b><span className="muted">nothing received yet</span></div>
         )}
       </div>
-      <p className="az-note">
-        Nigerian odds come from your laptop, because Bet9ja and BetKing only answer Nigerian addresses. With the tunnel open
-        (<code>ssh -N analytix</code>), run <code>python scripts/naijaOdds.py --loop</code> from your Analytix folder; it sends fresh odds every 20 minutes.
-      </p>
     </section>
   );
 }
@@ -328,12 +372,9 @@ export default function Bets() {
           <div className="tw-5 term-col"><Rollover r={d.rollover} /></div>
           <div className="tw-7"><Value d={d} /></div>
           <Record rec={d.record} recent={d.flat_recent} />
+          {d.study && <Study s={d.study} methods={d.methods} method={d.method} />}
           <div className="tw-6"><Patterns rows={d.patterns} /></div>
           <div className="tw-6"><Sources s={d.sources} now={now} d={d} /></div>
-          <p className="az-note term-wide">
-            Everything here is a paper bet until you place it yourself. Short odds are not safe odds: at 1.25 the favourite still
-            loses about one game in five, and a rollover needs every one to win. Bet only what you can lose.
-          </p>
         </div>
       )}
     </div>

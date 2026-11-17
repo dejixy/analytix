@@ -246,3 +246,32 @@ def test_internationals():
     rows = N.bet9ja_rows(raw)
     assert rows == [{"match": "Spain - Georgia", "league": "UEFA Nations League", "time": 1794944700, "match_id": 9,
                      "home": 1.3, "draw": 6.1, "away": 11.0, "home_or_draw": 1.03}]      # 20:45 in Lagos, names untouched
+
+
+def test_margin_methods_and_the_study():
+    from engine import betstudy as S
+    o = {"1": 1.30, "X": 5.5, "2": 10.0}
+    p = {m: B.devig(o, m) for m in B.METHODS}
+    for m, f in p.items():
+        assert abs(sum(f.values()) - 1) < 1e-9, m
+    assert p["proportional"]["1"] < p["shin"]["1"] < p["power"]["1"]        # power and Shin take more off the long shot
+    assert B.devig({"1": 1.9, "2": 1.9}, "shin") == {"1": 0.5, "2": 0.5}
+    hist = _history(n=900)
+    for g in hist:
+        g.update(B365H=g["PSH"] * 0.98, B365A=g["PSA"] * 0.98, MaxH=g["PSH"] * 1.06, MaxA=g["PSA"] * 1.06, PSD=g["PSD"])
+    sc = B.compare_methods(hist)
+    assert all(sc[m]["n"] == 900 for m in B.METHODS) and B.best_method(sc, least=100) in B.METHODS
+    assert B.best_method(sc) == "proportional"                               # too few games to choose: the default
+    try:
+        B.set_method("power")
+        assert B.devig(o) == p["power"]
+    finally:
+        B.set_method("proportional")
+    st = S.study(hist)
+    best = st["books"]["best"]
+    assert st["games"] > 0 and best["rules"][0]["rule"].startswith("The flat rule") and best["rules"][0]["n"] > 0
+    lead = best["rules"][0]
+    assert 0 <= lead["won"] <= lead["n"] and lead["se"] > 0 and best["rollover"]["days"] >= best["rollover"]["n"] - 0
+    every = best["rules"][-1]
+    assert every["n"] >= lead["n"]                                           # no edge needed: every price in the range
+    assert all(c["season"] for c in S.candidates(hist))
