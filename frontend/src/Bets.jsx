@@ -371,10 +371,10 @@ export default function Bets() {
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
           <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} /></div>
           <div className="tw-7"><Value d={d} /></div>
-          <Record rec={d.record} recent={d.flat_recent} pub={d.public} />
+          {!d.public && <Record rec={d.record} recent={d.flat_recent} pub={d.public} />}
           {d.study && <Study s={d.study} methods={d.methods} method={d.method} />}
-          <div className="tw-6"><Patterns rows={d.patterns} /></div>
-          <div className="tw-6"><Sources s={d.sources} now={now} d={d} /></div>
+          <div className={d.public ? "term-wide" : "tw-6"}><Patterns rows={d.patterns} /></div>
+          {!d.public && <div className="tw-6"><Sources s={d.sources} now={now} d={d} /></div>}
         </div>
       )}
     </div>
