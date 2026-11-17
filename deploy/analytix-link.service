@@ -1,0 +1,27 @@
+# The public link to the bets page: a free Cloudflare quick tunnel to the app on this server (no open ports, HTTPS,
+# the server's address stays hidden). The app shows anything that comes through it the bets page only (api/public.py).
+#
+#   install cloudflared once (see scripts/run.sh link), then:
+#   sudo cp /opt/analytix/deploy/analytix-link.service /etc/systemd/system/
+#   sudo systemctl enable --now analytix-link
+#   bash ~/analytix/scripts/run.sh link          the current address
+#
+# A quick tunnel's address is random and changes whenever this service restarts; a named tunnel on your own domain
+# keeps one address (the roadmap's "public link" step).
+[Unit]
+Description=Analytix public link (Cloudflare quick tunnel; the bets page only)
+After=network-online.target analytix.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8000
+Restart=always
+RestartSec=10
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

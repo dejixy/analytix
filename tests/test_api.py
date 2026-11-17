@@ -109,3 +109,28 @@ def test_edges_shows_the_schedule_even_in_replay(client):
     d = client.get("/api/edges").json()
     assert d["enabled"] is False and d["events"] and len(d["roll"]) == 2
     assert {m["ticker"] for m in d["markets"]} >= {"CL", "GOLD"} and d["board"][0]["key"] == "weekend"
+
+
+def test_the_public_link_sees_the_bets_page_only(client):
+    cf = {"cf-connecting-ip": "203.0.113.9", "host": "quiet-river.trycloudflare.com"}
+    r = client.get("/", headers=cf, follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/bets"
+    pub = client.get("/api/bets", headers=cf)
+    assert pub.status_code == 200 and pub.json()["public"] is True and pub.headers["x-robots-tag"].startswith("noindex")
+    for path in ("/api/health", "/api/snapshot", "/terminal", "/analyzer", "/api/analyzer", "/docs", "/openapi.json"):
+        assert client.get(path, headers=cf).status_code == 404, path
+    assert client.post("/api/bets/odds", headers=cf, json={"book": "x", "rows": []}).status_code == 404
+    assert client.get("/api/health", headers={"host": "quiet-river.trycloudflare.com"}).status_code == 404   # host alone
+    assert client.get("/robots.txt", headers=cf).text.startswith("User-agent: *")
+    with pytest.raises(Exception):
+        with client.websocket_connect("/ws", headers=cf):
+            pass
+    # the SSH tunnel (localhost) still sees everything, and isn't marked public
+    assert client.get("/api/health", headers={"host": "localhost:8001"}).status_code == 200
+    assert client.get("/api/bets", headers={"host": "localhost:8001"}).json()["public"] is False
+
+
+def test_scrub():
+    from api.public import scrub
+    assert scrub("Client error for url 'https://api.the-odds-api.com/v4/sports?apiKey=abc123&x=1'") == \
+        "Client error for url 'https://api.the-odds-api.com/v4/sports?apiKey=…&x=1'"

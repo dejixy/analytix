@@ -218,7 +218,7 @@ async def news(request: Request, hours: float = 24, coin: str | None = None):
 @router.get("/bets")
 async def bets(request: Request):
     """The bets suite: flat value bets, today's rollover pick, the paper record and the patterns."""
-    return await _rt(request).bets.snapshot()
+    return await _rt(request).bets.snapshot(public=bool(request.scope.get("analytix_public")))
 
 
 @router.post("/bets/odds")
