@@ -585,6 +585,7 @@ export default function Analyzer() {
           <span className="brand-tag">analyzer · where the money is</span>
         </div>
         <div className="header-right">
+          <a className="alerts-open term-link" href="/bets">Bets ›</a>
           <a className="alerts-open term-link" href="/terminal">‹ Terminal</a>
           <a className="alerts-open term-link" href="/">‹ Dashboard</a>
           <span className="badge" title={error || ""}>

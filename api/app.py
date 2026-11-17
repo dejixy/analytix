@@ -47,6 +47,11 @@ def create_app(mode: str = MODE, replay_file: Path = REPLAY_FILE, speed: float =
             """The edge terminal: the same build, which picks the page from the address."""
             return FileResponse(FRONTEND_DIST / "index.html")
 
+        @app.get("/bets", include_in_schema=False)
+        async def bets_page():
+            """The bets suite: the same build."""
+            return FileResponse(FRONTEND_DIST / "index.html")
+
         @app.get("/analyzer", include_in_schema=False)
         async def analyzer_page():
             """The Analyzer: the same build again."""
