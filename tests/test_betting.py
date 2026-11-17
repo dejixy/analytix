@@ -67,6 +67,10 @@ def test_history_adjusts_the_chance_but_only_a_little():
     rec = B.team_as_favourite(hist, "Big City")
     assert rec["n"] > 50 and rec["won"] / rec["n"] > 0.7
     f = B.form(hist, "Big City", NOW)
+    teams = B.Teams(hist)
+    assert B.form(hist, "Big City", NOW, teams=teams) == f and B.team_as_favourite(hist, "Big City", teams=teams) == rec
+    assert B.form(hist, "Big City FC", NOW, teams=teams) == f and B.form(hist, "Harbour Wolves", NOW, teams=teams) is None
+    assert B.same_team("Man City", "Man United", 0.72) < 0.72 and B.same_team("Man Utd", "Manchester United", 0.92) == 1.0
     assert f["n"] == 6 and f["sot_for"] > f["sot_against"] - 1
     ok, why = B.stats_agree({"ppg": 2.5, "sot_for": 7, "sot_against": 2, "results": "WWDWWW"},
                             {"ppg": 1.0, "sot_for": 3, "sot_against": 5, "results": "LDLWLL"})
@@ -185,11 +189,12 @@ def test_the_service(tmp_path, monkeypatch):
     assert svc.status["history"]["ok"] and svc.status["sharp"]["setup"] and len(svc.sharp()) == 1
     monkeypatch.setenv("ANALYTIX_BETS_TOKEN", "s3cret")
     with pytest.raises(PermissionError):
-        svc.push({"book": "bet9ja", "rows": []}, "wrong")
-    got = svc.push({"book": "bet9ja", "rows": [{"home": "Big City", "away": "Rovers", "t_ms": t + 8 * H, "odds": {"home": 1.31}}]}, "s3cret")
+        asyncio.run(svc.push({"book": "bet9ja", "rows": []}, "wrong"))
+    got = asyncio.run(svc.push({"book": "bet9ja", "rows": [{"home": "Big City", "away": "Rovers", "t_ms": t + 8 * H, "odds": {"home": 1.31}}]}, "s3cret"))
     assert got == {"book": "bet9ja", "games": 1, "matched": 1} and (tmp_path / "odds.json").exists()
     asyncio.run(svc.refresh("book"))
     pub = svc.public()
+    assert asyncio.run(svc.snapshot())["value"] == pub["value"]
     assert pub["value"][0]["home"] == "Big City" and len(svc.book.flat) == 1
     assert pub["sources"]["books"]["bet9ja"]["games"] == 1 and pub["patterns"] and pub["matched"] == {"bet9ja": 1}
     assert BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json").books["bet9ja"]["rows"]   # survives a restart

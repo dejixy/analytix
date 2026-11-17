@@ -54,7 +54,7 @@ def push(server: str, token: str, book: str, rows: list[dict]) -> str:
     body = json.dumps({"book": book, "rows": rows, "sent_ms": int(time.time() * 1000)}).encode()
     req = urllib.request.Request(f"{server.rstrip('/')}/api/bets/odds", data=body, method="POST",
                                  headers={"Content-Type": "application/json", "X-Bets-Token": token})
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=90) as r:
         return r.read().decode()[:200]
 
 
@@ -69,8 +69,11 @@ def once(args) -> None:
         try:
             reply = push(args.server, args.token, book, rows)
             print(f"  {book}: {len(rows)} games sent · server: {reply}")
-        except urllib.error.URLError as exc:
-            print(f"  {book}: {len(rows)} games read, but the server didn't answer ({exc}). Is the tunnel (ssh -N analytix) open?")
+        except urllib.error.HTTPError as exc:
+            print(f"  {book}: {len(rows)} games read, but the server refused them (HTTP {exc.code}: {exc.read().decode()[:120]})")
+        except OSError as exc:                                    # refused, timed out, tunnel down
+            print(f"  {book}: {len(rows)} games read, but the server didn't answer ({type(exc).__name__}: {exc})."
+                  " Is the tunnel (ssh -N analytix) open? Restart it if the laptop slept or changed network")
 
 
 def main() -> None:
@@ -87,7 +90,10 @@ def main() -> None:
         sys.exit("NaijaBet_Api isn't installed: run  pip install NaijaBet_Api")
     while True:
         print(time.strftime("%H:%M:%S"), "reading the Nigerian books")
-        once(args)
+        try:
+            once(args)
+        except Exception as exc:                                  # noqa: BLE001 - in a loop, try again next time
+            print(f"  failed: {type(exc).__name__}: {exc}")
         if not args.loop:
             break
         time.sleep(args.every * 60)

@@ -27,6 +27,7 @@ import os
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 
 HOUR = 3_600_000
@@ -69,6 +70,7 @@ ALIASES = {
 DROP = {"fc", "cf", "afc", "sc", "ac", "club", "the", "de", "calcio", "1", "sv", "fk", "sk", "cd", "ud", "sd", "rc", "ca"}
 
 
+@lru_cache(maxsize=16384)
 def norm(name: str) -> str:
     s = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode().lower()
     s = re.sub(r"[^a-z0-9 ]+", " ", s.replace("&", " and "))
@@ -79,8 +81,10 @@ def norm(name: str) -> str:
     return ALIASES.get(s, s)
 
 
-def same_team(a: str, b: str) -> float:
-    """How alike two team names are, 0 to 1, after aliases ("Man Utd" and "Manchester United" are 1)."""
+@lru_cache(maxsize=65536)
+def same_team(a: str, b: str, least: float = 0.0) -> float:
+    """How alike two team names are, 0 to 1, after aliases ("Man Utd" and "Manchester United" are 1). With `least`, a
+    pair that can't reach it gives 0 without the slow comparison (the quick checks are upper bounds of the full one)."""
     x, y = norm(a), norm(b)
     if not x or not y:
         return 0.0
@@ -88,7 +92,10 @@ def same_team(a: str, b: str) -> float:
         return 1.0
     if (x in y or y in x) and min(len(x), len(y)) >= 4:
         return 0.92
-    return SequenceMatcher(None, x, y).ratio()
+    sm = SequenceMatcher(None, x, y)
+    if least and (sm.real_quick_ratio() < least or sm.quick_ratio() < least):
+        return 0.0
+    return sm.ratio()
 
 
 def match_fixture(home: str, away: str, t_ms: int, fixtures: list[dict], within_h: float = 36, least: float = 0.72) -> dict | None:
@@ -97,8 +104,11 @@ def match_fixture(home: str, away: str, t_ms: int, fixtures: list[dict], within_
     for f in fixtures:
         if abs((f.get("t_ms") or 0) - t_ms) > within_h * HOUR:
             continue
-        h, a = same_team(home, f["home"]), same_team(away, f["away"])
-        if min(h, a) < least:
+        h = same_team(home, f["home"], least)
+        if h < least:
+            continue
+        a = same_team(away, f["away"], least)
+        if a < least:
             continue
         if h + a > score:
             best, score = f, h + a
@@ -202,29 +212,62 @@ def adjust(p: float, market: str, league: str, cal: dict, kind: str = "sharp") -
                                              "range": [round(1 / hi, 2), round(1 / lo, 2)], "shift": shift}
 
 
-def team_as_favourite(history: list[dict], team: str, least: float = 0.65) -> dict | None:
+class Teams:
+    """History by team name, so a team's games are found by comparing its name with the few hundred names in history
+    rather than with every game (thousands of games for each of hundreds of teams froze the server)."""
+
+    def __init__(self, history: list[dict]):
+        self.history = history
+        self.by_name: dict[str, list[tuple[int, str]]] = {}
+        for i, g in enumerate(history):
+            self.by_name.setdefault(g["home"], []).append((i, "1"))
+            self.by_name.setdefault(g["away"], []).append((i, "2"))
+        self._seen: dict[str, list[tuple[int, str]]] = {}
+
+    def games(self, team: str) -> list[tuple[dict, str]]:
+        """[(game, the team's side "1" or "2")] for every game a team played, in history's order."""
+        hit = self._seen.get(team)
+        if hit is None:
+            hit = sorted((i, side) for name, played in self.by_name.items() if same_team(team, name, 0.92) >= 0.92
+                         for i, side in played)
+            self._seen[team] = hit
+        return [(self.history[i], side) for i, side in hit]
+
+
+def team_games(history: list[dict], team: str, teams: Teams | None = None) -> list[tuple[dict, str]]:
+    if teams is not None:
+        return teams.games(team)
+    out = []
+    for g in history:
+        if same_team(team, g["home"], 0.92) >= 0.92:
+            out.append((g, "1"))
+        elif same_team(team, g["away"], 0.92) >= 0.92:
+            out.append((g, "2"))
+    return out
+
+
+def team_as_favourite(history: list[dict], team: str, least: float = 0.65, teams: Teams | None = None) -> dict | None:
     """How a team did when the market made it a clear favourite (fair chance of winning >= `least`)."""
     n = w = 0
-    for g in history:
+    for g, side in team_games(history, team, teams):
         p = hist_fair(g)
         if not p or g.get("hg") is None:
             continue
-        side = "1" if same_team(team, g["home"]) >= 0.92 else "2" if same_team(team, g["away"]) >= 0.92 else None
-        if side and p[side] >= least:
+        if p[side] >= least:
             n += 1
             w += wins(side, g["hg"], g["ag"])
     return {"n": n, "won": w} if n else None
 
 
-def form(history: list[dict], team: str, before_ms: int, n: int = FORM_N) -> dict | None:
+def form(history: list[dict], team: str, before_ms: int, n: int = FORM_N, teams: Teams | None = None) -> dict | None:
     """A team's last `n` league games before a time: points, goals and shots on target a game, results newest first."""
     games = []
-    for g in history:
+    for g, side in team_games(history, team, teams):
         if g.get("hg") is None or g["t_ms"] >= before_ms:
             continue
-        if same_team(team, g["home"]) >= 0.92:
+        if side == "1":
             games.append((g["t_ms"], g["hg"], g["ag"], g.get("hst"), g.get("ast")))
-        elif same_team(team, g["away"]) >= 0.92:
+        else:
             games.append((g["t_ms"], g["ag"], g["hg"], g.get("ast"), g.get("hst")))
     games = sorted(games, reverse=True)[:n]
     if len(games) < 3:
@@ -272,7 +315,8 @@ def favourite_side(market: str, p: dict[str, float]) -> str | None:
 
 
 # ── the board ────────────────────────────────────────────────────────────────
-def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: dict, now_ms: int) -> list[dict]:
+def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: dict, now_ms: int,
+          teams: Teams | None = None) -> list[dict]:
     """Every Nigerian price matched to a sharp game, with the fair chance, the history-adjusted chance, the edge, the
     stats and the patterns. books: {book: {"t_ms", "rows": [{home, away, t_ms, league, odds: {market: price}}]}}."""
     out = []
@@ -309,11 +353,11 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
         fav, opp = (x["home"], x["away"]) if side == "1" else (x["away"], x["home"])
         for t in (fav, opp):
             if t not in stats_cache:
-                stats_cache[t] = form(history, t, x["t_ms"])
+                stats_cache[t] = form(history, t, x["t_ms"], teams=teams)
         x["fav"], x["fav_form"], x["opp_form"] = fav, stats_cache[fav], stats_cache[opp]
         x["agree"], x["agree_why"] = stats_agree(stats_cache[fav], stats_cache[opp])
         if ("rec", fav) not in stats_cache:
-            stats_cache[("rec", fav)] = team_as_favourite(history, fav)
+            stats_cache[("rec", fav)] = team_as_favourite(history, fav, teams=teams)
         x["fav_record"] = stats_cache[("rec", fav)]
     return sorted(rows, key=lambda x: -x["edge"])
 

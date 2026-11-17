@@ -218,7 +218,7 @@ async def news(request: Request, hours: float = 24, coin: str | None = None):
 @router.get("/bets")
 async def bets(request: Request):
     """The bets suite: flat value bets, today's rollover pick, the paper record and the patterns."""
-    return _rt(request).bets.public()
+    return await _rt(request).bets.snapshot()
 
 
 @router.post("/bets/odds")
@@ -229,7 +229,7 @@ async def bets_odds(request: Request):
     except ValueError:
         raise HTTPException(400, "send JSON")
     try:
-        return _rt(request).bets.push(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""))
+        return await _rt(request).bets.push(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""))
     except PermissionError as exc:
         raise HTTPException(403, str(exc))
     except ValueError as exc:
