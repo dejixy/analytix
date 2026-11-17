@@ -200,6 +200,15 @@ def test_the_service(tmp_path, monkeypatch):
     asyncio.run(svc.refresh("book"))
     pub = svc.public()
     assert asyncio.run(svc.snapshot())["value"] == pub["value"]
+
+    async def stale():                                   # new odds: the page gets the last board at once, rebuilt behind it
+        before = svc._board
+        svc._changed()
+        got = await svc.snapshot(public=True)
+        assert svc._board is before and got["public"] is True and svc._rebuild_task is not None
+        await svc._rebuild_task
+        assert svc._board is not before and svc._fresh()
+    asyncio.run(stale())
     assert pub["value"][0]["home"] == "Big City" and len(svc.book.flat) == 1
     assert pub["sources"]["books"]["bet9ja"]["games"] == 1 and pub["patterns"] and pub["matched"] == {"bet9ja": 1}
     assert BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json").books["bet9ja"]["rows"]   # survives a restart

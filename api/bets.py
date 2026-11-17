@@ -59,6 +59,7 @@ class BetsService:
         self._sharp_rows: tuple[int, list] | None = None
         self._sharp_v = 0
         self._lock: asyncio.Lock | None = None
+        self._rebuild_task: asyncio.Task | None = None
         self._match_n: dict[str, tuple] = {}
         self._tasks: list[asyncio.Task] = []
         self.fetch_history, self.fetch_fixtures, self.fetch_odds_api = F.fetch_history, F.fetch_fixtures, F.fetch_odds_api
@@ -245,9 +246,14 @@ class BetsService:
             return self._board[2]
         return self._rebuild(now or int(time.time() * 1000))
 
-    async def board_async(self, now: int | None = None) -> list[dict]:
-        """The board, built on a worker thread (one build at a time)."""
+    async def board_async(self, now: int | None = None, wait: bool = True) -> list[dict]:
+        """The board, built on a worker thread (one build at a time). With wait=False an old board is returned at once
+        and a fresh one built behind it, so the page never waits on a build once there is one."""
         if self._fresh():
+            return self._board[2]
+        if not wait and self._board:
+            if self._rebuild_task is None or self._rebuild_task.done():
+                self._rebuild_task = asyncio.create_task(self._rebuild_quietly())
             return self._board[2]
         self._lock = self._lock or asyncio.Lock()
         async with self._lock:
@@ -255,9 +261,15 @@ class BetsService:
                 return self._board[2]
             return await asyncio.to_thread(self._rebuild, now or int(time.time() * 1000))
 
+    async def _rebuild_quietly(self) -> None:
+        try:
+            await self.board_async()
+        except Exception as exc:                          # noqa: BLE001 - the next request tries again
+            log.warning("bets board: %s", scrub(exc))
+
     async def snapshot(self, public: bool = False) -> dict:
         """What the page shows, with the slow parts done off the event loop (public: opened through the public link)."""
-        board = await self.board_async() if self.books else []
+        board = await self.board_async(wait=False) if self.books else []
         await asyncio.to_thread(lambda: [self._matched(k) for k in list(self.books)])
         return {**self.public(board), "public": public}
 

@@ -134,3 +134,22 @@ def test_scrub():
     from api.public import scrub
     assert scrub("Client error for url 'https://api.the-odds-api.com/v4/sports?apiKey=abc123&x=1'") == \
         "Client error for url 'https://api.the-odds-api.com/v4/sports?apiKey=…&x=1'"
+
+
+def test_cache_headers():
+    import asyncio
+    from api.public import CacheHeaders
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": [(b"cache-control", b"x")]})
+        await send({"type": "http.response.body", "body": b""})
+
+    def headers(path):
+        got = []
+
+        async def send(msg):
+            got.append(msg)
+        asyncio.run(CacheHeaders(app)({"type": "http", "path": path}, None, send))
+        return dict(got[0]["headers"]).get(b"cache-control")
+    assert headers("/assets/index-abc.js") == b"public, max-age=31536000, immutable"
+    assert headers("/bets") == b"no-cache" and headers("/api/bets") == b"x"

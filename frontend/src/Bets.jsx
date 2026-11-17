@@ -52,13 +52,13 @@ function Why({ x }) {
   );
 }
 
-function Rollover({ r }) {
+function Rollover({ r, pub }) {
   const c = r.chain;
   const x = r.today || r.candidate;
   const used = c.refills >= r.refills_max + 1;
   return (
     <section className="panel">
-      <Top title="Today's rollover pick" facts={[`chain ${c.n}`, `day ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`]} />
+      <Top title="Today's rollover pick" facts={pub ? [] : [`chain ${c.n}`, `day ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`]} />
       {x ? (
         <div className="bt-pick">
           <div className="bt-pick-top">
@@ -74,8 +74,8 @@ function Rollover({ r }) {
           <div className="az-kpis">
             <div><span className="muted">Chance of winning</span><b className="num">{pct(x.p, 1)}</b></div>
             <div><span className="muted">Edge at this price</span><b className={`num ${tone(x.edge)}`}>{sgn(x.edge)}</b></div>
-            <div><span className="muted">Stake (whole balance)</span><b className="num">{naira(r.today ? r.today.stake : c.balance)}</b></div>
-            <div><span className="muted">Returns if it wins</span><b className="num up">{naira((r.today ? r.today.stake : c.balance) * x.odds)}</b></div>
+            {!pub && <div><span className="muted">Stake (whole balance)</span><b className="num">{naira(r.today ? r.today.stake : c.balance)}</b></div>}
+            {!pub && <div><span className="muted">Returns if it wins</span><b className="num up">{naira((r.today ? r.today.stake : c.balance) * x.odds)}</b></div>}
           </div>
           <Why x={x} />
           <p className="az-note">
@@ -84,23 +84,23 @@ function Rollover({ r }) {
               : "Best candidate right now; today's pick is booked on the next pass (every 10 minutes, from 06:00 Lagos) and then fixed."}
           </p>
         </div>
-      ) : <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off within 30 hours, form backing the favourite, priced no worse than 2% under fair, with fresh odds from your laptop.</p>}
+      ) : <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off within 30 hours, form backing the favourite, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.</p>}
       <div className="bt-chain">
-        <div className="az-kpis">
+        {!pub && <div className="az-kpis">
           <div><span className="muted">Balance</span><b className="num">{naira(c.balance)}</b></div>
           <div><span className="muted">Best run</span><b className="num">{c.best} wins</b></div>
           <div><span className="muted">Spent so far</span><b className="num">{naira(r.start * (c.refills + 1))}</b></div>
           <div><span className="muted">Chance of day {r.target} from here</span><b className="num">{r.p_finish == null ? "-" : r.p_finish < 0.0001 ? "under 0.01%" : pct(r.p_finish, 2)}</b></div>
-        </div>
-        {used && <p className="az-note">The six refills are used up: no new chain is started.</p>}
+        </div>}
+        {used && !pub && <p className="az-note">The six refills are used up: no new chain is started.</p>}
         {r.history.length > 0 && (
           <div className="az-scroll az-mid"><table className="az-table">
-            <thead><tr><th>Day</th><th>Chain · leg</th><th>Pick</th><th className="r">Odds</th><th className="r">Stake</th><th>Result</th></tr></thead>
+            <thead><tr><th>Day</th>{!pub && <th>Chain · leg</th>}<th>Pick</th><th className="r">Odds</th>{!pub && <th className="r">Stake</th>}<th>Result</th></tr></thead>
             <tbody>
               {r.history.map((p) => (
                 <tr key={p.day}>
-                  <td className="muted num">{p.day}</td><td className="num">{p.chain} · {p.leg}</td><td className="bt-name">{pick(p)}</td>
-                  <td className="r num">{odd(p.odds)}</td><td className="r num">{naira(p.stake)}</td>
+                  <td className="muted num">{p.day}</td>{!pub && <td className="num">{p.chain} · {p.leg}</td>}<td className="bt-name">{pick(p)}</td>
+                  <td className="r num">{odd(p.odds)}</td>{!pub && <td className="r num">{naira(p.stake)}</td>}
                   <td className={p.status === "won" ? "up" : p.status === "lost" ? "down" : "muted"}>{p.status === "open" ? "open" : `${p.status} ${p.score || ""}`}</td>
                 </tr>
               ))}
@@ -119,7 +119,7 @@ function Value({ d }) {
   const [lo, hi, edge, stake] = d.settings.flat;
   return (
     <section className="panel">
-      <Top title="Value bets, flat stake" facts={[`${d.value.length} now`, `odds ${lo}–${hi}`, `edge ${pct(edge)}+`, `${naira(stake)} a bet`]}>
+      <Top title={d.public ? "Value bets" : "Value bets, flat stake"} facts={[`${d.value.length} now`, `odds ${lo}–${hi}`, `edge ${pct(edge)}+`, d.public ? null : `${naira(stake)} a bet`]}>
         <Seg value={view} set={setView} opts={[["value", "Value"], ["near", `Everything ${lo}–${hi}`]]} />
       </Top>
       {rows.length ? (
@@ -156,7 +156,7 @@ function Value({ d }) {
   );
 }
 
-function Record({ rec, recent }) {
+function Record({ rec, recent, pub }) {
   const f = rec.flat, r = rec.rollover;
   return (
     <section className="panel term-wide">
@@ -164,15 +164,15 @@ function Record({ rec, recent }) {
       <div className="az-kpis">
         <div><span className="muted">Flat bets settled</span><b className="num">{f.n}</b></div>
         <div><span className="muted">Won</span><b className="num">{f.n ? `${f.won} (${pct(f.won / f.n)})` : "-"}</b></div>
-        <div><span className="muted">Profit</span><b className={`num ${tone(f.profit)}`}>{naira(f.profit)}</b></div>
+        {!pub && <div><span className="muted">Profit</span><b className={`num ${tone(f.profit)}`}>{naira(f.profit)}</b></div>}
         <div><span className="muted">Return on stakes</span><b className={`num ${tone(f.roi)}`}>{f.roi == null ? "-" : sgn(f.roi)}</b></div>
         <div><span className="muted" title="The bet's odds against the fair closing price: positive means it beat the close">Beat the close by</span><b className={`num ${tone(f.clv)}`}>{f.clv == null ? "-" : `${sgn(f.clv)} (${f.clv_n})`}</b></div>
-        <div><span className="muted">Rollover chains</span><b className="num">{r.n}</b></div>
+        {!pub && <div><span className="muted">Rollover chains</span><b className="num">{r.n}</b></div>}
         <div><span className="muted">Rollover picks won</span><b className="num">{r.picks ? `${r.won} of ${r.picks}` : "-"}</b></div>
       </div>
       {recent.length > 0 && (
         <div className="az-scroll az-mid"><table className="az-table">
-          <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Edge then</th><th className="r">Beat the close</th><th>Result</th><th className="r">Profit</th></tr></thead>
+          <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Edge then</th><th className="r">Beat the close</th><th>Result</th>{!pub && <th className="r">Profit</th>}</tr></thead>
           <tbody>
             {recent.map((b) => (
               <tr key={b.key}>
@@ -180,7 +180,7 @@ function Record({ rec, recent }) {
                 <td className="r num">{odd(b.odds)}</td><td className={`r num ${tone(b.edge)}`}>{sgn(b.edge)}</td>
                 <td className={`r num ${tone(b.clv)}`}>{b.clv == null ? "-" : sgn(b.clv)}</td>
                 <td className={b.status === "won" ? "up" : b.status === "lost" ? "down" : "muted"}>{b.status}{b.score ? ` ${b.score}` : ""}</td>
-                <td className={`r num ${tone(b.profit)}`}>{b.profit == null ? "-" : naira(b.profit)}</td>
+                {!pub && <td className={`r num ${tone(b.profit)}`}>{b.profit == null ? "-" : naira(b.profit)}</td>}
               </tr>
             ))}
           </tbody>
@@ -369,9 +369,9 @@ export default function Bets() {
       {d && (
         <div className="term-grid">
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
-          <div className="tw-5 term-col"><Rollover r={d.rollover} /></div>
+          <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} /></div>
           <div className="tw-7"><Value d={d} /></div>
-          <Record rec={d.record} recent={d.flat_recent} />
+          <Record rec={d.record} recent={d.flat_recent} pub={d.public} />
           {d.study && <Study s={d.study} methods={d.methods} method={d.method} />}
           <div className="tw-6"><Patterns rows={d.patterns} /></div>
           <div className="tw-6"><Sources s={d.sources} now={now} d={d} /></div>
