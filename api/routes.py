@@ -215,6 +215,27 @@ async def news(request: Request, hours: float = 24, coin: str | None = None):
     return _rt(request).news.public(min(max(hours, 1), 168), coin)
 
 
+@router.get("/bets")
+async def bets(request: Request):
+    """The bets suite: flat value bets, today's rollover pick, the paper record and the patterns."""
+    return _rt(request).bets.public()
+
+
+@router.post("/bets/odds")
+async def bets_odds(request: Request):
+    """Nigerian bookmakers' odds, pushed from a laptop in Nigeria by scripts/naijaOdds.py."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "send JSON")
+    try:
+        return _rt(request).bets.push(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @router.get("/analyzer")
 async def analyzer(request: Request):
     """The Analyzer: fees by category and chain, what's heating up, and who is making money where it's public."""

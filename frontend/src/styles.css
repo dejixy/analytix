@@ -1603,3 +1603,18 @@ kbd {
 .term .az-asset .az-cap b { color: var(--t-ink); font-weight: 500; font-size: 11.5px; }
 .term .az-asset .az-cap { margin-bottom: 0; padding-bottom: 6px; }
 .term .az-early { font-size: 10.5px; font-weight: 500; white-space: nowrap; }
+
+/* ── Bets (/bets): the Analyzer's look; green and red for data, white for the rest ── */
+.term .bt-pick { border-bottom: 1px solid var(--t-edge); }
+.term .bt-pick-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px 12px 10px; }
+.term .bt-pick-name { font-size: 18px; font-weight: 600; color: var(--t-ink); margin-bottom: 3px; }
+.term .bt-pick-odds { display: grid; justify-items: end; gap: 2px; }
+.term .bt-pick-odds b { font-size: 26px; font-weight: 600; color: var(--t-ink); line-height: 1; }
+.term .bt-why { margin: 0; padding: 8px 12px 4px 28px; display: grid; gap: 4px; font-size: 12px; line-height: 1.5; color: var(--t-ink2); }
+.term .bt-why b { color: var(--t-ink); font-weight: 600; }
+.term .bt-why .up { color: var(--t-green); }
+.term .bt-why .down { color: var(--t-red); }
+.term .bt-detail td { background: var(--t-head); white-space: normal; padding: 0 0 6px; }
+.term .bt-chain .az-kpis { border-top: 0; }
+.term .az-note code { font-family: var(--mono); font-size: 11.5px; color: var(--t-ink); }
+.term .az-table td.bt-name, .term .az-table td.bt-name .az-cat { font-family: var(--t-sans); }

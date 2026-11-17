@@ -8,6 +8,7 @@
 #                                            and Strategy's biggest buys (a few minutes), kept in /tmp/btc_moves.txt
 #   bash ~/analytix/scripts/run.sh carry     the funding-carry watcher's rule on Hyperliquid's history (a few minutes)
 #   bash ~/analytix/scripts/run.sh analyzer  check each of the Analyzer's sources from this server (a minute)
+#   bash ~/analytix/scripts/run.sh bets      check the bets suite's sources from this server (a minute or two)
 #   bash ~/analytix/scripts/run.sh map       (re)start the HYPE map in the background (keeps what it already read)
 #   bash ~/analytix/scripts/run.sh top       the biggest wallets in the latest HYPE map, to look up and name
 #   bash ~/analytix/scripts/run.sh fresh     (re)start fresh money in the background (store build, then the study)
@@ -53,6 +54,9 @@ case "${1:-status}" in
   top)
     "$PY" -m scripts.hypeTop "${@:2}"
     ;;
+  bets)
+    "$PY" -m scripts.betsProbe 2>&1 | tee /tmp/bets_probe.txt
+    ;;
   analyzer)
     "$PY" -m scripts.analyzerProbe 2>&1 | tee /tmp/analyzer_probe.txt
     ;;
@@ -81,6 +85,6 @@ case "${1:-status}" in
     git pull --ff-only
     ;;
   *)
-    sed -n '2,18p' "$0"
+    sed -n '2,19p' "$0"
     ;;
 esac
