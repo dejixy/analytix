@@ -17,7 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.public import PublicGate
+from api.public import CacheHeaders, PublicGate
 from api.routes import router as rest_router
 from api.runtime import Runtime
 from api.stream import router as ws_router
@@ -40,6 +40,7 @@ def create_app(mode: str = MODE, replay_file: Path = REPLAY_FILE, speed: float =
     app.state.runtime = runtime
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
     app.add_middleware(GZipMiddleware, minimum_size=1024)         # JSON replies shrink ~8x: a slow tunnel matters
+    app.add_middleware(CacheHeaders)                              # built files kept a year; pages always checked
     app.add_middleware(PublicGate)                                # outermost: the public link sees the bets page only
     app.include_router(rest_router)
     app.include_router(ws_router)

@@ -66,3 +66,27 @@ async def _reply(send, status: int, body: bytes, headers: list) -> None:
 def scrub(text: str) -> str:
     """Error text with any key in a URL blanked (an HTTP error's message carries the URL it asked for)."""
     return re.sub(r"((?:api_?key|apiKey|key|token)=)[^&\s'\"]+", r"\1…", str(text), flags=re.I)
+
+
+class CacheHeaders:
+    """Built files have their content's hash in their names, so a browser (and Cloudflare) may keep them for a year; the
+    page itself is always checked, so a new build shows up at once."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        rule = (b"public, max-age=31536000, immutable" if path.startswith("/assets/")
+                else b"no-cache" if path in ("/", "/bets", "/terminal", "/analyzer", "/index.html") else None)
+        if rule is None:
+            return await self.app(scope, receive, send)
+
+        async def send_cached(msg):
+            if msg["type"] == "http.response.start" and msg.get("status") == 200:
+                msg = {**msg, "headers": [*[h for h in msg.get("headers", []) if h[0].lower() != b"cache-control"],
+                                          (b"cache-control", rule)]}
+            await send(msg)
+        await self.app(scope, receive, send_cached)
