@@ -13,7 +13,8 @@ Pure functions and a small paper book; ingestion/football.py reads the data, api
                  numbers "agree" when it has more points a game and a bigger share of the shots on target than its
                  opponent, and hasn't lost two of its last four
     value        edge = Nigerian odds x adjusted chance - 1. Flat bets: odds 1.20 to 1.50 and an edge of 2%+, odds read in
-                 the last two hours, a sharp price from the last 24, kick-off within three days
+                 the last two hours, a sharp price from the last 24; shown up to a week ahead, booked on paper from three
+                 days before kick-off
     rollover     one pick a day, fixed once made: odds 1.15 to 1.35, kick-off within 30 hours, stats agree, edge no worse
                  than -2%; the highest adjusted chance of winning. Followed as a paper chain from N5,000, the balance
                  riding on each pick, with up to six refills
@@ -40,6 +41,7 @@ FLAT_STAKE = 250
 ROLL_MIN, ROLL_MAX, ROLL_EDGE = 1.15, 1.35, -0.02
 ROLL_START, ROLL_REFILLS, ROLL_TARGET = 5_000, 6, 30
 ODDS_FRESH_H, SHARP_FRESH_H = 2, 24
+SHOW_DAYS, BOOK_DAYS = 7, 3          # games shown up to a week ahead; paper bets booked from three days before kick-off
 SHRINK = 200                      # history moves the chance by (wins - expected) / (n + SHRINK)
 FORM_N = 6
 
@@ -277,7 +279,7 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
     for book, got in books.items():
         age_h = (now_ms - got["t_ms"]) / HOUR
         for r in got["rows"]:
-            if r["t_ms"] < now_ms + 10 * 60_000 or r["t_ms"] > now_ms + 3 * DAY:
+            if r["t_ms"] < now_ms + 10 * 60_000 or r["t_ms"] > now_ms + SHOW_DAYS * DAY:
                 continue
             s = match_fixture(r["home"], r["away"], r["t_ms"], sharp)
             if not s:
@@ -316,9 +318,11 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
     return sorted(rows, key=lambda x: -x["edge"])
 
 
-def value_bets(board: list[dict], lo: float = FLAT_MIN, hi: float = FLAT_MAX, edge: float = FLAT_EDGE) -> list[dict]:
+def value_bets(board: list[dict], lo: float = FLAT_MIN, hi: float = FLAT_MAX, edge: float = FLAT_EDGE,
+               before_ms: int | None = None) -> list[dict]:
+    """Flat value bets; with before_ms, only those kicking off before it."""
     return [x for x in board if lo <= x["odds"] <= hi and x["edge"] >= edge and x["odds_age_h"] <= ODDS_FRESH_H
-            and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"]
+            and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X" and (before_ms is None or x["t_ms"] <= before_ms)]
 
 
 def rollover_pick(board: list[dict], now_ms: int) -> dict | None:

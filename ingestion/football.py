@@ -30,6 +30,7 @@ LONDON = ZoneInfo("Europe/London")
 # football-data code: (name, The Odds API sport key)
 LEAGUES = {
     "E0": ("Premier League", "soccer_epl"), "E1": ("Championship", "soccer_efl_champ"),
+    "E2": ("League One", "soccer_england_league1"), "E3": ("League Two", "soccer_england_league2"),   # play through breaks
     "SP1": ("La Liga", "soccer_spain_la_liga"), "I1": ("Serie A", "soccer_italy_serie_a"),
     "D1": ("Bundesliga", "soccer_germany_bundesliga"), "F1": ("Ligue 1", "soccer_france_ligue_one"),
     "N1": ("Eredivisie", "soccer_netherlands_eredivisie"), "P1": ("Primeira Liga", "soccer_portugal_primeira_liga"),

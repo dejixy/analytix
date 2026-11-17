@@ -1,8 +1,8 @@
 """
 The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live mode only.
 
-    history        football-data.co.uk, three seasons of 12 leagues, once a day: the calibration and team form
-    sharp prices   The Odds API once a day for the main leagues (with ANALYTIX_ODDS_API_KEY; ~8 credits a day), and
+    history        football-data.co.uk, three seasons of 14 leagues, once a day: the calibration and team form
+    sharp prices   The Odds API once a day for the main leagues (with ANALYTIX_ODDS_API_KEY; ~9 credits a day), and
                    football-data's fixtures every six hours (free; Pinnacle or the market average). The fresher wins
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
@@ -25,7 +25,8 @@ from ingestion import football as F
 
 log = logging.getLogger("analytix.bets")
 LAGOS = ZoneInfo("Africa/Lagos")
-ODDS_API_LEAGUES = ("E0", "SP1", "I1", "D1", "F1", "N1", "P1", "UCL")
+ODDS_API_LEAGUES = ("E0", "E1", "E2", "E3", "SP1", "I1", "D1", "F1", "UCL")    # ~9 credits a day; the lower English
+                                                                                 # leagues play through international breaks
 EVERY_S = {"history": 86400, "fixtures": 6 * 3600, "sharp": 86400, "book": 600}
 MIN_CREDITS = 40
 
@@ -43,6 +44,7 @@ class BetsService:
         self.credits: int | None = None
         self.status: dict[str, dict] = {k: {"ok": None, "at": None, "error": None} for k in ("history", "fixtures", "sharp", "book")}
         self._board: tuple[float, list] | None = None
+        self._match_n: dict[str, tuple] = {}
         self._tasks: list[asyncio.Task] = []
         self.fetch_history, self.fetch_fixtures, self.fetch_odds_api = F.fetch_history, F.fetch_fixtures, F.fetch_odds_api
 
@@ -111,7 +113,7 @@ class BetsService:
         """Book new flat value bets, make today's rollover pick, settle what has finished."""
         now = int(time.time() * 1000)
         board = self.board(now)
-        for x in B.value_bets(board):
+        for x in B.value_bets(board, before_ms=now + B.BOOK_DAYS * B.DAY):
             self.book.add_flat(x, now)
         day = datetime.fromtimestamp(now / 1000, LAGOS)
         if day.hour >= 6:
@@ -152,8 +154,14 @@ class BetsService:
         return {"book": book, "games": len(rows), "matched": self._matched(book)}
 
     def _matched(self, book: str) -> int:
+        """How many of a book's games found their sharp line (kept for a minute: the page asks every 30 seconds)."""
+        hit = self._match_n.get(book)
+        if hit and hit[0] == self.books[book]["t_ms"] and time.time() - hit[1] < 60:
+            return hit[2]
         sharp = self.sharp()
-        return sum(1 for r in self.books[book]["rows"] if B.match_fixture(r["home"], r["away"], r["t_ms"], sharp))
+        n = sum(1 for r in self.books[book]["rows"] if B.match_fixture(r["home"], r["away"], r["t_ms"], sharp))
+        self._match_n[book] = (self.books[book]["t_ms"], time.time(), n)
+        return n
 
     def _load_odds(self) -> dict:
         try:
@@ -203,7 +211,9 @@ class BetsService:
                         pats.append({"kind": kind, "market": m, "name": B.MARKET_NAME[m], "odds": [round(1 / hi, 2), round(1 / lo, 2)],
                                      "n": c[0], "rate": c[1] / c[0], "implied": c[2] / c[0]})
         return {"now_ms": now, "enabled": self.rt.mode == "live",
-                "value": B.value_bets(board)[:60], "board_n": len(board),
+                "value": B.value_bets(board)[:60], "board_n": len(board), "book_days": B.BOOK_DAYS, "show_days": B.SHOW_DAYS,
+                "matched": {k: self._matched(k) for k in self.books},
+                "next_kick": min((x["t_ms"] for x in board), default=None),
                 "near": [x for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"][:40],
                 "rollover": {"today": today, "candidate": candidate, "chain": chain, "target": B.ROLL_TARGET,
                              "refills_max": B.ROLL_REFILLS, "start": B.ROLL_START,

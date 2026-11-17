@@ -99,6 +99,7 @@ def test_value_list_and_rollover_pick():
     assert big["fav"] == "Big City" and big["agree"] is True and big["edge"] > 0.02
     vb = B.value_bets(board)
     assert [(x["home"], x["market"]) for x in vb] == [("Big City", "1")]                # town's 1.60 is stale, 1.08 too short
+    assert B.value_bets(board, before_ms=NOW + H) == []                                  # kicks off later than that
     pick = B.rollover_pick(board, NOW)
     assert pick["home"] == "Big City" and pick["market"] == "1"
     assert abs(B.chain_odds(0.73, 30) - 0.73 ** 30) < 1e-15
@@ -190,5 +191,5 @@ def test_the_service(tmp_path, monkeypatch):
     asyncio.run(svc.refresh("book"))
     pub = svc.public()
     assert pub["value"][0]["home"] == "Big City" and len(svc.book.flat) == 1
-    assert pub["sources"]["books"]["bet9ja"]["games"] == 1 and pub["patterns"]
+    assert pub["sources"]["books"]["bet9ja"]["games"] == 1 and pub["patterns"] and pub["matched"] == {"bet9ja": 1}
     assert BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json").books["bet9ja"]["rows"]   # survives a restart
