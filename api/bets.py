@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 from api.public import scrub
 from engine import betting as B
+from engine import betstudy as S
 from ingestion import football as F
 
 log = logging.getLogger("analytix.bets")
@@ -45,6 +46,8 @@ class BetsService:
         self.history: list[dict] = []
         self.cal: dict = {}
         self.teams: B.Teams | None = None
+        self.methods: dict = {}                               # each margin method's fit to three seasons of results
+        self.study: dict = {}                                 # the rules replayed on three seasons (engine/betstudy.py)
         self.sharp_fd: list[dict] = []
         self.sharp_oa: list[dict] = []
         self.credits: int | None = None
@@ -97,7 +100,13 @@ class BetsService:
         if not games:
             raise RuntimeError("; ".join(errors[:4]) or "no games read")
         history = sorted(games, key=lambda g: g["t_ms"])
-        self.cal, self.teams = await asyncio.to_thread(lambda: (B.calibration(history), B.Teams(history)))
+
+        def crunch():                                     # a worker thread: half a minute or so, once a day
+            scores = B.compare_methods(history)
+            B.set_method(B.best_method(scores))
+            teams = B.Teams(history)
+            return scores, B.calibration(history), teams, S.study(history, teams)
+        self.methods, self.cal, self.teams, self.study = await asyncio.to_thread(crunch)
         self.history = history
         self._changed()
         if errors:
@@ -280,6 +289,7 @@ class BetsService:
                              "p_finish": B.chain_odds(p_now, left) if p_now else None, "days_left": left,
                              "history": self.book.picks[-30:][::-1]},
                 "record": self.book.record(), "flat_recent": self.book.flat[-40:][::-1], "patterns": pats,
+                "method": B.method(), "methods": self.methods, "study": self.study,
                 "settings": {"flat": [B.FLAT_MIN, B.FLAT_MAX, B.FLAT_EDGE, B.FLAT_STAKE],
                              "roll": [B.ROLL_MIN, B.ROLL_MAX, B.ROLL_EDGE]},
                 "sources": {"books": {k: {"t_ms": v["t_ms"], "games": len(v["rows"])} for k, v in self.books.items()},

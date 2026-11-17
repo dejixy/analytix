@@ -126,13 +126,84 @@ def match_fixture(home: str, away: str, t_ms: int, fixtures: list[dict], within_
 
 
 # ── fair chances ─────────────────────────────────────────────────────────────
-def devig(odds: dict[str, float]) -> dict[str, float] | None:
-    """{outcome: odds} → {outcome: fair chance}, the margin taken out in proportion."""
+# Three ways to take a bookmaker's margin out of its prices. Which fits best is an empirical question: the server scores
+# each on three seasons of Pinnacle's prices against the results (compare_methods) and uses the best (set_method).
+#   proportional  every outcome's chance shrunk by the same factor
+#   power         chances = (1/odds)^k with k chosen so they add to 1: more of the margin comes off the long shots
+#   shin          Shin's model: the margin is the price of protection against insiders, also heavier on long shots
+METHODS = ("proportional", "power", "shin")
+_method = "proportional"
+
+
+def set_method(name: str) -> None:
+    global _method
+    _method = name if name in METHODS else "proportional"
+
+
+def method() -> str:
+    return _method
+
+
+def devig(odds: dict[str, float], how: str | None = None) -> dict[str, float] | None:
+    """{outcome: odds} → {outcome: fair chance}, the margin taken out by the chosen method."""
     inv = {k: 1 / v for k, v in odds.items() if v and v > 1}
     if len(inv) != len(odds) or not inv:
         return None
     s = sum(inv.values())
-    return {k: v / s for k, v in inv.items()}
+    how = how or _method
+    if s > 1 and how == "power":
+        lo, hi = 1.0, 20.0
+        for _ in range(60):
+            k = (lo + hi) / 2
+            lo, hi = (k, hi) if sum(q ** k for q in inv.values()) > 1 else (lo, k)
+        p = {o: q ** ((lo + hi) / 2) for o, q in inv.items()}
+    elif s > 1 and how == "shin":
+        def shin(z):
+            return {o: (math.sqrt(z * z + 4 * (1 - z) * q * q / s) - z) / (2 * (1 - z)) for o, q in inv.items()}
+        lo, hi = 0.0, 0.5
+        for _ in range(60):
+            z = (lo + hi) / 2
+            lo, hi = (z, hi) if sum(shin(z).values()) > 1 else (lo, z)
+        p = shin((lo + hi) / 2)
+    else:
+        p = inv
+    t = sum(p.values())
+    return {k: v / t for k, v in p.items()}
+
+
+def compare_methods(history: list[dict], cols: tuple = ("PSH", "PSD", "PSA")) -> dict:
+    """How well each method's fair chances fit the results of past games priced in `cols` (Pinnacle's, by default):
+    {method: {n, logloss (lower is better), fav_n, fav_won, fav_said}}, the "fav" numbers for favourites priced 1.15 to
+    1.50, the range the bets live in."""
+    out = {m: {"n": 0, "logloss": 0.0, "fav_n": 0, "fav_won": 0, "fav_said": 0.0} for m in METHODS}
+    for g in history:
+        if g.get("hg") is None:
+            continue
+        odds = {"1": g.get(cols[0]), "X": g.get(cols[1]), "2": g.get(cols[2])}
+        if not all(odds.values()):
+            continue
+        r = "1" if g["hg"] > g["ag"] else "2" if g["ag"] > g["hg"] else "X"
+        fav = min(("1", "2"), key=lambda k: odds[k])
+        for m in METHODS:
+            p = devig(odds, m)
+            if not p:
+                continue
+            o = out[m]
+            o["n"] += 1
+            o["logloss"] -= math.log(max(p[r], 1e-9))
+            if 1.15 <= odds[fav] <= 1.50:
+                o["fav_n"] += 1
+                o["fav_won"] += r == fav
+                o["fav_said"] += p[fav]
+    for o in out.values():
+        if o["n"]:
+            o["logloss"] /= o["n"]
+    return out
+
+
+def best_method(scores: dict, least: int = 1000) -> str:
+    ok = {m: v for m, v in scores.items() if v["n"] >= least}
+    return min(ok, key=lambda m: ok[m]["logloss"]) if ok else "proportional"
 
 
 def markets_from_1x2(p: dict[str, float]) -> dict[str, float]:
@@ -338,7 +409,8 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
             s = match_fixture(r["home"], r["away"], r["t_ms"], sharp)
             if not s or s["t_ms"] < now_ms + 10 * 60_000:      # the sharp kick-off is the reliable one
                 continue
-            fair = markets_from_1x2(s["fair"])
+            fair1x2 = (devig(s["odds"]) if s.get("odds") else None) or s["fair"]     # the current method, from raw prices
+            fair = markets_from_1x2(fair1x2)
             intl = bool(s.get("intl"))
             for m, price in r["odds"].items():
                 if m not in fair or not price or price <= 1:
@@ -347,7 +419,7 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
                 out.append({"key": f"{s['id']}:{m}", "match_id": s["id"], "home": s["home"], "away": s["away"],
                             "league": s.get("league", ""), "league_name": s.get("league_name", ""), "t_ms": s["t_ms"],
                             "market": m, "book": book, "odds": price, "odds_age_h": age_h, "fair_p": fair[m], "p": p_adj,
-                            "fair_odds": 1 / fair[m], "edge": price * p_adj - 1, "sharp_src": s["src"], "fair1x2": s["fair"],
+                            "fair_odds": 1 / fair[m], "edge": price * p_adj - 1, "sharp_src": s["src"], "fair1x2": fair1x2,
                             "sharp_age_h": (now_ms - s["read_ms"]) / HOUR, "pattern": pat, "intl": intl})
     groups: dict[str, list[dict]] = {}
     for x in out:

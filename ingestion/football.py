@@ -134,11 +134,12 @@ def sharp_from_fd(fixtures: list[dict], read_ms: int) -> list[dict]:
         if g.get("hg") is not None or g["league"] not in LEAGUES:
             continue
         for h, d, a, src in (("PSH", "PSD", "PSA", "Pinnacle (football-data)"), ("AvgH", "AvgD", "AvgA", "market average (football-data)")):
-            fair = B.devig({"1": g.get(h), "X": g.get(d), "2": g.get(a)})
+            odds = {"1": g.get(h), "X": g.get(d), "2": g.get(a)}
+            fair = B.devig(odds)
             if fair:
                 out.append({"id": f"fd:{g['league']}:{B.norm(g['home'])}:{B.norm(g['away'])}:{g['t_ms'] // B.DAY}",
                             "league": g["league"], "league_name": LEAGUES[g["league"]][0], "home": g["home"], "away": g["away"],
-                            "t_ms": g["t_ms"], "fair": fair, "src": src, "read_ms": read_ms})
+                            "t_ms": g["t_ms"], "fair": fair, "odds": odds, "src": src, "read_ms": read_ms})
                 break
     return out
 
@@ -175,19 +176,20 @@ def parse_odds_api(events: list, league: str, league_name: str, read_ms: int, in
             t = int(datetime.fromisoformat(str(e.get("commence_time")).replace("Z", "+00:00")).timestamp() * 1000)
         except ValueError:
             continue
-        per = {}
+        per, raw = {}, {}
         for bk in e.get("bookmakers") or []:
             for m in bk.get("markets") or []:
                 if m.get("key") != "h2h":
                     continue
                 o = {x.get("name"): num(x.get("price")) for x in m.get("outcomes") or []}
-                fair = B.devig({"1": o.get(home), "X": o.get("Draw"), "2": o.get(away)})
+                odds = {"1": o.get(home), "X": o.get("Draw"), "2": o.get(away)}
+                fair = B.devig(odds)
                 if fair:
-                    per[bk.get("key")] = fair
-        fair, src = None, ""
+                    per[bk.get("key")], raw[bk.get("key")] = fair, odds
+        fair, src, odds = None, "", None
         for k in SHARP_BOOKS:
             if k in per:
-                fair, src = per[k], {"pinnacle": "Pinnacle", "matchbook": "Matchbook"}.get(k, "Betfair exchange")
+                fair, odds, src = per[k], raw[k], {"pinnacle": "Pinnacle", "matchbook": "Matchbook"}.get(k, "Betfair exchange")
                 break
         if not fair and len(per) >= 3:
             ps = sorted(per.values(), key=lambda f: f["1"])
@@ -195,7 +197,8 @@ def parse_odds_api(events: list, league: str, league_name: str, read_ms: int, in
             fair, src = mid, f"median of {len(per)} books"
         if fair and home and away:
             out.append({"id": f"oa:{e.get('id')}", "league": league, "league_name": league_name, "home": home, "away": away,
-                        "t_ms": t, "fair": fair, "src": f"{src} (The Odds API)", "read_ms": read_ms, **({"intl": True} if intl else {})})
+                        "t_ms": t, "fair": fair, "src": f"{src} (The Odds API)", "read_ms": read_ms, **({"odds": odds} if odds else {}),
+                        **({"intl": True} if intl else {})})
     return out
 
 
