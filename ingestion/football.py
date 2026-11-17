@@ -38,6 +38,11 @@ LEAGUES = {
     "T1": ("Super Lig", "soccer_turkey_super_league"), "G1": ("Greek Super League", "soccer_greece_super_league"),
 }
 CUPS = {"UCL": ("Champions League", "soccer_uefa_champs_league"), "UEL": ("Europa League", "soccer_uefa_europa_league")}
+ODDS_API_SPORTS = "https://api.the-odds-api.com/v4/sports"          # the list is free: it costs no credits
+INTL_WORDS = ("nations league", "nations_league", "world cup qualif", "world_cup_qualif", "friendl", "euro qualif",
+              "euro_qualif", "european championship", "copa america", "copa_america", "africa cup", "africa_cup",
+              "gold cup", "gold_cup", "asian cup", "asian_cup")
+INTL_SKIP = ("women", "club", "u21", "u23", "u20", "u19", "u17", "youth")
 SHARP_BOOKS = ("pinnacle", "betfair_ex_eu", "betfair_ex_uk", "matchbook")
 
 
@@ -139,7 +144,28 @@ def sharp_from_fd(fixtures: list[dict], read_ms: int) -> list[dict]:
 
 
 # ── The Odds API ─────────────────────────────────────────────────────────────
-def parse_odds_api(events: list, league: str, league_name: str, read_ms: int) -> list[dict]:
+def intl_sports(sports: list) -> dict[str, tuple[str, str]]:
+    """The international competitions in season on The Odds API, as {sport key: (title, sport key)}."""
+    out = {}
+    for x in sports if isinstance(sports, list) else []:
+        text = f"{x.get('key', '')} {x.get('title', '')} {x.get('description', '')}".lower()
+        if (x.get("group") == "Soccer" and x.get("active") and not x.get("has_outrights")
+                and any(w in text for w in INTL_WORDS) and not any(w in text for w in INTL_SKIP)):
+            out[x["key"]] = (x.get("title") or x["key"], x["key"])
+    return out
+
+
+async def fetch_sports(key: str | None = None) -> list:
+    key = key or os.getenv("ANALYTIX_ODDS_API_KEY", "")
+    if not key:
+        raise RuntimeError("no key: set ANALYTIX_ODDS_API_KEY (free at the-odds-api.com)")
+    async with httpx.AsyncClient(timeout=30, headers=UA) as c:
+        r = await c.get(ODDS_API_SPORTS, params={"apiKey": key})
+        r.raise_for_status()
+        return r.json()
+
+
+def parse_odds_api(events: list, league: str, league_name: str, read_ms: int, intl: bool = False) -> list[dict]:
     """The coming games of one league with a sharp fair price: Pinnacle, else the Betfair exchange or Matchbook, else
     the median of every European book's fair chances."""
     out = []
@@ -169,7 +195,7 @@ def parse_odds_api(events: list, league: str, league_name: str, read_ms: int) ->
             fair, src = mid, f"median of {len(per)} books"
         if fair and home and away:
             out.append({"id": f"oa:{e.get('id')}", "league": league, "league_name": league_name, "home": home, "away": away,
-                        "t_ms": t, "fair": fair, "src": f"{src} (The Odds API)", "read_ms": read_ms})
+                        "t_ms": t, "fair": fair, "src": f"{src} (The Odds API)", "read_ms": read_ms, **({"intl": True} if intl else {})})
     return out
 
 

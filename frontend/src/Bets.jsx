@@ -43,7 +43,7 @@ function Why({ x }) {
         Sharp price says <b>{pct(x.fair_p, 1)}</b> ({x.sharp_src}); history moves it to <b>{pct(x.p, 1)}</b>.
         At {odd(x.odds)} on {BOOK[x.book] || x.book} that is an edge of <b className={tone(x.edge)}>{sgn(x.edge)}</b>.
       </li>
-      {x.agree_why && <li>Form: <span className={x.agree ? "up" : x.agree === false ? "down" : ""}>{x.agree ? "backs it" : x.agree === false ? "doesn't back it" : "unclear"}</span>, {x.agree_why}.</li>}
+      {x.agree_why && <li>Form: <span className={x.agree ? "up" : x.agree === false ? "down" : ""}>{x.agree ? "backs it" : x.agree === false ? "doesn't back it" : x.intl ? "not checked" : "unclear"}</span>, {x.agree_why}.</li>}
       {f && o && <li>Last {f.n}: {x.fav} {f.results} ({f.gf.toFixed(1)} scored, {f.ga.toFixed(1)} conceded a game) · opponent {o.results} ({o.gf.toFixed(1)}, {o.ga.toFixed(1)}).</li>}
       {pat && <li>History: favourites priced {pat.range[0]}–{pat.range[1]} in {pat.scope} won {pct(pat.rate, 1)} of {pat.n.toLocaleString()} games, against {pct(pat.implied, 1)} the prices said.</li>}
       {rec && <li>{x.fav} as a clear favourite over three seasons: won {rec.won} of {rec.n} ({pct(rec.won / rec.n)}).</li>}
@@ -138,7 +138,7 @@ function Value({ d }) {
                   <td className="r num muted">{odd(1 / x.p)}</td>
                   <td className={`r num ${tone(x.edge)}`}>{sgn(x.edge)}</td>
                   <td className="r num">{pct(x.p, 1)}</td>
-                  <td className={x.agree ? "up" : x.agree === false ? "down" : "muted"} title={x.agree_why || ""}>{x.agree ? "backs it" : x.agree === false ? "against" : "-"}</td>
+                  <td className={x.agree ? "up" : x.agree === false ? "down" : "muted"} title={x.agree_why || ""}>{x.agree ? "backs it" : x.agree === false ? "against" : x.intl ? "price only" : "-"}</td>
                   <td className="r num muted">{x.pattern ? `${pct(x.pattern.rate)} of ${x.pattern.n.toLocaleString()}` : "-"}</td>
                 </tr>
                 {open === x.key && <tr className="bt-detail"><td colSpan={8}><Why x={x} /></td></tr>}

@@ -2,6 +2,7 @@
 import asyncio
 import random
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -182,6 +183,10 @@ def test_the_service(tmp_path, monkeypatch):
         raise RuntimeError("no key: set ANALYTIX_ODDS_API_KEY (free at the-odds-api.com)")
     svc.fetch_history, svc.fetch_fixtures, svc.fetch_odds_api = history, fixtures, odds_api
 
+    async def sports():
+        raise RuntimeError("no key: set ANALYTIX_ODDS_API_KEY (free at the-odds-api.com)")
+    svc.fetch_sports = sports
+
     async def go():
         for k in ("history", "fixtures", "sharp"):
             await svc.refresh(k)
@@ -198,3 +203,46 @@ def test_the_service(tmp_path, monkeypatch):
     assert pub["value"][0]["home"] == "Big City" and len(svc.book.flat) == 1
     assert pub["sources"]["books"]["bet9ja"]["games"] == 1 and pub["patterns"] and pub["matched"] == {"bet9ja": 1}
     assert BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json").books["bet9ja"]["rows"]   # survives a restart
+
+
+def test_internationals():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    a = {"R": "OK", "D": {"PAL": {"1": {"S_DESC": "Soccer", "SG": {"55": {"SG_DESC": "International", "G": {
+            "170001": {"G_DESC": "UEFA Nations League"}, "170002": {"G_DESC": "Friendlies"},
+            "170003": {"G_DESC": "Friendlies Women"}}}, "60": {"SG_DESC": "England", "G": {"170880": {"G_DESC": "Premier League"}}}}},
+         "5": {"S_DESC": "Volleyball", "SG": {"77": {"SG_DESC": "International", "G": {"9001": {"G_DESC": "Nations League"}}}}}}}}
+    got = N.intl_groups(a)
+    assert 170001 in got and 170002 in got and 170003 not in got and 170880 not in got and 9001 not in got
+    b = {"D": {"S": [{"ID": 1, "DS": "Soccer", "C": [{"ID": 55, "DS": "International Clubs", "G": [{"ID": 1, "DS": "Club Friendlies"}]},
+                                                    {"ID": 56, "DS": "World", "G": [{"ID": 180001, "DS": "World Cup Qualification CAF"}]}]}]}}
+    assert list(N.intl_groups(b)) == [180001]
+    sports = [{"key": "soccer_uefa_nations_league", "group": "Soccer", "title": "UEFA Nations League", "active": True, "has_outrights": False},
+              {"key": "soccer_epl", "group": "Soccer", "title": "EPL", "active": True, "has_outrights": False},
+              {"key": "soccer_fifa_world_cup_winner", "group": "Soccer", "title": "FIFA World Cup Winner", "active": True, "has_outrights": True},
+              {"key": "soccer_international_friendlies_women", "group": "Soccer", "title": "Friendlies (Women)", "active": True, "has_outrights": False},
+              {"key": "basketball_fiba_world_cup_qualif", "group": "Basketball", "title": "FIBA qualifiers", "active": True, "has_outrights": False}]
+    assert F.intl_sports(sports) == {"soccer_uefa_nations_league": ("UEFA Nations League", "soccer_uefa_nations_league")}
+    for x, y in (("Czechia", "Czech Republic"), ("Türkiye", "Turkey"), ("Bosnia & Herzegovina", "Bosnia-Herzegovina"),
+                 ("Rep. of Ireland", "Republic of Ireland"), ("Côte d'Ivoire", "Ivory Coast"), ("Korea Republic", "South Korea")):
+        assert B.same_team(x, y) >= 0.92, (x, y)
+    # an international is judged on the price alone, and can be the rollover pick when it's at or above fair
+    now = NOW
+    sharp = [{"id": "oa:n1", "league": "soccer_uefa_nations_league", "league_name": "UEFA Nations League", "home": "Spain",
+              "away": "Georgia", "t_ms": now + 5 * H, "fair": B.devig({"1": 1.22, "X": 6.5, "2": 13}), "src": "Pinnacle (The Odds API)",
+              "read_ms": now, "intl": True}]
+    books = {"bet9ja": {"t_ms": now, "rows": [{"home": "Spain", "away": "Georgia", "t_ms": now + 5 * H, "odds": {"1": 1.30}}]}}
+    board = B.build(books, sharp, _history(), {}, now)
+    x = board[0]
+    assert x["intl"] and x["pattern"] is None and x["p"] == x["fair_p"] and x["agree"] is None and x["fav_form"] is None
+    assert B.rollover_pick(board, now) is x and x["edge"] >= 0
+    books["bet9ja"]["rows"][0]["odds"]["1"] = 1.20                     # under fair: no pick
+    assert B.rollover_pick(B.build(books, sharp, _history(), {}, now), now) is None
+    raw = {"D": {"E": [{"DS": "Spain - Georgia", "GN": "UEFA Nations League", "STARTDATE": "2026-11-17 20:45:00", "ID": 9,
+                        "O": {"S_1X2_1": "1.30", "S_1X2_X": "6.1", "S_1X2_2": "11", "S_DC_1X": "1.03", "S_DC_12": None}},
+                       {"DS": "no odds - here", "STARTDATE": "2026-11-17 20:45:00", "ID": 10, "O": {}}]}}
+    rows = N.bet9ja_rows(raw)
+    assert rows == [{"match": "Spain - Georgia", "league": "UEFA Nations League", "time": 1794944700, "match_id": 9,
+                     "home": 1.3, "draw": 6.1, "away": 11.0, "home_or_draw": 1.03}]      # 20:45 in Lagos, names untouched

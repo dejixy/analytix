@@ -2,7 +2,8 @@
 The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live mode only.
 
     history        football-data.co.uk, three seasons of 14 leagues, once a day: the calibration and team form
-    sharp prices   The Odds API once a day for the main leagues (with ANALYTIX_ODDS_API_KEY; ~9 credits a day), and
+    sharp prices   The Odds API once a day for the main leagues and any international competition in season (with
+                   ANALYTIX_ODDS_API_KEY; ~9 credits a day, one more for each competition), and
                    football-data's fixtures every six hours (free; Pinnacle or the market average). The fresher wins
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
@@ -46,6 +47,8 @@ class BetsService:
         self.sharp_fd: list[dict] = []
         self.sharp_oa: list[dict] = []
         self.credits: int | None = None
+        self.intl: dict[str, tuple[str, str]] = {}            # international competitions in season: {sport key: (title, key)}
+        self._scores_at: dict[str, float] = {}                # when each league's results were last asked for
         self.status: dict[str, dict] = {k: {"ok": None, "at": None, "error": None} for k in ("history", "fixtures", "sharp", "book")}
         self._board: tuple[float, int, list] | None = None    # (built at, generation, rows)
         self._gen = 0                                          # bumped whenever odds, prices or history change
@@ -55,6 +58,7 @@ class BetsService:
         self._match_n: dict[str, tuple] = {}
         self._tasks: list[asyncio.Task] = []
         self.fetch_history, self.fetch_fixtures, self.fetch_odds_api = F.fetch_history, F.fetch_fixtures, F.fetch_odds_api
+        self.fetch_sports = F.fetch_sports
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -107,12 +111,19 @@ class BetsService:
         if self.credits is not None and self.credits < MIN_CREDITS:
             raise RuntimeError(f"only {self.credits} credits left this month; using football-data's prices until it resets")
         sports = {k: (F.LEAGUES.get(k) or F.CUPS[k]) for k in ODDS_API_LEAGUES}
+        try:
+            self.intl = F.intl_sports(await self.fetch_sports())
+        except Exception as exc:                          # noqa: BLE001 - the leagues still read without it
+            if "no key" in str(exc):
+                raise
+            log.warning("bets: the list of competitions: %s", exc)
+        sports.update(self.intl)
         got, left, errors = await self.fetch_odds_api(sports, "odds")
         self.credits = left if left is not None else self.credits
         now = int(time.time() * 1000)
         rows = []
         for league, events in got.items():
-            rows += F.parse_odds_api(events, league, sports[league][0], now)
+            rows += F.parse_odds_api(events, league, sports[league][0], now, intl=league in self.intl)
         if not rows and errors:
             raise RuntimeError("; ".join(errors))
         self.sharp_oa = rows
@@ -136,9 +147,12 @@ class BetsService:
         open_ = [b for b in [*self.book.flat, *self.book.picks] if b["status"] == "open" and b["t_ms"] < now - 2 * B.HOUR]
         results = [g for g in self.history if g.get("hg") is not None and g["t_ms"] > now - 10 * B.DAY]
         if open_ and os.getenv("ANALYTIX_ODDS_API_KEY") and (self.credits is None or self.credits >= MIN_CREDITS // 2):
-            leagues = {b["league"] for b in open_ if b["league"] in F.LEAGUES or b["league"] in F.CUPS}
+            sport = lambda k: F.LEAGUES.get(k) or F.CUPS.get(k) or self.intl.get(k) or ((k, k) if k.startswith("soccer_") else None)
+            leagues = {b["league"] for b in open_ if sport(b["league"]) and time.time() - self._scores_at.get(b["league"], 0) > 3600}
             try:
-                got, left, _errors = await self.fetch_odds_api({k: (F.LEAGUES.get(k) or F.CUPS[k]) for k in leagues}, "scores")
+                for k in leagues:                         # at most once an hour a league: two credits a read
+                    self._scores_at[k] = time.time()
+                got, left, _errors = await self.fetch_odds_api({k: sport(k) for k in leagues}, "scores") if leagues else ({}, None, [])
                 self.credits = left if left is not None else self.credits
                 for events in got.values():
                     results += F.parse_scores(events)

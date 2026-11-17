@@ -16,7 +16,8 @@ Pure functions and a small paper book; ingestion/football.py reads the data, api
                  the last two hours, a sharp price from the last 24; shown up to a week ahead, booked on paper from three
                  days before kick-off
     rollover     one pick a day, fixed once made: odds 1.15 to 1.35, kick-off within 30 hours, stats agree, edge no worse
-                 than -2%; the highest adjusted chance of winning. Followed as a paper chain from N5,000, the balance
+                 than -2%; the highest adjusted chance of winning. Internationals have no club form or history to check,
+                 so they're taken at the sharp price as it is and only when the Nigerian odds are at or above fair. Followed as a paper chain from N5,000, the balance
                  riding on each pick, with up to six refills
     record       every flat value bet and every rollover pick, followed to its result with its closing-line value (the
                  bet's odds against the fair closing price: beating the close is the earliest sign an edge is real)
@@ -66,6 +67,15 @@ ALIASES = {
     "psv eindhoven": "psv", "ajax amsterdam": "ajax", "az alkmaar": "az alkmaar", "feyenoord rotterdam": "feyenoord",
     "glasgow rangers": "rangers", "celtic glasgow": "celtic", "as roma": "roma", "ss lazio": "lazio", "ssc napoli": "napoli",
     "hellas verona": "verona", "juventus turin": "juventus",
+    # national teams, as the books and The Odds API spell them differently
+    "czechia": "czech republic", "czech rep": "czech republic", "turkiye": "turkey", "republic of ireland": "ireland",
+    "ireland republic": "ireland", "bosnia and herzegovina": "bosnia", "bosnia herzegovina": "bosnia",
+    "korea republic": "south korea", "korea rep": "south korea", "republic of korea": "south korea", "usa": "united states",
+    "united states of america": "united states", "cote d ivoire": "ivory coast", "cabo verde": "cape verde",
+    "cape verde islands": "cape verde", "congo dr": "dr congo", "democratic republic of congo": "dr congo",
+    "democratic republic of the congo": "dr congo", "macedonia": "north macedonia", "fyr macedonia": "north macedonia",
+    "china pr": "china", "ir iran": "iran", "holland": "netherlands", "kyrgyz republic": "kyrgyzstan",
+    "swaziland": "eswatini", "chinese taipei": "taiwan", "republic of moldova": "moldova",
 }
 DROP = {"fc", "cf", "afc", "sc", "ac", "club", "the", "de", "calcio", "1", "sv", "fk", "sk", "cd", "ud", "sd", "rc", "ca"}
 
@@ -326,18 +336,19 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
             if r["t_ms"] < now_ms + 10 * 60_000 or r["t_ms"] > now_ms + SHOW_DAYS * DAY:
                 continue
             s = match_fixture(r["home"], r["away"], r["t_ms"], sharp)
-            if not s:
+            if not s or s["t_ms"] < now_ms + 10 * 60_000:      # the sharp kick-off is the reliable one
                 continue
             fair = markets_from_1x2(s["fair"])
+            intl = bool(s.get("intl"))
             for m, price in r["odds"].items():
                 if m not in fair or not price or price <= 1:
                     continue
-                p_adj, pat = adjust(fair[m], m, s.get("league", ""), cal, price_kind(s["src"]))
+                p_adj, pat = (fair[m], None) if intl else adjust(fair[m], m, s.get("league", ""), cal, price_kind(s["src"]))
                 out.append({"key": f"{s['id']}:{m}", "match_id": s["id"], "home": s["home"], "away": s["away"],
                             "league": s.get("league", ""), "league_name": s.get("league_name", ""), "t_ms": s["t_ms"],
                             "market": m, "book": book, "odds": price, "odds_age_h": age_h, "fair_p": fair[m], "p": p_adj,
                             "fair_odds": 1 / fair[m], "edge": price * p_adj - 1, "sharp_src": s["src"], "fair1x2": s["fair"],
-                            "sharp_age_h": (now_ms - s["read_ms"]) / HOUR, "pattern": pat})
+                            "sharp_age_h": (now_ms - s["read_ms"]) / HOUR, "pattern": pat, "intl": intl})
     groups: dict[str, list[dict]] = {}
     for x in out:
         groups.setdefault(x["key"], []).append(x)
@@ -351,6 +362,10 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
         if side is None:
             continue
         fav, opp = (x["home"], x["away"]) if side == "1" else (x["away"], x["home"])
+        if x["intl"]:                                      # club history says nothing about national teams
+            x["fav"], x["fav_form"], x["opp_form"], x["fav_record"] = fav, None, None, None
+            x["agree"], x["agree_why"] = None, "an international: no club form to check, so it's judged on the price alone"
+            continue
         for t in (fav, opp):
             if t not in stats_cache:
                 stats_cache[t] = form(history, t, x["t_ms"], teams=teams)
@@ -371,7 +386,8 @@ def value_bets(board: list[dict], lo: float = FLAT_MIN, hi: float = FLAT_MAX, ed
 
 def rollover_pick(board: list[dict], now_ms: int) -> dict | None:
     """Today's one rollover bet (see the module note), or None if nothing qualifies."""
-    c = [x for x in board if ROLL_MIN <= x["odds"] <= ROLL_MAX and x["t_ms"] <= now_ms + 30 * HOUR and x.get("agree")
+    c = [x for x in board if ROLL_MIN <= x["odds"] <= ROLL_MAX and x["t_ms"] <= now_ms + 30 * HOUR
+         and (x.get("agree") if not x.get("intl") else x["edge"] >= 0)
          and x["edge"] >= ROLL_EDGE and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H
          and x["market"] != "X"]
     return max(c, key=lambda x: (x["p"], x["edge"])) if c else None
