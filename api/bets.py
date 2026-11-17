@@ -10,6 +10,9 @@ The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live m
                    (after 06:00 Lagos, and only once the last one has settled), open bets are settled from results
                    (The Odds API's scores, else football-data) and given their closing-line value
 Kept in data/bets.json (the book) and data/bets_odds.json (the last push from each book).
+
+The board (every Nigerian price against its sharp game, with form and history) is built on a worker thread and kept for a
+minute, or until new odds or prices arrive, so building it never holds up the rest of the app.
 """
 import asyncio
 import json
@@ -39,11 +42,16 @@ class BetsService:
         self.books: dict[str, dict] = self._load_odds()
         self.history: list[dict] = []
         self.cal: dict = {}
+        self.teams: B.Teams | None = None
         self.sharp_fd: list[dict] = []
         self.sharp_oa: list[dict] = []
         self.credits: int | None = None
         self.status: dict[str, dict] = {k: {"ok": None, "at": None, "error": None} for k in ("history", "fixtures", "sharp", "book")}
-        self._board: tuple[float, list] | None = None
+        self._board: tuple[float, int, list] | None = None    # (built at, generation, rows)
+        self._gen = 0                                          # bumped whenever odds, prices or history change
+        self._sharp_rows: tuple[int, list] | None = None
+        self._sharp_v = 0
+        self._lock: asyncio.Lock | None = None
         self._match_n: dict[str, tuple] = {}
         self._tasks: list[asyncio.Task] = []
         self.fetch_history, self.fetch_fixtures, self.fetch_odds_api = F.fetch_history, F.fetch_fixtures, F.fetch_odds_api
@@ -83,16 +91,17 @@ class BetsService:
         games, errors = await self.fetch_history()
         if not games:
             raise RuntimeError("; ".join(errors[:4]) or "no games read")
-        self.history = sorted(games, key=lambda g: g["t_ms"])
-        self.cal = B.calibration(self.history)
-        self._board = None
+        history = sorted(games, key=lambda g: g["t_ms"])
+        self.cal, self.teams = await asyncio.to_thread(lambda: (B.calibration(history), B.Teams(history)))
+        self.history = history
+        self._changed()
         if errors:
             self.status["history"]["note"] = f"{len(errors)} files not read"
 
     async def _fixtures(self) -> None:
         fx = await self.fetch_fixtures()
         self.sharp_fd = F.sharp_from_fd(fx, int(time.time() * 1000))
-        self._board = None
+        self._changed(sharp=True)
 
     async def _sharp(self) -> None:
         if self.credits is not None and self.credits < MIN_CREDITS:
@@ -107,12 +116,12 @@ class BetsService:
         if not rows and errors:
             raise RuntimeError("; ".join(errors))
         self.sharp_oa = rows
-        self._board = None
+        self._changed(sharp=True)
 
     async def _book(self) -> None:
         """Book new flat value bets, make today's rollover pick, settle what has finished."""
         now = int(time.time() * 1000)
-        board = self.board(now)
+        board = await self.board_async(now)
         for x in B.value_bets(board, before_ms=now + B.BOOK_DAYS * B.DAY):
             self.book.add_flat(x, now)
         day = datetime.fromtimestamp(now / 1000, LAGOS)
@@ -141,7 +150,7 @@ class BetsService:
         self.book.settle(results, closing)
 
     # ── odds from the laptop ──────────────────────────────────────────────
-    def push(self, payload: dict, token: str = "") -> dict:
+    async def push(self, payload: dict, token: str = "") -> dict:
         want = os.getenv("ANALYTIX_BETS_TOKEN", "")
         if want and token != want:
             raise PermissionError("wrong or missing X-Bets-Token")
@@ -149,18 +158,20 @@ class BetsService:
         if not book:
             raise ValueError("no book named")
         self.books[book] = {"t_ms": int(time.time() * 1000), "rows": rows}
-        self._board = None
+        self._changed()
         self._save_odds()
-        return {"book": book, "games": len(rows), "matched": self._matched(book)}
+        return {"book": book, "games": len(rows), "matched": await asyncio.to_thread(self._matched, book)}
 
     def _matched(self, book: str) -> int:
-        """How many of a book's games found their sharp line (kept for a minute: the page asks every 30 seconds)."""
+        """How many of a book's games found their sharp line (kept until the book or the sharp prices change)."""
+        got = self.books[book]
         hit = self._match_n.get(book)
-        if hit and hit[0] == self.books[book]["t_ms"] and time.time() - hit[1] < 60:
-            return hit[2]
+        if hit and hit[0] == (got["t_ms"], self._sharp_v):
+            return hit[1]
+        v = self._sharp_v
         sharp = self.sharp()
-        n = sum(1 for r in self.books[book]["rows"] if B.match_fixture(r["home"], r["away"], r["t_ms"], sharp))
-        self._match_n[book] = (self.books[book]["t_ms"], time.time(), n)
+        n = sum(1 for r in got["rows"] if B.match_fixture(r["home"], r["away"], r["t_ms"], sharp))
+        self._match_n[book] = ((got["t_ms"], v), n)
         return n
 
     def _load_odds(self) -> dict:
@@ -177,25 +188,59 @@ class BetsService:
             os.replace(tmp, self.odds_path)
 
     # ── the board ──────────────────────────────────────────────────────────
+    def _changed(self, sharp: bool = False) -> None:
+        self._gen += 1
+        if sharp:
+            self._sharp_v += 1
+
     def sharp(self) -> list[dict]:
-        """The Odds API's games, then football-data's for any game it doesn't have."""
+        """The Odds API's games, then football-data's for any game it doesn't have (kept until either changes)."""
+        v = self._sharp_v
+        if self._sharp_rows and self._sharp_rows[0] == v:
+            return self._sharp_rows[1]
         out = list(self.sharp_oa)
         for g in self.sharp_fd:
             if not B.match_fixture(g["home"], g["away"], g["t_ms"], out, within_h=12):
                 out.append(g)
+        self._sharp_rows = (v, out)
         return out
 
-    def board(self, now: int | None = None) -> list[dict]:
-        now = now or int(time.time() * 1000)
-        if self._board and time.time() - self._board[0] < 60:
-            return self._board[1]
-        b = B.build(self.books, self.sharp(), self.history, self.cal, now)
-        self._board = (time.time(), b)
+    def _fresh(self) -> bool:
+        return bool(self._board) and self._board[1] == self._gen and time.time() - self._board[0] < 60
+
+    def _rebuild(self, now: int) -> list[dict]:
+        gen = self._gen
+        b = B.build(dict(self.books), self.sharp(), self.history, self.cal, now, self.teams)
+        self._board = (time.time(), gen, b)
+        for k in list(self.books):
+            self._matched(k)
         return b
 
-    def public(self) -> dict:
+    def board(self, now: int | None = None) -> list[dict]:
+        if self._fresh():
+            return self._board[2]
+        return self._rebuild(now or int(time.time() * 1000))
+
+    async def board_async(self, now: int | None = None) -> list[dict]:
+        """The board, built on a worker thread (one build at a time)."""
+        if self._fresh():
+            return self._board[2]
+        self._lock = self._lock or asyncio.Lock()
+        async with self._lock:
+            if self._fresh():
+                return self._board[2]
+            return await asyncio.to_thread(self._rebuild, now or int(time.time() * 1000))
+
+    async def snapshot(self) -> dict:
+        """What the page shows, with the slow parts done off the event loop."""
+        board = await self.board_async() if self.books else []
+        await asyncio.to_thread(lambda: [self._matched(k) for k in list(self.books)])
+        return self.public(board)
+
+    def public(self, board: list[dict] | None = None) -> dict:
         now = int(time.time() * 1000)
-        board = self.board(now) if self.books else []
+        if board is None:
+            board = self.board(now) if self.books else []
         day = datetime.fromtimestamp(now / 1000, LAGOS).strftime("%Y-%m-%d")
         today = self.book.today_pick(day)
         candidate = B.rollover_pick(board, now) if not today else None
