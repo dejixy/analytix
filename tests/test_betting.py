@@ -60,6 +60,10 @@ def test_history_adjusts_the_chance_but_only_a_little():
     assert pat["scope"] == "E0" and pat["rate"] > pat["implied"]                     # they won more than the price said
     assert p < adj < p + (pat["rate"] - pat["implied"])                              # moved toward it, shrunk
     assert B.adjust(0.30, "1", "E0", cal) == (0.30, None)                            # outside the favourite buckets
+    assert B.adjust(p, "1", "E0", cal, "avg") == (p, None)                         # no history on average prices here
+    assert B.price_kind("Pinnacle (The Odds API)") == "sharp" and B.price_kind("market average (football-data)") == "avg"
+    two = B.calibration([{**g, "AvgH": 1.30, "AvgD": 5.0, "AvgA": 8.0} for g in hist])
+    assert ("sharp", "*", "1", B.bucket_of(p)) in two and ("avg", "*", "1", B.bucket_of(B.devig({"1": 1.3, "X": 5, "2": 8})["1"])) in two
     rec = B.team_as_favourite(hist, "Big City")
     assert rec["n"] > 50 and rec["won"] / rec["n"] > 0.7
     f = B.form(hist, "Big City", NOW)

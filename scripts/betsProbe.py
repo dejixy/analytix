@@ -19,15 +19,20 @@ async def main() -> None:
     games, errors = await F.fetch_history(["E0", "SP1", "D1"], seasons=2)
     print(f"   {len(games)} games from 3 leagues x 2 seasons; errors: {errors[:4] or 'none'}")
     if games:
-        with_ps = sum(1 for g in games if g.get("PSCH"))
+        with_ps = sum(1 for g in games if g.get("PSCH") or g.get("PSH"))
         with_avg = sum(1 for g in games if g.get("AvgCH"))
         with_sot = sum(1 for g in games if g.get("hst") is not None)
-        print(f"   with Pinnacle closing odds {with_ps}, market-average closing {with_avg}, shots on target {with_sot}")
+        latest = max((g["t_ms"] for g in games if g.get("PSCH") or g.get("PSH")), default=None)
+        import time as _t
+        print(f"   with Pinnacle odds {with_ps} (latest {_t.strftime('%d %b %Y', _t.gmtime(latest / 1000)) if latest else '-'}), "
+              f"market-average closing {with_avg}, shots on target {with_sot}")
         cal = B.calibration(games)
-        for i, (lo, hi) in enumerate(B.BUCKETS):
-            c = cal.get(("*", "1", i))
-            if c:
-                print(f"   home wins priced {1 / hi:.2f}-{1 / lo:.2f}: {c[0]} games, won {c[1] / c[0]:.1%}, prices said {c[2] / c[0]:.1%}")
+        for kind, label in (("sharp", "on Pinnacle's prices"), ("avg", "on the market average")):
+            print(f"   {label}:")
+            for i, (lo, hi) in enumerate(B.BUCKETS):
+                c = cal.get((kind, "*", "1", i))
+                if c:
+                    print(f"     home wins priced {1 / hi:.2f}-{1 / lo:.2f}: {c[0]} games, won {c[1] / c[0]:.1%}, prices said {c[2] / c[0]:.1%}")
     print("2. football-data coming games")
     try:
         fx = await F.fetch_fixtures()

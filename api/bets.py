@@ -61,7 +61,8 @@ class BetsService:
         await asyncio.sleep({"history": 20, "fixtures": 40, "sharp": 120, "book": 300}[key])
         while True:
             await self.refresh(key)
-            await asyncio.sleep(EVERY_S[key])
+            st = self.status[key]
+            await asyncio.sleep(EVERY_S[key] if st["ok"] else min(EVERY_S[key], 3600 if st.get("setup") else 1800))
 
     async def refresh(self, key: str) -> None:
         try:
@@ -194,12 +195,13 @@ class BetsService:
         p_now = (today or candidate or {}).get("p")
         left = B.ROLL_TARGET - chain["day"]
         pats = []
-        for m in ("1", "2", "1X", "X2"):
-            for i, (lo, hi) in enumerate(B.BUCKETS):
-                c = self.cal.get(("*", m, i))
-                if c and c[0] >= 100:
-                    pats.append({"market": m, "name": B.MARKET_NAME[m], "odds": [round(1 / hi, 2), round(1 / lo, 2)], "n": c[0],
-                                 "rate": c[1] / c[0], "implied": c[2] / c[0]})
+        for kind in ("sharp", "avg"):
+            for m in ("1", "2", "1X", "X2"):
+                for i, (lo, hi) in enumerate(B.BUCKETS):
+                    c = self.cal.get((kind, "*", m, i))
+                    if c and c[0] >= 100:
+                        pats.append({"kind": kind, "market": m, "name": B.MARKET_NAME[m], "odds": [round(1 / hi, 2), round(1 / lo, 2)],
+                                     "n": c[0], "rate": c[1] / c[0], "implied": c[2] / c[0]})
         return {"now_ms": now, "enabled": self.rt.mode == "live",
                 "value": B.value_bets(board)[:60], "board_n": len(board),
                 "near": [x for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"][:40],

@@ -198,10 +198,16 @@ function Record({ rec, recent }) {
   );
 }
 
-function Patterns({ rows }) {
+function Patterns({ rows: all }) {
+  const kinds = [...new Set(all.map((r) => r.kind))];
+  const [kind, setKind] = useState(null);
+  const k = kind && kinds.includes(kind) ? kind : kinds[0];
+  const rows = all.filter((r) => r.kind === k);
   return (
     <section className="panel">
-      <Top title="What history says" facts={["three seasons, 12 leagues", "every game, at its sharpest price"]} />
+      <Top title="What history says" facts={["three seasons, 12 leagues"]}>
+        {kinds.length > 1 && <Seg value={k} set={setKind} opts={[["sharp", "Pinnacle's prices"], ["avg", "Market average"]].filter(([x]) => kinds.includes(x))} />}
+      </Top>
       {rows.length ? (
         <div className="az-scroll az-mid"><table className="az-table">
           <thead><tr><th>Bet</th><th>Priced</th><th className="r">Games</th><th className="r">Won</th><th className="r">Price said</th><th className="r">Difference</th></tr></thead>
@@ -216,7 +222,11 @@ function Patterns({ rows }) {
           </tbody>
         </table></div>
       ) : <p className="az-note">The history is read once a day; the first read takes a minute or two after the server starts.</p>}
-      <p className="az-note">A positive difference means bets at that price won more often than the price said. Each pick's chance is moved by its league's difference, shrunk so a small sample can't move it much.</p>
+      <p className="az-note">
+        A positive difference means bets at that price won more often than the price said. Each pick's chance is moved by its
+        league's difference, shrunk so a small sample can't move it much, and only by history measured on the same kind of price:
+        the market average carries a bigger margin, and taking it out understates favourites, so it would overstate every edge.
+      </p>
     </section>
   );
 }
