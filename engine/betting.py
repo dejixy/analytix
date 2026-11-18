@@ -465,6 +465,36 @@ def rollover_pick(board: list[dict], now_ms: int) -> dict | None:
     return max(c, key=lambda x: (x["p"], x["edge"])) if c else None
 
 
+def rollover_misses(board: list[dict], now_ms: int, n: int = 3) -> list[dict]:
+    """When nothing qualifies: the games in the next 30 hours closest to being the rollover pick, each with the tests
+    it fails in plain words, fewest failures first."""
+    out = []
+    for x in board:
+        if x["market"] == "X" or x["t_ms"] > now_ms + 30 * HOUR or not 1.10 <= x["odds"] <= 1.45:
+            continue
+        why = []
+        if not ROLL_MIN <= x["odds"] <= ROLL_MAX:
+            why.append(f"odds {x['odds']:.2f}, needs {ROLL_MIN:.2f}–{ROLL_MAX:.2f}")
+        if x.get("intl"):
+            if x["edge"] < 0:
+                why.append(f"{-x['edge'] * 100:.1f}% under fair; an international needs at least fair")
+        else:
+            if not x.get("agree"):
+                why.append("recent form not better than the opponent's" if x.get("agree") is False
+                           else "too few recent games to judge form")
+            if x["edge"] < ROLL_EDGE:
+                why.append(f"{-x['edge'] * 100:.1f}% under fair, allowed {-ROLL_EDGE * 100:.0f}%")
+        if x["odds_age_h"] > ODDS_FRESH_H:
+            why.append(f"Nigerian odds {x['odds_age_h']:.0f}h old, need under {ODDS_FRESH_H}h")
+        if x["sharp_age_h"] > SHARP_FRESH_H:
+            why.append(f"Pinnacle's price {x['sharp_age_h']:.0f}h old")
+        if why:
+            out.append({k: x.get(k) for k in ("key", "home", "away", "market", "odds", "book", "t_ms", "league", "league_name",
+                                              "edge", "p", "fair_p")} | {"why": why})
+    out.sort(key=lambda m: (len(m["why"]), -m["edge"]))
+    return out[:n]
+
+
 def chain_odds(p: float, days: int) -> float:
     """The chance of winning `days` picks in a row at chance p each."""
     return p ** max(days, 0)

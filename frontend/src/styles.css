@@ -1588,7 +1588,7 @@ kbd {
 .term .az-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--t-mute); flex: none; align-self: center; }
 .term .az-dot.up { background: var(--t-green); }
 .term .az-dot.down { background: var(--t-red); }
-@media (max-width: 1000px) { .term .az-names { display: none; } .term .az-table th:nth-child(6) { display: none; } .term .az-facts { margin-left: 0; } }
+@media (max-width: 1000px) { .term .az-names { display: none; } .term .az-table:not(.bt-cards) th:nth-child(6) { display: none; } .term .az-facts { margin-left: 0; } }
 .term .az-select { background: var(--t-panel); color: var(--t-ink); border: 1px solid var(--t-edge); font: inherit; font-size: 11.5px; padding: 3px 6px; }
 .term .az-check { font-size: 11.5px; color: var(--t-ink2); display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
 .term .az-check input { accent-color: var(--t-green); margin: 0; }
@@ -1620,3 +1620,29 @@ kbd {
 .term .az-table td.bt-name, .term .az-table td.bt-name .az-cat { font-family: var(--t-sans); }
 
 .term .bt-lead td { color: var(--t-ink); font-weight: 600; }
+
+/* Bets: the first column of a table is the bet's name on a phone; each row becomes a short block of labelled numbers */
+.term .bt-cards .bt-name b { display: block; }
+.term .bt-cards td.bt-name { white-space: normal; min-width: 170px; }
+.term .bt-cards td.bt-full .az-cat { display: block; }
+
+.term .bt-verdict { font-weight: 600; font-family: var(--t-sans); }
+.term .bt-ph { display: none; }
+.term .bt-proof { font-family: var(--t-sans); }
+.term .bt-reading { color: var(--t-ink); }
+@media (max-width: 720px) {
+  .term .bt-wrap.az-tall, .term .bt-wrap.az-mid { max-height: none; }
+  .term .bt-cards thead { display: none; }
+  .term .bt-cards, .term .bt-cards tbody { display: block; }
+  .term .bt-cards tr { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px; row-gap: 2px; padding: 9px 12px;
+    border-bottom: 1px solid var(--t-line); }
+  .term .bt-cards td { display: block; border: 0; padding: 0; text-align: left !important; }
+  .term .bt-cards td.bt-full { flex-basis: 100%; order: -1; white-space: normal; }
+  .term .bt-cards td.bt-hide { display: none; }
+  .term .bt-cards .bt-ph { display: inline; }
+  .term .bt-cards td[data-k]::before { content: attr(data-k) " "; color: var(--t-mute); font-family: var(--t-sans); }
+  .term .bt-cards tr.bt-detail { display: block; padding: 0; }
+  .term .bt-cards tr.bt-detail td { display: block; }
+  .term .bt-cards tr.on td:first-child { box-shadow: none; }
+  .term .bt-cards tr.on { background: var(--t-head); }
+}

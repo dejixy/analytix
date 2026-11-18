@@ -284,3 +284,19 @@ def test_margin_methods_and_the_study():
     every = best["rules"][-1]
     assert every["n"] >= lead["n"]                                           # no edge needed: every price in the range
     assert all(c["season"] for c in S.candidates(hist))
+
+
+def test_rollover_misses_say_why():
+    base = {"market": "1", "book": "bet9ja", "league": "E0", "league_name": "Premier League", "odds_age_h": 0.2, "sharp_age_h": 3,
+            "fair_p": 0.8, "p": 0.8, "t_ms": NOW + 5 * H}
+    board = [{**base, "key": "a", "home": "A", "away": "B", "odds": 1.25, "edge": -0.04, "agree": True},
+             {**base, "key": "b", "home": "C", "away": "D", "odds": 1.38, "edge": 0.01, "agree": False},
+             {**base, "key": "c", "home": "E", "away": "F", "odds": 1.22, "edge": -0.01, "agree": None, "intl": True},
+             {**base, "key": "d", "home": "G", "away": "H", "odds": 1.25, "edge": 0.0, "agree": True, "t_ms": NOW + 40 * H},
+             {**base, "key": "e", "home": "I", "away": "J", "odds": 1.90, "edge": 0.05, "agree": True}]
+    m = {x["key"]: x["why"] for x in B.rollover_misses(board, NOW, n=5)}
+    assert set(m) == {"a", "b", "c"}                                         # too late and too long a price left out
+    assert m["a"] == ["4.0% under fair, allowed 2%"]
+    assert m["b"] == ["odds 1.38, needs 1.15–1.35", "recent form not better than the opponent's"]
+    assert m["c"] == ["1.0% under fair; an international needs at least fair"]
+    assert [x["key"] for x in B.rollover_misses(board, NOW)][:2] == ["c", "a"]   # fewest failures, then the best edge
