@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from pydantic import BaseModel
@@ -223,7 +225,10 @@ async def bets(request: Request):
 
 @router.post("/bets/odds")
 async def bets_odds(request: Request):
-    """Nigerian bookmakers' odds, pushed from a laptop in Nigeria by scripts/naijaOdds.py."""
+    """Nigerian bookmakers' odds, pushed from a laptop in Nigeria by scripts/naijaOdds.py (through the SSH tunnel, or
+    through the public link when ANALYTIX_BETS_TOKEN is set)."""
+    if request.scope.get("analytix_public") and not os.getenv("ANALYTIX_BETS_TOKEN"):
+        raise HTTPException(403, "set ANALYTIX_BETS_TOKEN on the server to accept odds through the public link")
     try:
         payload = await request.json()
     except ValueError:

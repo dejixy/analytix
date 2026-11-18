@@ -119,7 +119,8 @@ def test_the_public_link_sees_the_bets_page_only(client):
     assert pub.status_code == 200 and pub.json()["public"] is True and pub.headers["x-robots-tag"].startswith("noindex")
     for path in ("/api/health", "/api/snapshot", "/terminal", "/analyzer", "/api/analyzer", "/docs", "/openapi.json"):
         assert client.get(path, headers=cf).status_code == 404, path
-    assert client.post("/api/bets/odds", headers=cf, json={"book": "x", "rows": []}).status_code == 404
+    assert client.post("/api/bets/odds", headers=cf, json={"book": "x", "rows": []}).status_code == 403   # no token set
+    assert client.post("/api/alerts", headers=cf, json={}).status_code == 404
     assert client.get("/api/health", headers={"host": "quiet-river.trycloudflare.com"}).status_code == 404   # host alone
     assert client.get("/robots.txt", headers=cf).text.startswith("User-agent: *")
     with pytest.raises(Exception):
@@ -153,3 +154,15 @@ def test_cache_headers():
         return dict(got[0]["headers"]).get(b"cache-control")
     assert headers("/assets/index-abc.js") == b"public, max-age=31536000, immutable"
     assert headers("/bets") == b"no-cache" and headers("/api/bets") == b"x"
+
+
+def test_odds_through_the_public_link_need_the_token(client, monkeypatch):
+    cf = {"cf-connecting-ip": "203.0.113.9", "host": "quiet-river.trycloudflare.com"}
+    monkeypatch.setenv("ANALYTIX_BETS_TOKEN", "s3cret-token")
+    body = {"book": "bet9ja", "rows": [{"home": "Arsenal", "away": "Fulham", "t_ms": 1_800_000_000_000, "odds": {"home": 1.4}}]}
+    assert client.post("/api/bets/odds", headers=cf, json=body).status_code == 403
+    assert client.post("/api/bets/odds", headers={**cf, "x-bets-token": "wrong"}, json=body).status_code == 403
+    ok = client.post("/api/bets/odds", headers={**cf, "x-bets-token": "s3cret-token"}, json=body)
+    assert ok.status_code == 200 and ok.json()["book"] == "bet9ja" and ok.json()["games"] == 1
+    big = client.post("/api/bets/odds", headers={**cf, "x-bets-token": "s3cret-token", "content-length": "9000000"}, content=b"{}")
+    assert big.status_code == 413

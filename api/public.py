@@ -3,8 +3,10 @@ The public link: what someone opening Analytix through Cloudflare (deploy/analyt
 
 The app listens only on the server itself. The SSH tunnel reaches it as localhost and sees everything. A request that
 came through Cloudflare carries Cloudflare's headers and the link's own host name, and sees only the bets page: the
-page, its read-only data (GET /api/bets) and the built assets. "/" goes to the page; everything else is a 404 and a
-websocket is closed, so the terminal, the Analyzer, settings, alerts and the odds push stay private.
+page, its read-only data (GET /api/bets) and the built assets, plus one way in: the odds push (POST /api/bets/odds),
+which the route only accepts through the link when ANALYTIX_BETS_TOKEN is set and the request carries it, so the
+collector can send from anywhere in Nigeria without the SSH tunnel. "/" goes to the page; everything else is a 404 and
+a websocket is closed, so the terminal, the Analyzer, settings and alerts stay private.
 """
 import re
 
@@ -12,6 +14,8 @@ LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "testserver"}
 VIA_PROXY = (b"cf-connecting-ip", b"cf-ray", b"cf-visitor", b"cdn-loop", b"x-forwarded-for", b"x-forwarded-host")
 OPEN_PATHS = {"/bets", "/api/bets"}
 OPEN_PREFIXES = ("/assets/",)
+OPEN_POSTS = {"/api/bets/odds"}
+MAX_POST = 8_000_000                                     # bytes: a push of every book's games is well under 1 MB
 ROBOTS = b"User-agent: *\nDisallow: /\n"
 
 
@@ -26,7 +30,8 @@ def is_public(scope: dict) -> bool:
 
 
 def allowed(method: str, path: str) -> bool:
-    return method in ("GET", "HEAD") and (path in OPEN_PATHS or path.startswith(OPEN_PREFIXES))
+    return (method in ("GET", "HEAD") and (path in OPEN_PATHS or path.startswith(OPEN_PREFIXES))) or (
+        method == "POST" and path in OPEN_POSTS)
 
 
 class PublicGate:
@@ -48,6 +53,9 @@ class PublicGate:
             return await _reply(send, 200, ROBOTS, [(b"content-type", b"text/plain")])
         if not allowed(method, path):
             return await _reply(send, 404, b"Not here. The bets page is at /bets", [(b"content-type", b"text/plain")])
+        size = dict(scope.get("headers") or []).get(b"content-length", b"0")
+        if method == "POST" and (not size.isdigit() or int(size) > MAX_POST):
+            return await _reply(send, 413, b"Too big", [(b"content-type", b"text/plain")])
         scope = {**scope, "analytix_public": True}
 
         async def send_noindex(msg):

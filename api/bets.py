@@ -16,6 +16,7 @@ The board (every Nigerian price against its sharp game, with form and history) i
 minute, or until new odds or prices arrive, so building it never holds up the rest of the app.
 """
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -177,7 +178,7 @@ class BetsService:
     # ── odds from the laptop ──────────────────────────────────────────────
     async def push(self, payload: dict, token: str = "") -> dict:
         want = os.getenv("ANALYTIX_BETS_TOKEN", "")
-        if want and token != want:
+        if want and not hmac.compare_digest(str(token or "").encode(), want.encode()):
             raise PermissionError("wrong or missing X-Bets-Token")
         book, rows = F.parse_push(payload)
         if not book:

@@ -10,6 +10,8 @@
 #   bash ~/analytix/scripts/run.sh analyzer  check each of the Analyzer's sources from this server (a minute)
 #   bash ~/analytix/scripts/run.sh bets      check the bets suite's sources from this server (a minute or two)
 #   bash ~/analytix/scripts/run.sh link      the bets page's public address (installs and starts the link if needed)
+#   bash ~/analytix/scripts/run.sh token     the collector's token for sending odds through the public link (makes one
+#                                            the first time and restarts the app), and the command to run on the laptop
 #   bash ~/analytix/scripts/run.sh map       (re)start the HYPE map in the background (keeps what it already read)
 #   bash ~/analytix/scripts/run.sh top       the biggest wallets in the latest HYPE map, to look up and name
 #   bash ~/analytix/scripts/run.sh fresh     (re)start fresh money in the background (store build, then the study)
@@ -74,6 +76,24 @@ case "${1:-status}" in
       sleep 2
     done
     [ -n "$url" ] && echo "the bets page: $url/bets" || echo "no address yet: sudo journalctl -u analytix-link -n 50"
+    ;;
+  token)
+    keys=/etc/analytix-keys.env
+    t="$(sudo grep -s '^ANALYTIX_BETS_TOKEN=' "$keys" | tail -1 | cut -d= -f2-)"
+    if [ -z "$t" ]; then
+      t="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+      echo "ANALYTIX_BETS_TOKEN=$t" | sudo tee -a "$keys" >/dev/null && sudo systemctl restart analytix \
+        || { echo "couldn't save the token"; exit 1; }
+      echo "made a token (kept in $keys) and restarted the app; give it a minute"
+    fi
+    url="$(sudo journalctl -u analytix-link --no-pager -n 500 | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1)"
+    echo
+    echo "on the laptop, once (no tunnel needed):"
+    echo "  python naijaOdds.py --server ${url:-https://YOUR-LINK.trycloudflare.com} --token $t --save"
+    echo "from then on:"
+    echo "  python naijaOdds.py --loop"
+    echo
+    echo "(the token is a password: keep it out of chats and screenshots)"
     ;;
   bets)
     "$PY" -m scripts.betsProbe 2>&1 | tee /tmp/bets_probe.txt
