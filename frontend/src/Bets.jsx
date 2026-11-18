@@ -35,56 +35,18 @@ const Seg = ({ value, set, opts }) => (
   </span>
 );
 
-const BAR = 0.02;                                   // the edge a value bet needs
-const pinEdge = (x) => x.odds * x.fair_p - 1;      // on Pinnacle's price alone, before the history adjustment
-const src = (x) => (x.sharp_src || "the sharp price").replace(/ \((The Odds API|football-data)\)$/, "");
-const priceOf = (x) => { const n = src(x); return n === "Pinnacle" ? "Pinnacle's price" : n === "Betfair exchange" ? "the Betfair exchange price" : `the sharp price (${n})`; };
-// A row in plain words: [word, colour class, why]
-function verdict(x) {
-  const e0 = pinEdge(x);
-  if (e0 > 0.10) return ["Check team news", "down", "more than 10% above Pinnacle: usually a missed injury or a mismatched game"];
-  if (e0 >= BAR) return ["Value", "up", `beats ${priceOf(x)} by ${pct(BAR)} or more on its own`];
-  if (x.edge >= BAR) return ["History only", "", `value only once history is counted; on ${priceOf(x)} alone the edge is ${sgn(e0)}`];
-  if (e0 >= -BAR) return ["Fair price", "muted", `within ${pct(BAR)} of ${priceOf(x)}`];
-  return ["Poor price", "down", `more than ${pct(BAR)} below ${priceOf(x)}`];
-}
-const formWord = (x) => (x.agree ? ["better", "up"] : x.agree === false ? ["not better", "down"] : x.intl ? ["not checked", "muted"] : ["too few games", "muted"]);
-const ppg = (f) => (f ? `${f.ppg.toFixed(1)} points a game` : "");
-
 function Why({ x }) {
   const f = x.fav_form, o = x.opp_form, pat = x.pattern, rec = x.fav_record;
-  const [word, cls, why] = verdict(x);
-  const opp = x.fav === x.home ? x.away : x.home;
-  const recRate = rec ? rec.won / rec.n : null;
   return (
     <ul className="bt-why">
-      <li><b className={cls}>{word}</b>: {why}.</li>
       <li>
-        {src(x)}: <b>{pct(x.fair_p, 1)}</b> chance, fair odds <b>{odd(1 / x.fair_p)}</b>. {BOOK[x.book] || x.book} pays <b>{odd(x.odds)}</b>:
-        edge <b className={tone(pinEdge(x))}>{sgn(pinEdge(x))}</b>.
+        Sharp price says <b>{pct(x.fair_p, 1)}</b> ({x.sharp_src}); history moves it to <b>{pct(x.p, 1)}</b>.
+        At {odd(x.odds)} on {BOOK[x.book] || x.book} that is an edge of <b className={tone(x.edge)}>{sgn(x.edge)}</b>.
       </li>
-      <li>
-        {x.intl ? "History: none for internationals, so the price stands as it is."
-          : pat ? <>History: favourites at fair odds {pat.range[0]}–{pat.range[1]} ({pat.scope}) won <b>{pct(pat.rate, 1)}</b> of {pat.n.toLocaleString()} games
-              when priced at {pct(pat.implied, 1)}. That moves the chance to <b>{pct(x.p, 1)}</b>: edge <b className={tone(x.edge)}>{sgn(x.edge)}</b>.</>
-          : "History: too few past games at this price to adjust it."}
-      </li>
-      {f && o ? (
-        <li>
-          Recent form, last {f.n}: {x.fav} {f.results.split("").join(" ")} ({ppg(f)}) · {opp} {o.results.split("").join(" ")} ({ppg(o)}).{" "}
-          <span className={formWord(x)[1]}>{x.fav}'s is {formWord(x)[0]}</span>{x.agree === false ? `: ${x.agree_why}` : ""}.
-        </li>
-      ) : x.agree_why ? <li>Recent form: {x.agree_why}.</li> : null}
-      {rec && (
-        <li>
-          {x.fav} as a clear favourite: won {rec.won} of {rec.n} ({pct(recRate)})
-          {pat && rec.n >= 10 && Math.abs(recRate - pat.rate) >= 0.05 ? `, ${recRate < pat.rate ? "below" : "above"} the ${pct(pat.rate, 1)} for its price` : ""}.
-        </li>
-      )}
-      <li>
-        Take it at <b>{odd((1 + BAR) / x.fair_p)}</b> or better for value on {priceOf(x)} alone
-        {pat ? <> (<b>{odd((1 + BAR) / x.p)}</b> counting history)</> : null}.
-      </li>
+      {x.agree_why && <li>Form: <span className={x.agree ? "up" : x.agree === false ? "down" : ""}>{x.agree ? "better" : x.agree === false ? "not better" : x.intl ? "not checked" : "unclear"}</span>, {x.agree_why}.</li>}
+      {f && o && <li>Last {f.n}: {x.fav} {f.results} ({f.gf.toFixed(1)} scored, {f.ga.toFixed(1)} conceded a game) · opponent {o.results} ({o.gf.toFixed(1)}, {o.ga.toFixed(1)}).</li>}
+      {pat && <li>History: favourites priced {pat.range[0]}–{pat.range[1]} in {pat.scope} won {pct(pat.rate, 1)} of {pat.n.toLocaleString()} games, against {pct(pat.implied, 1)} the prices said.</li>}
+      {rec && <li>{x.fav} as a clear favourite over three seasons: won {rec.won} of {rec.n} ({pct(rec.won / rec.n)}).</li>}
       {x.others?.length > 1 && <li>All books: {x.others.map((b) => `${BOOK[b.book] || b.book} ${odd(b.odds)}`).join(" · ")}.</li>}
     </ul>
   );
@@ -111,8 +73,7 @@ function Rollover({ r, pub }) {
           </div>
           <div className="az-kpis">
             <div><span className="muted">Chance of winning</span><b className="num">{pct(x.p, 1)}</b></div>
-            <div><span className="muted">Edge with history</span><b className={`num ${tone(x.edge)}`}>{sgn(x.edge)}</b></div>
-            <div><span className="muted">Edge before history</span><b className={`num ${tone(pinEdge(x))}`}>{sgn(pinEdge(x))}</b></div>
+            <div><span className="muted">Edge at this price</span><b className={`num ${tone(x.edge)}`}>{sgn(x.edge)}</b></div>
             {!pub && <div><span className="muted">Stake (whole balance)</span><b className="num">{naira(r.today ? r.today.stake : c.balance)}</b></div>}
             {!pub && <div><span className="muted">Returns if it wins</span><b className="num up">{naira((r.today ? r.today.stake : c.balance) * x.odds)}</b></div>}
           </div>
@@ -123,18 +84,7 @@ function Rollover({ r, pub }) {
               : "Best candidate right now; today's pick is booked on the next pass (every 10 minutes, from 06:00 Lagos) and then fixed."}
           </p>
         </div>
-      ) : (
-        <div className="bt-miss">
-          <p className="az-note">{(r.misses || []).length ? "Nothing qualifies right now. Closest:" : "Nothing qualifies right now, and no game in the next 30 hours comes close."}</p>
-          {(r.misses || []).length > 0 && (
-            <ul className="bt-why">
-              {r.misses.map((m) => (
-                <li key={m.key}><b>{pick(m)}</b> {odd(m.odds)} <span className="muted">{BOOK[m.book] || m.book} · {kick(m.t_ms)}</span>: {m.why.join("; ")}.</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+      ) : <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off within 30 hours, form backing the favourite, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.</p>}
       <div className="bt-chain">
         {!pub && <div className="az-kpis">
           <div><span className="muted">Balance</span><b className="num">{naira(c.balance)}</b></div>
@@ -144,7 +94,7 @@ function Rollover({ r, pub }) {
         </div>}
         {used && !pub && <p className="az-note">The six refills are used up: no new chain is started.</p>}
         {r.history.length > 0 && (
-          <div className="az-scroll az-mid"><table className="az-table">
+          <div className="az-scroll az-mid"><table className="az-table bt-t">
             <thead><tr><th>Day</th>{!pub && <th>Chain · leg</th>}<th>Pick</th><th className="r">Odds</th>{!pub && <th className="r">Stake</th>}<th>Result</th></tr></thead>
             <tbody>
               {r.history.map((p) => (
@@ -162,51 +112,42 @@ function Rollover({ r, pub }) {
   );
 }
 
-const TIER = { "Value": 0, "Check team news": 1, "History only": 2, "Fair price": 3, "Poor price": 4 };
-
-function Value({ d, now }) {
+function Value({ d }) {
   const [view, setView] = useState("value");
   const [open, setOpen] = useState(null);
-  const [lo, hi, , stake] = d.settings.flat;
-  const rows = [...(view === "value" ? d.value : d.near)]
-    .sort((a, b) => TIER[verdict(a)[0]] - TIER[verdict(b)[0]] || pinEdge(b) - pinEdge(a));
-  const strong = d.value.filter((x) => verdict(x)[0] === "Value").length;
-  const newest = Math.max(0, ...Object.values(d.sources.books || {}).map((v) => v.t_ms));
-  const stale = newest && now - newest >= 2 * 3600_000;
+  const rows = view === "value" ? d.value : d.near;
+  const [lo, hi, edge, stake] = d.settings.flat;
   return (
     <section className="panel">
-      <Top title="Value bets" facts={[`${d.value.length} now`, `${strong} on Pinnacle's price alone`, `odds ${lo}–${hi}`, d.public ? null : `${naira(stake)} a bet`]}>
+      <Top title={d.public ? "Value bets" : "Value bets, flat stake"} facts={[`${d.value.length} now`, `odds ${lo}–${hi}`, `edge ${pct(edge)}+`, d.public ? null : `${naira(stake)} a bet`]}>
         <Seg value={view} set={setView} opts={[["value", "Value"], ["near", `Everything ${lo}–${hi}`]]} />
       </Top>
       {rows.length ? (
-        <div className="az-scroll az-tall bt-wrap"><table className="az-table az-click bt-cards">
-          <thead><tr><th>Bet</th><th className="r">Odds</th><th className="r" title="Pinnacle's fair odds, its margin taken out">Pinnacle</th>
-            <th className="r" title="Edge on Pinnacle's price alone">Edge</th><th className="r" title="Edge once history adjusts Pinnacle's price">With history</th>
-            <th title="Is the favourite's recent form better than the opponent's?">Form</th><th>Verdict</th></tr></thead>
+        <div className="az-scroll az-tall"><table className="az-table bt-t az-click">
+          <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Best odds</th><th className="r">Fair odds</th><th className="r">Edge</th><th className="r">Chance</th><th>Form</th><th className="r">History</th></tr></thead>
           <tbody>
-            {rows.map((x) => {
-              const [word, cls] = verdict(x), [fw, fc] = formWord(x);
-              return (
-                <Fragment key={x.key}>
-                  <tr onClick={() => setOpen(open === x.key ? null : x.key)} className={open === x.key ? "on" : ""}>
-                    <td className="bt-name bt-full"><b>{pick(x)}</b><span className="muted az-cat">{x.home} v {x.away} · {x.league_name || x.league} · {kick(x.t_ms)}</span></td>
-                    <td className="r num"><b>{odd(x.odds)}</b> <span className="muted">{BOOK[x.book] || x.book}</span></td>
-                    <td className="r num muted" data-k="Pinnacle">{odd(1 / x.fair_p)}</td>
-                    <td className={`r num ${tone(pinEdge(x))}`} data-k="Edge">{sgn(pinEdge(x))}</td>
-                    <td className={`r num ${tone(x.edge)}`} data-k="with history">{x.pattern ? sgn(x.edge) : "-"}</td>
-                    <td className={fc} data-k="Form">{fw}</td>
-                    <td className={`bt-verdict ${cls}`}>{word}</td>
-                  </tr>
-                  {open === x.key && <tr className="bt-detail"><td colSpan={7}><Why x={x} /></td></tr>}
-                </Fragment>
-              );
-            })}
+            {rows.map((x) => (
+              <Fragment key={x.key}>
+                <tr onClick={() => setOpen(open === x.key ? null : x.key)} className={open === x.key ? "on" : ""}>
+                  <td className="muted num">{kick(x.t_ms)}</td>
+                  <td className="bt-name"><b>{pick(x)}</b><span className="muted az-cat">{x.home} v {x.away} · {x.league_name || x.league}</span></td>
+                  <td className="r num">{odd(x.odds)} <span className="muted">{BOOK[x.book] || x.book}</span></td>
+                  <td className="r num muted">{odd(1 / x.p)}</td>
+                  <td className={`r num ${tone(x.edge)}`}>{sgn(x.edge)}</td>
+                  <td className="r num">{pct(x.p, 1)}</td>
+                  <td className={x.agree ? "up" : x.agree === false ? "down" : "muted"} title={x.agree_why || ""}>{x.agree ? "better" : x.agree === false ? "not better" : x.intl ? "price only" : "-"}</td>
+                  <td className={`r ${x.pattern ? tone(x.pattern.rate - x.pattern.implied) : "muted"}`}
+                    title={x.pattern ? `Favourites at this price won ${pct(x.pattern.rate, 1)} of ${x.pattern.n.toLocaleString()} games, priced at ${pct(x.pattern.implied, 1)}` : ""}>
+                    {x.pattern ? (x.pattern.rate >= x.pattern.implied ? "better" : "worse") : "-"}</td>
+                </tr>
+                {open === x.key && <tr className="bt-detail"><td colSpan={8}><Why x={x} /></td></tr>}
+              </Fragment>
+            ))}
           </tbody>
         </table></div>
       ) : (
         <p className="az-note">
-          {stale ? `The Nigerian odds are ${ago(now - newest).replace(" ago", "")} old, and value bets need odds under 2 hours old.${d.public ? "" : " Start the collector on your laptop."}`
-            : d.board_n ? `None of the ${d.board_n} prices in the next ${d.show_days} days is ${pct(BAR)} or more above fair right now. "Everything" shows them all.`
+          {d.board_n ? `None of the ${d.board_n} prices in the next ${d.show_days} days is above fair by ${pct(edge)} or more right now. "Everything" shows them all.`
             : Object.values(d.matched || {}).some((n) => n > 0) ? `Your books' games matched their sharp lines, but none kicks off in the next ${d.show_days} days with fresh odds. Check the collector is still running.`
             : Object.keys(d.sources.books).length ? "Your books' games haven't matched a sharp line yet: the sharp prices may still be loading (a few minutes after a restart)."
             : d.public ? "No prices in from the Nigerian books right now."
@@ -232,7 +173,7 @@ function Record({ rec, recent, pub }) {
         <div><span className="muted">Rollover picks won</span><b className="num">{r.picks ? `${r.won} of ${r.picks}` : "-"}</b></div>
       </div>
       {recent.length > 0 && (
-        <div className="az-scroll az-mid"><table className="az-table">
+        <div className="az-scroll az-mid"><table className="az-table bt-t">
           <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Edge then</th><th className="r">Beat the close</th><th>Result</th>{!pub && <th className="r">Profit</th>}</tr></thead>
           <tbody>
             {recent.map((b) => (
@@ -254,80 +195,57 @@ function Record({ rec, recent, pub }) {
 const BOOKS_STUDY = { bet365: "One big book (Bet365)", best: "Best price anywhere" };
 const METHOD = { proportional: "proportional", power: "power", shin: "Shin's" };
 
-// Is a rule's return more than luck? Two standard errors from zero, and enough bets to say.
-function proof(r) {
-  if (!r.n || r.n < 30) return ["too few bets", "muted"];
-  if (r.se != null && Math.abs(r.roi) >= 2 * r.se) return r.roi > 0 ? ["yes, a profit", "up"] : ["yes, a loss", "down"];
-  return ["could be luck", "muted"];
-}
-const per100 = (v) => (v == null ? "-" : `${v > 0 ? "+" : v < 0 ? "−" : ""}₦${Math.abs(v * 100).toFixed(0)}`);
-
-function reading(lead, plain) {
-  if (!lead || lead.n < 30) return `Too few bets to judge the flat rule on this book yet: ${lead ? lead.n : 0} in these seasons, and about 50 are needed.`;
-  const [p] = proof(lead);
-  const head = `The flat rule ${lead.roi >= 0 ? "made" : "lost"} ₦${Math.abs(lead.roi * 100).toFixed(0)} per ₦100 over ${lead.n} bets: ${
-    p === "could be luck" ? "that could still be luck" : "more than luck"}.`;
-  if (!plain || plain.n < 30) return `${head} Too few bets yet to tell whether the history adjustment helps.`;
-  const better = lead.roi > plain.roi;
-  return `${head} The history adjustment ${better ? "helped" : "didn't help"}: ${per100(lead.roi)} per ₦100 with it, ${per100(plain.roi)} without.`;
-}
-
 function Study({ s, methods, method }) {
   const books = Object.keys(s.books || {});
   const [book, setBook] = useState(null);
   const b = book && books.includes(book) ? book : books[0];
   const x = b && s.books[b];
-  const run = (r) => (r && r.n ? `won ${r.won} of ${r.n} (${pct(r.won / r.n)}); longest winning run ${r.longest} days of the ${30} needed` : "no picks");
+  const sure = (r, v) => r.se != null && Math.abs(v) >= 2 * r.se;            // two standard errors from zero
+  const ret = (r) => r.n > 1 ? <><span className={sure(r, r.roi) ? tone(r.roi) : ""}>{sgn(r.roi)}</span> <span className="muted">± {pct(r.se, 1)}</span></> : "-";
+  const run = (r) => r && r.n ? `${r.n} picks, ${r.won} won (${pct(r.won / r.n)}); longest run ${r.longest}, runs of 10+ ${r.to10}, runs of 30 ${r.to30}` : "no picks";
   const ms = Object.entries(methods || {}).filter(([, v]) => v.n);
   const fav = ms.length ? ms[0][1] : null;
   const won = fav && fav.fav_n ? fav.fav_won / fav.fav_n : null;
   const seasons = s.seasons || [];
   return (
     <section className="panel term-wide">
-      <Top title="The rules on past games" facts={[s.games ? `${s.games.toLocaleString()} games` : null,
-        seasons.length ? `since ${seasons[0]}/${String(seasons[0] + 1).slice(2)}` : null]}>
+      <Top title="The rules on three seasons" facts={[s.games ? `${s.games.toLocaleString()} games` : null,
+        seasons.length ? `${seasons[0]}/${String(seasons[0] + 1).slice(2)} to now` : null]}>
         {books.length > 1 && <Seg value={b} set={setBook} opts={books.map((k) => [k, BOOKS_STUDY[k] || k])} />}
       </Top>
       {x ? (
         <>
-          <p className="az-note bt-reading">{reading(x.rules[0], x.rules[1])}</p>
-          <div className="az-scroll"><table className="az-table bt-cards">
-            <thead><tr><th>Rule</th><th className="r">Bets</th><th className="r">Won</th><th className="r" title="One over the average odds">Needed to break even</th>
-              <th className="r">Per ₦100 staked</th><th>More than luck?</th>
-              <th className="r" title="Share of bets priced above Pinnacle's fair closing price">Beat the closing price</th></tr></thead>
+          <div className="az-scroll"><table className="az-table bt-t">
+            <thead><tr><th>Rule</th><th className="r">Bets</th><th className="r">Won</th><th className="r">Avg odds</th><th className="r">Return a bet</th>
+              <th className="r" title="The price against Pinnacle's fair closing price: above zero means it beat the close">Beat the close</th></tr></thead>
             <tbody>
-              {x.rules.map((r, i) => {
-                const [pw, pc] = proof(r);
-                return (
-                  <tr key={r.rule} className={i === 0 ? "bt-lead" : ""}>
-                    <td className="bt-full">{r.rule}</td><td className="r num muted" data-k="Bets">{r.n.toLocaleString()}</td>
-                    <td className="r num" data-k="Won">{r.n ? pct(r.won / r.n, 1) : "-"}</td>
-                    <td className="r num muted" data-k="needed">{r.n ? pct(1 / r.odds, 1) : "-"}</td>
-                    <td className={`r num ${pc === "muted" ? "" : pc}`} data-k="Per ₦100">{r.n > 1 ? per100(r.roi) : "-"}</td>
-                    <td className={`bt-proof ${pc}`}>{r.n ? pw : "-"}</td>
-                    <td className="r num muted" data-k="Beat the close">{r.clv_pos == null ? "-" : pct(r.clv_pos)}</td>
-                  </tr>
-                );
-              })}
+              {x.rules.map((r, i) => (
+                <tr key={r.rule} className={i === 0 ? "bt-lead" : ""}>
+                  <td>{r.rule}</td><td className="r num muted">{r.n.toLocaleString()}</td>
+                  <td className="r num">{r.n ? pct(r.won / r.n, 1) : "-"}</td><td className="r num muted">{r.n ? odd(r.odds) : "-"}</td>
+                  <td className="r num">{ret(r)}</td><td className={`r num ${r.clv == null ? "" : tone(r.clv)}`}>{r.clv == null ? "-" : sgn(r.clv)}</td>
+                </tr>
+              ))}
             </tbody>
           </table></div>
           <p className="az-note">
-            Rollover rule, one pick a day: {run(x.rollover)}. Without the form check: {run(x.rollover_no_form)}.
-            {won != null && <> Favourites priced 1.15–1.50 won {pct(won, 1)} of {fav.fav_n.toLocaleString()} games.</>}
+            Rollover, one pick a day by today's rule: {run(x.rollover)}. Without the form check: {run(x.rollover_no_form)}.
+            {won != null && <> Favourites priced 1.15–1.50 actually won {pct(won, 1)} of {fav.fav_n.toLocaleString()} games.</>}
           </p>
         </>
       ) : <p className="az-note">Worked out each time the history is read: a minute or so after the history arrives.</p>}
       {ms.length > 0 && (
-        <div className="az-scroll"><table className="az-table bt-cards">
-          <thead><tr><th>Way of taking the margin out</th><th className="r" title="Average surprise at the actual result">Fit (lower is better)</th>
-            <th className="r">Said favourites at 1.15–1.50 win</th><th className="r">Off by</th></tr></thead>
+        <div className="az-scroll"><table className="az-table bt-t">
+          <thead><tr><th>Taking the margin out</th><th className="r" title="Average surprise at the actual result: lower fits better">Fit (log loss)</th>
+            <th className="r">Said favourites at 1.15–1.50 win</th>
+            <th className="r" title={won == null ? "" : `They won ${pct(won, 1)} of ${fav.fav_n.toLocaleString()} games`}>Off by</th></tr></thead>
           <tbody>
             {ms.map(([m, v]) => {
               const said = v.fav_n ? v.fav_said / v.fav_n : null;
               return (
                 <tr key={m}>
-                  <td className="bt-full">{METHOD[m] || m}{m === method ? <b> · in use</b> : null}</td><td className="r num" data-k="Fit">{v.logloss.toFixed(5)}</td>
-                  <td className="r num" data-k="Said">{pct(said, 1)}</td><td className="r num muted" data-k="Off by">{said == null || won == null ? "-" : sgn(said - won)}</td>
+                  <td>{METHOD[m] || m}{m === method ? <b> · in use</b> : null}</td><td className="r num">{v.logloss.toFixed(5)}</td>
+                  <td className="r num">{pct(said, 1)}</td><td className="r num muted">{said == null || won == null ? "-" : sgn(said - won)}</td>
                 </tr>
               );
             })}
@@ -343,31 +261,22 @@ function Patterns({ rows: all }) {
   const [kind, setKind] = useState(null);
   const k = kind && kinds.includes(kind) ? kind : kinds[0];
   const rows = all.filter((r) => r.kind === k);
-  const games = rows.reduce((t, r) => t + r.n, 0);
   return (
     <section className="panel">
-      <Top title="What history says" facts={[games ? `${games.toLocaleString()} bets counted` : null]}>
+      <Top title="What history says" facts={["three seasons, 14 leagues"]}>
         {kinds.length > 1 && <Seg value={k} set={setKind} opts={[["sharp", "Pinnacle's prices"], ["avg", "Market average"]].filter(([x]) => kinds.includes(x))} />}
       </Top>
       {rows.length ? (
-        <div className="az-scroll az-mid bt-wrap"><table className="az-table bt-cards">
-          <thead><tr><th>Bet</th><th>Fair odds</th><th className="r">Games</th><th className="r">Won</th><th className="r">Prices said</th>
-            <th className="r">Difference</th><th>More than luck?</th></tr></thead>
+        <div className="az-scroll az-mid"><table className="az-table bt-t">
+          <thead><tr><th>Bet</th><th>Priced</th><th className="r">Games</th><th className="r">Won</th><th className="r">Price said</th><th className="r">Difference</th></tr></thead>
           <tbody>
-            {rows.map((r) => {
-              const diff = r.rate - r.implied;
-              const real = Math.abs(diff) >= 2 * Math.sqrt((r.implied * (1 - r.implied)) / r.n);   // two standard errors
-              return (
-                <tr key={`${r.market}${r.odds[0]}`}>
-                  <td className="bt-full">{r.name}<span className="bt-ph"> at {r.odds[0].toFixed(2)}–{r.odds[1].toFixed(2)}</span></td>
-                  <td className="num bt-hide">{r.odds[0].toFixed(2)}–{r.odds[1].toFixed(2)}</td>
-                  <td className="r num muted" data-k="Games">{r.n.toLocaleString()}</td>
-                  <td className="r num" data-k="Won">{pct(r.rate, 1)}</td><td className="r num muted" data-k="prices said">{pct(r.implied, 1)}</td>
-                  <td className={`r num ${real ? tone(diff) : "muted"}`}>{sgn(diff)}</td>
-                  <td className={`bt-proof ${real ? tone(diff) : "muted"}`}>{real ? "yes" : "no"}</td>
-                </tr>
-              );
-            })}
+            {rows.map((r) => (
+              <tr key={`${r.market}${r.odds[0]}`}>
+                <td>{r.name}</td><td className="num">{r.odds[0].toFixed(2)}–{r.odds[1].toFixed(2)}</td><td className="r num muted">{r.n.toLocaleString()}</td>
+                <td className="r num">{pct(r.rate, 1)}</td><td className="r num muted">{pct(r.implied, 1)}</td>
+                <td className={`r num ${tone(r.rate - r.implied)}`}>{sgn(r.rate - r.implied)}</td>
+              </tr>
+            ))}
           </tbody>
         </table></div>
       ) : <p className="az-note">The history is read once a day; the first read takes a few minutes after the server starts.</p>}
@@ -463,7 +372,7 @@ export default function Bets() {
         <div className="term-grid">
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
           <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} /></div>
-          <div className="tw-7"><Value d={d} now={now} /></div>
+          <div className="tw-7"><Value d={d} /></div>
           {!d.public && <Record rec={d.record} recent={d.flat_recent} pub={d.public} />}
           {d.study && <Study s={d.study} methods={d.methods} method={d.method} />}
           <div className={d.public ? "term-wide" : "tw-6"}><Patterns rows={d.patterns} /></div>

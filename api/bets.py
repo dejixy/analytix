@@ -297,7 +297,6 @@ class BetsService:
                 "next_kick": min((x["t_ms"] for x in board), default=None),
                 "near": [x for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"][:40],
                 "rollover": {"today": today, "candidate": candidate, "chain": chain, "target": B.ROLL_TARGET,
-                             "misses": B.rollover_misses(board, now) if not (today or candidate) else [],
                              "refills_max": B.ROLL_REFILLS, "start": B.ROLL_START,
                              "p_finish": B.chain_odds(p_now, left) if p_now else None, "days_left": left,
                              "history": self.book.picks[-30:][::-1]},
