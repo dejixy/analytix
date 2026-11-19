@@ -368,8 +368,9 @@ class BetsService:
         await asyncio.to_thread(lambda: [self._matched(k) for k in list(self.books)])
         return {**self.public(board), "public": public}
 
-    async def combo(self, target: float, days: int = 1) -> dict:
-        """The best slip for a total-odds target over the next `days` (1, 3 or 7), and the ladder of sizes."""
+    async def combo(self, target: float, days: int = 1, least: float | None = None) -> dict:
+        """The best slip for a total-odds target over the next `days` (1, 3 or 7), and the ladder of sizes: safest games
+        first, or with every game at least `least` likely (0.60 to 0.90)."""
         days = days if days in C.DAYS else 1
         board = await self.board_async(wait=False) if self.books else []
         now = int(time.time() * 1000)
@@ -378,7 +379,7 @@ class BetsService:
         kept = self._combos[1]
         if days not in kept:
             kept[days] = await asyncio.to_thread(C.solvers, board, dict(self.books), now, days)
-        out = await asyncio.to_thread(C.build, kept[days], target, self.combo_past)
+        out = await asyncio.to_thread(C.build, kept[days], target, self.combo_past, least)
         return {**out, "days": days, "now_ms": now}
 
     def public(self, board: list[dict] | None = None) -> dict:
