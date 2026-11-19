@@ -52,7 +52,7 @@ CLUBS = {"Champions League": (("international clubs", "uefa", "europe"), ("champ
          "Super Lig": (("turkey", "türkiye", "turkiye"), ("super lig", "süper lig", "superlig")),
          "Greek Super League": (("greece",), ("super league",))}
 CLUB_SKIP = tuple(w for w in INTL_SKIP if w != "club") + ("afc ", "caf ", "concacaf", "liga portugal 2", "super league 2",
-                                                          "qualif")
+                                                          "qualif", "challenger")
 FUTURES = ("antepost", "outright", "top goalscorer", "to reach", "w/o ", "relegation")   # Bet9ja's futures, not matches
 NAME_KEYS = ("GN", "G_DESC", "DS", "DESC", "S_DESC", "N", "NAME", "Name", "name")
 ID_KEYS = ("GID", "G_ID", "ID", "Id", "id")
@@ -91,7 +91,8 @@ def find_groups(data, match, cap: int = 40) -> dict[int, str]:
                 gid = key
             here = f"{trail} / {name}" if name else trail
             low = here.lower()
-            if (name and gid and "soccer" in low and not any(w in low for w in FUTURES) and match(low)):
+            if (name and gid and "soccer" in [s.strip() for s in low.split(" / ")] and not any(w in low for w in FUTURES)
+                    and match(low)):                      # plain "Soccer": not "Antepost Soccer" or "Players Soccer"
                 out.setdefault(int(gid), here.strip(" /"))
             for k, v in x.items():
                 walk(v, k, here)
