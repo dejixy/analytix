@@ -35,7 +35,17 @@ const Seg = ({ value, set, opts }) => (
   </span>
 );
 
-function Why({ x }) {
+// The favourite's own form, beside the comparison with its opponent: poor under 1.5 points a game or 2+ losses in 6
+const losses = (f) => (f ? (f.results.match(/L/g) || []).length : 0);
+const poor = (f) => !!f && (f.ppg < 1.5 || losses(f) >= 2);
+const poorWhy = (f) => [f.ppg < 1.5 ? `${f.ppg.toFixed(1)} points a game` : null, losses(f) >= 2 ? `lost ${losses(f)} of its last ${f.n}` : null]
+  .filter(Boolean).join(", ");
+const Form = ({ x, dash = "-" }) => (x.agree
+  ? <>{<span className="up">better</span>}{poor(x.fav_form) && <span className="down">, but poor</span>}</>
+  : x.agree === false ? <span className="down">not better</span> : <span className="muted">{x.intl ? "price only" : dash}</span>);
+const bar = (x, s) => (x.intl || (s.lower || []).includes(x.league) ? s.flat_low : s.flat[2]);
+
+function Why({ x, s }) {
   const f = x.fav_form, o = x.opp_form, pat = x.pattern, rec = x.fav_record;
   return (
     <ul className="bt-why">
@@ -43,16 +53,22 @@ function Why({ x }) {
         Sharp price says <b>{pct(x.fair_p, 1)}</b> ({x.sharp_src}); history moves it to <b>{pct(x.p, 1)}</b>.
         At {odd(x.odds)} on {BOOK[x.book] || x.book} that is an edge of <b className={tone(x.edge)}>{sgn(x.edge)}</b>.
       </li>
-      {x.agree_why && <li>Form: <span className={x.agree ? "up" : x.agree === false ? "down" : ""}>{x.agree ? "better" : x.agree === false ? "not better" : x.intl ? "not checked" : "unclear"}</span>, {x.agree_why}.</li>}
+      {x.agree_why && <li>Form: <Form x={x} dash="unclear" />, {x.agree_why}{x.agree && poor(f) ? `; on its own it's poor: ${poorWhy(f)}` : ""}.</li>}
       {f && o && <li>Last {f.n}: {x.fav} {f.results} ({f.gf.toFixed(1)} scored, {f.ga.toFixed(1)} conceded a game) · opponent {o.results} ({o.gf.toFixed(1)}, {o.ga.toFixed(1)}).</li>}
       {pat && <li>History: favourites priced {pat.range[0]}–{pat.range[1]} in {pat.scope} won {pct(pat.rate, 1)} of {pat.n.toLocaleString()} games, against {pct(pat.implied, 1)} the prices said.</li>}
       {rec && <li>{x.fav} as a clear favourite over three seasons: won {rec.won} of {rec.n} ({pct(rec.won / rec.n)}).</li>}
       {x.others?.length > 1 && <li>All books: {x.others.map((b) => `${BOOK[b.book] || b.book} ${odd(b.odds)}`).join(" · ")}.</li>}
+      {s && (
+        <li>
+          Take it at <b>{odd((1 + bar(x, s)) / x.p)}</b> or better (<b>{odd((1 + bar(x, s)) / x.fair_p)}</b> on the sharp price alone,
+          before history){bar(x, s) > s.flat[2] ? `; ${pct(bar(x, s))} needed here, a ${x.intl ? "international" : "lower league"}` : ""}.
+        </li>
+      )}
     </ul>
   );
 }
 
-function Rollover({ r, pub }) {
+function Rollover({ r, pub, s }) {
   const c = r.chain;
   const x = r.today || r.candidate;
   const used = c.refills >= r.refills_max + 1;
@@ -77,14 +93,25 @@ function Rollover({ r, pub }) {
             {!pub && <div><span className="muted">Stake (whole balance)</span><b className="num">{naira(r.today ? r.today.stake : c.balance)}</b></div>}
             {!pub && <div><span className="muted">Returns if it wins</span><b className="num up">{naira((r.today ? r.today.stake : c.balance) * x.odds)}</b></div>}
           </div>
-          <Why x={x} />
+          <Why x={x} s={s} />
           <p className="az-note">
             {r.today ? (r.today.status === "open" ? "Booked for today on paper. It settles after the game; tomorrow's pick waits for it."
               : `Settled: ${r.today.status === "won" ? "won" : "lost"} ${r.today.score || ""}.`)
               : "Best candidate right now; today's pick is booked on the next pass (every 10 minutes, from 06:00 Lagos) and then fixed."}
           </p>
         </div>
-      ) : <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off within 30 hours, form backing the favourite, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.</p>}
+      ) : (
+        <>
+          <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off within 30 hours, form backing the favourite, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
+          {(r.misses || []).length > 0 && (
+            <ul className="bt-why">
+              {r.misses.map((m) => (
+                <li key={m.key}><b>{pick(m)}</b> {odd(m.odds)} <span className="muted">{BOOK[m.book] || m.book} · {kick(m.t_ms)}</span>: {m.why.join("; ")}.</li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
       <div className="bt-chain">
         {!pub && <div className="az-kpis">
           <div><span className="muted">Balance</span><b className="num">{naira(c.balance)}</b></div>
@@ -113,13 +140,14 @@ function Rollover({ r, pub }) {
 }
 
 function Value({ d }) {
+  const s = d.settings;
   const [view, setView] = useState("value");
   const [open, setOpen] = useState(null);
   const rows = view === "value" ? d.value : d.near;
   const [lo, hi, edge, stake] = d.settings.flat;
   return (
     <section className="panel">
-      <Top title={d.public ? "Value bets" : "Value bets, flat stake"} facts={[`${d.value.length} now`, `odds ${lo}–${hi}`, `edge ${pct(edge)}+`, d.public ? null : `${naira(stake)} a bet`]}>
+      <Top title={d.public ? "Value bets" : "Value bets, flat stake"} facts={[`${d.value.length} now`, `odds ${lo}–${hi}`, `edge ${pct(edge)}+ (${pct(d.settings.flat_low)}+ lower leagues)`, d.public ? null : `${naira(stake)} a bet`]}>
         <Seg value={view} set={setView} opts={[["value", "Value"], ["near", `Everything ${lo}–${hi}`]]} />
       </Top>
       {rows.length ? (
@@ -135,12 +163,12 @@ function Value({ d }) {
                   <td className="r num muted">{odd(1 / x.p)}</td>
                   <td className={`r num ${tone(x.edge)}`}>{sgn(x.edge)}</td>
                   <td className="r num">{pct(x.p, 1)}</td>
-                  <td className={x.agree ? "up" : x.agree === false ? "down" : "muted"} title={x.agree_why || ""}>{x.agree ? "better" : x.agree === false ? "not better" : x.intl ? "price only" : "-"}</td>
+                  <td title={x.agree_why || ""}><Form x={x} /></td>
                   <td className={`r ${x.pattern ? tone(x.pattern.rate - x.pattern.implied) : "muted"}`}
                     title={x.pattern ? `Favourites at this price won ${pct(x.pattern.rate, 1)} of ${x.pattern.n.toLocaleString()} games, priced at ${pct(x.pattern.implied, 1)}` : ""}>
                     {x.pattern ? (x.pattern.rate >= x.pattern.implied ? "better" : "worse") : "-"}</td>
                 </tr>
-                {open === x.key && <tr className="bt-detail"><td colSpan={8}><Why x={x} /></td></tr>}
+                {open === x.key && <tr className="bt-detail"><td colSpan={8}><Why x={x} s={s} /></td></tr>}
               </Fragment>
             ))}
           </tbody>
@@ -209,7 +237,7 @@ function Study({ s, methods, method }) {
   const seasons = s.seasons || [];
   return (
     <section className="panel term-wide">
-      <Top title="The rules on three seasons" facts={[s.games ? `${s.games.toLocaleString()} games` : null,
+      <Top title="The rules on past games" facts={[s.games ? `${s.games.toLocaleString()} games` : null,
         seasons.length ? `${seasons[0]}/${String(seasons[0] + 1).slice(2)} to now` : null]}>
         {books.length > 1 && <Seg value={b} set={setBook} opts={books.map((k) => [k, BOOKS_STUDY[k] || k])} />}
       </Top>
@@ -371,7 +399,7 @@ export default function Bets() {
       {d && (
         <div className="term-grid">
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
-          <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} /></div>
+          <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} s={d.settings} /></div>
           <div className="tw-7"><Value d={d} /></div>
           {!d.public && <Record rec={d.record} recent={d.flat_recent} pub={d.public} />}
           {d.study && <Study s={d.study} methods={d.methods} method={d.method} />}

@@ -37,7 +37,9 @@ LEAGUES = {
     "SC0": ("Scottish Premiership", "soccer_spl"), "B1": ("Belgian Pro League", "soccer_belgium_first_div"),
     "T1": ("Super Lig", "soccer_turkey_super_league"), "G1": ("Greek Super League", "soccer_greece_super_league"),
 }
-CUPS = {"UCL": ("Champions League", "soccer_uefa_champs_league"), "UEL": ("Europa League", "soccer_uefa_europa_league")}
+CUPS = {"UCL": ("Champions League", "soccer_uefa_champs_league"), "UEL": ("Europa League", "soccer_uefa_europa_league"),
+        "UECL": ("Conference League", "soccer_uefa_europa_conference_league")}
+CUP_KEYS = {"UCL": "champs_league", "UEL": "europa_league", "UECL": "conference_league"}   # how each shows in a sport key
 ODDS_API_SPORTS = "https://api.the-odds-api.com/v4/sports"          # the list is free: it costs no credits
 INTL_WORDS = ("nations league", "nations_league", "world cup qualif", "world_cup_qualif", "friendl", "euro qualif",
               "euro_qualif", "european championship", "copa america", "copa_america", "africa cup", "africa_cup",
@@ -153,6 +155,20 @@ def intl_sports(sports: list) -> dict[str, tuple[str, str]]:
         if (x.get("group") == "Soccer" and x.get("active") and not x.get("has_outrights")
                 and any(w in text for w in INTL_WORDS) and not any(w in text for w in INTL_SKIP)):
             out[x["key"]] = (x.get("title") or x["key"], x["key"])
+    return out
+
+
+def club_cups(sports: list) -> dict[str, tuple[str, str]]:
+    """The European club cups in The Odds API's (free) list of sports, as {code: (name, sport key)}; the built-in keys
+    when the list doesn't name them."""
+    out = dict(CUPS)
+    for x in sports if isinstance(sports, list) else []:
+        key = str(x.get("key", ""))
+        if x.get("group") != "Soccer" or x.get("has_outrights") or "qualif" in key or "women" in key:
+            continue
+        for code, part in CUP_KEYS.items():
+            if part in key and (code != "UEL" or "conference" not in key):
+                out[code] = (CUPS[code][0], key)
     return out
 
 

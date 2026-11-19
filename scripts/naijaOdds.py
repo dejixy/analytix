@@ -9,13 +9,19 @@ Standalone: it needs only Python 3.10+ and one package, not the rest of Analytix
     python naijaOdds.py                              (once)
     python naijaOdds.py --loop                       (every 20 minutes until you stop it with Ctrl+C)
 
-Options: --every 20 (minutes), --server http://localhost:8000, --books bet9ja,betking,nairabet.
+Options: --every 20 (minutes), --server http://localhost:8000, --books bet9ja,betking,nairabet,sportybet.
 If ANALYTIX_BETS_TOKEN is set on the server, set the same value here (or pass --token).
 
-Internationals: NaijaBet_Api only knows ten club leagues, so for Bet9ja this also finds the international competitions
-(Nations League, qualifiers, friendlies...) in Bet9ja's own list of competitions and reads those. --no-intl turns it off;
+More competitions: NaijaBet_Api only knows ten club leagues, so for Bet9ja this also finds, in Bet9ja's own list of
+competitions, the Champions League, Europa League and Conference League, the Eredivisie, Portugal's, Scotland's,
+Belgium's, Turkey's and Greece's top leagues, and the international competitions (Nations League, qualifiers,
+friendlies...), and reads those. --no-intl leaves out the internationals, --no-extra everything beyond the ten;
 --bet9ja-groups 123,456 adds competitions by hand (the number at the end of a competition's address on Bet9ja's site);
 --find lists what it found and saves Bet9ja's list to bet9ja_sports.json, without sending anything.
+
+SportyBet isn't in NaijaBet_Api: it's read straight from the feed its website uses, by Sportradar's competition numbers
+(the same numbers NaijaBet_Api keeps for it). --find --books sportybet shows what came back and saves a sample to
+sportybet_sample.json.
 """
 import argparse
 import json
@@ -34,14 +40,30 @@ INTL_SKIP = ("women", "club", "u21", "u23", "u20", "u19", "u17", "youth", "volle
              "e-soccer", "esport", "virtual", "srl", "simulated", "handball", "hockey", "rugby", "cricket", "tennis", "darts",
              "baseball", "american football", "aussie", "snooker", "badminton", "boxing", "mma", "golf", "cycling", "motor",
              "water polo", "waterpolo", "floorball", "bandy", "special", "outright", "winner")
+CLUB_WORDS = ("champions league", "europa league", "conference league", "eredivisie", "primeira", "liga portugal",
+              "premiership", "pro league", "jupiler", "first division a", "super lig", "süper lig", "superlig",
+              "super league", "superleague")
+CLUB_SKIP = tuple(w for w in INTL_SKIP if w != "club") + ("afc ", "caf ", "concacaf", "asia", "africa", "china", "india",
+                                                          "swiss", "switzerland", "chinese", "indian", "2nd", "second")
 NAME_KEYS = ("GN", "G_DESC", "DS", "DESC", "S_DESC", "N", "NAME", "Name", "name")
 ID_KEYS = ("GID", "G_ID", "ID", "Id", "id")
 
 
 def intl_groups(data, cap: int = 30) -> dict[int, str]:
     """{group id: "Soccer / International / UEFA Nations League"} for every competition in Bet9ja's list of sports that
-    looks like men's international football. The list's layout isn't documented, so this walks all of it: a node with a
-    name and a numeric id (its own, or the key it sits under) counts, judged on its whole path of names."""
+    looks like men's international football."""
+    return find_groups(data, INTL_WORDS, INTL_SKIP, cap)
+
+
+def club_groups(data, cap: int = 30) -> dict[int, str]:
+    """The same for the European cups and the six leagues beyond NaijaBet_Api's ten."""
+    return find_groups(data, CLUB_WORDS, CLUB_SKIP, cap)
+
+
+def find_groups(data, words, skip, cap: int = 30) -> dict[int, str]:
+    """{group id: its path of names} for every competition in Bet9ja's list of sports whose path has one of `words` and
+    none of `skip`. The list's layout isn't documented, so this walks all of it: a node with a name and a numeric id (its
+    own, or the key it sits under) counts, judged on its whole path of names."""
     out: dict[int, str] = {}
 
     def walk(x, key=None, trail=""):
@@ -53,7 +75,7 @@ def intl_groups(data, cap: int = 30) -> dict[int, str]:
                 gid = key
             here = f"{trail} / {name}" if name else trail
             low = here.lower()
-            if name and gid and any(w in low for w in INTL_WORDS) and not any(w in low for w in INTL_SKIP):
+            if name and gid and any(w in low for w in words) and not any(w in low for w in skip):
                 out.setdefault(int(gid), here.strip(" /"))
             for k, v in x.items():
                 walk(v, k, here)
@@ -109,12 +131,12 @@ def bet9ja_sports(bk) -> dict:
     return res.json()
 
 
-def bet9ja_intl(bk, extra: list[int], find: bool = False) -> list[dict]:
-    """Raw rows from Bet9ja's international competitions (found in its list, plus any given by hand)."""
+def bet9ja_extra(bk, extra: list[int], find: bool = False, intl: bool = True) -> list[dict]:
+    """Raw rows from Bet9ja's competitions beyond the library's ten (found in its list, plus any given by hand)."""
     groups: dict[int, str] = {}
     try:
         data = bet9ja_sports(bk)
-        groups = intl_groups(data)
+        groups = {**club_groups(data), **(intl_groups(data) if intl else {})}
         if find:
             with open("bet9ja_sports.json", "w", encoding="utf-8") as fh:
                 json.dump(data, fh)
@@ -124,7 +146,7 @@ def bet9ja_intl(bk, extra: list[int], find: bool = False) -> list[dict]:
     for g in extra:
         groups.setdefault(g, f"group {g} (given by hand)")
     if find or not groups:
-        print(f"  bet9ja: {len(groups)} international competitions" + (":" if groups else
+        print(f"  bet9ja: {len(groups)} more competitions" + (":" if groups else
               ". Add one by hand with --bet9ja-groups and the number at the end of its address on Bet9ja's site"))
         for g, name in groups.items():
             print(f"    {g}  {name}")
@@ -138,8 +160,104 @@ def bet9ja_intl(bk, extra: list[int], find: bool = False) -> list[dict]:
         except Exception:                                         # noqa: BLE001 - not every node is a competition
             failed += 1
     rows = list({r["match_id"] or r["match"]: r for r in rows}.values())    # a game can sit in two lists
-    print(f"  bet9ja internationals: {len(rows)} games from {len(groups) - failed} of {len(groups)} competitions")
+    print(f"  bet9ja cups, more leagues and internationals: {len(rows)} games from {len(groups) - failed} of {len(groups)} competitions")
     return rows
+
+
+# ── SportyBet ────────────────────────────────────────────────────────────────
+SPORTY = {"Premier League": 17, "Championship": 18, "League One": 24, "League Two": 25, "LaLiga": 8, "Serie A": 23,
+          "Bundesliga": 35, "Ligue 1": 34, "Eredivisie": 37, "Liga Portugal": 238, "Premiership": 36, "Pro League": 38,
+          "Super Lig": 52, "Super League 1": 185, "Champions League": 7, "Europa League": 679, "Conference League": 34480}
+SPORTY_EVENTS = "https://www.sportybet.com/api/ng/factsCenter/pcEvents"
+SPORTY_UPCOMING = ("https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents?sportId=sr%3Asport%3A1&marketId=1%2C10"
+                   "&pageSize=100&pageNum={page}&option=1")
+SPORTY_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+                  "Accept": "application/json", "Content-Type": "application/json", "Referer": "https://www.sportybet.com/ng/",
+                  "clientid": "web", "platform": "web"}
+SPORTY_IDS = {"1": {"1": "home", "2": "draw", "3": "away"}, "10": {"9": "home_or_draw", "10": "home_or_away", "11": "draw_or_away"}}
+SPORTY_DESC = {"home": "home", "1": "home", "draw": "draw", "x": "draw", "away": "away", "2": "away",
+               "home or draw": "home_or_draw", "1x": "home_or_draw", "1/x": "home_or_draw",
+               "home or away": "home_or_away", "12": "home_or_away", "1/2": "home_or_away",
+               "draw or away": "draw_or_away", "x2": "draw_or_away", "x/2": "draw_or_away"}
+
+
+def sporty_rows(data, league: str = "") -> list[dict]:
+    """Every match in a SportyBet reply, whatever its nesting: a node with homeTeamName and awayTeamName is a match, its
+    markets "1" (1X2) and "10" (double chance) give the odds."""
+    out = []
+
+    def walk(x, lg):
+        if isinstance(x, dict):
+            lg = x.get("name") if isinstance(x.get("name"), str) and isinstance(x.get("events"), list) else lg
+            if x.get("homeTeamName") and x.get("awayTeamName"):
+                odds = {}
+                for m in x.get("markets") or []:
+                    ids = SPORTY_IDS.get(str(m.get("id")), {})
+                    for o in m.get("outcomes") or []:
+                        if o.get("isActive") == 0:
+                            continue
+                        k = ids.get(str(o.get("id"))) or (SPORTY_DESC.get(str(o.get("desc", "")).strip().lower())
+                                                          if str(m.get("id")) in SPORTY_IDS else None)
+                        try:
+                            if k and float(o.get("odds")) > 1:
+                                odds[k] = float(o["odds"])
+                        except (TypeError, ValueError):
+                            pass
+                t = x.get("estimateStartTime")
+                if odds and t:
+                    out.append({"match": f"{x['homeTeamName']} - {x['awayTeamName']}", "time": int(t) / 1000,
+                                "league": lg or "", "match_id": x.get("eventId"), **odds})
+                return
+            for v in x.values():
+                walk(v, lg)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, lg)
+
+    walk(data, league)
+    return out
+
+
+def read_sportybet(find: bool = False) -> list[dict]:
+    import requests
+    s = requests.Session()
+    s.headers.update(SPORTY_HEADERS)
+    rows, failed, sample = [], [], None
+    for name, tid in SPORTY.items():
+        body = [{"sportId": "sr:sport:1", "marketId": "1,10", "tournamentId": [[f"sr:tournament:{tid}"]]}]
+        try:
+            r = s.post(SPORTY_EVENTS, json=body, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            sample = sample or data
+            got = sporty_rows(data, name)
+            rows += got
+            if find:
+                print(f"    {name}: {len(got)} games")
+        except Exception as exc:                                  # noqa: BLE001 - one competition down, the others still go
+            failed.append(f"{name} ({type(exc).__name__})")
+        time.sleep(0.4)
+    if not rows:                                                  # the per-competition feed didn't answer: the upcoming list
+        for page in range(1, 6):
+            try:
+                r = s.get(SPORTY_UPCOMING.format(page=page), timeout=30)
+                r.raise_for_status()
+                data = r.json()
+                sample = sample or data
+                got = sporty_rows(data)
+                if not got:
+                    break
+                rows += got
+            except Exception as exc:                              # noqa: BLE001
+                failed.append(f"upcoming page {page} ({type(exc).__name__})")
+                break
+    if find and sample is not None:
+        with open("sportybet_sample.json", "w", encoding="utf-8") as fh:
+            json.dump(sample, fh)
+        print("  saved one SportyBet reply to sportybet_sample.json")
+    if failed:
+        print(f"  sportybet: {len(failed)} reads failed ({', '.join(failed[:4])})")
+    return list({r["match_id"] or r["match"]: r for r in rows}.values())
 
 
 def split_match(name: str) -> tuple[str, str] | None:
@@ -150,16 +268,19 @@ def split_match(name: str) -> tuple[str, str] | None:
     return None
 
 
-def read_book(name: str, intl: bool = True, extra: list[int] | None = None, find: bool = False) -> list[dict]:
-    from NaijaBet_Api.bookmakers import Bet9ja, Betking, Nairabet
-    cls = {"bet9ja": Bet9ja, "betking": Betking, "nairabet": Nairabet}[name]
-    bk = cls()
-    rows = bk.get_all()
-    if getattr(bk, "errors", None):
-        print(f"  {name}: {len(bk.errors)} leagues failed ({', '.join(str(k) for k in list(bk.errors)[:4])})")
-    if name == "bet9ja" and (intl or extra):
-        seen = {r.get("match_id") for r in rows}
-        rows += [r for r in bet9ja_intl(bk, extra or [], find) if r.get("match_id") not in seen]
+def read_book(name: str, intl: bool = True, extra: list[int] | None = None, find: bool = False, more: bool = True) -> list[dict]:
+    if name == "sportybet":
+        rows = read_sportybet(find)
+    else:
+        from NaijaBet_Api.bookmakers import Bet9ja, Betking, Nairabet
+        cls = {"bet9ja": Bet9ja, "betking": Betking, "nairabet": Nairabet}[name]
+        bk = cls()
+        rows = bk.get_all()
+        if getattr(bk, "errors", None):
+            print(f"  {name}: {len(bk.errors)} leagues failed ({', '.join(str(k) for k in list(bk.errors)[:4])})")
+        if name == "bet9ja" and (more or extra):
+            seen = {r.get("match_id") for r in rows}
+            rows += [r for r in bet9ja_extra(bk, extra or [], find, intl and more) if r.get("match_id") not in seen]
     out = []
     for r in rows:
         teams = split_match(str(r.get("match") or ""))
@@ -184,7 +305,7 @@ def once(args) -> None:
     for book in args.books.split(","):
         book = book.strip().lower()
         try:
-            rows = read_book(book, not args.no_intl, args.bet9ja_groups, args.find)
+            rows = read_book(book, not args.no_intl, args.bet9ja_groups, args.find, not args.no_extra)
             if args.find:
                 print(f"  {book}: {len(rows)} games read (not sent: --find)")
                 continue
@@ -206,14 +327,15 @@ def main() -> None:
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--every", type=float, default=20)
     ap.add_argument("--server", default="http://localhost:8000")
-    ap.add_argument("--books", default="bet9ja,betking,nairabet")
+    ap.add_argument("--books", default="bet9ja,betking,nairabet,sportybet")
     ap.add_argument("--token", default=os.getenv("ANALYTIX_BETS_TOKEN", ""))
-    ap.add_argument("--no-intl", action="store_true", help="don't look for Bet9ja's international competitions")
+    ap.add_argument("--no-intl", action="store_true", help="leave out Bet9ja's international competitions")
+    ap.add_argument("--no-extra", action="store_true", help="only NaijaBet_Api's ten leagues: no cups, extra leagues or internationals")
     ap.add_argument("--bet9ja-groups", default="", help="Bet9ja competition ids (or their addresses), comma-separated")
     ap.add_argument("--find", action="store_true", help="list the international competitions found; send nothing")
     args = ap.parse_args()
     args.bet9ja_groups = [int(re.findall(r"\d+", g)[-1]) for g in args.bet9ja_groups.split(",") if re.findall(r"\d+", g)]
-    if args.find:
+    if args.find and "--books" not in sys.argv:
         args.books = "bet9ja"
     try:
         import NaijaBet_Api  # noqa: F401

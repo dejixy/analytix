@@ -39,6 +39,9 @@ MARKET_NAME = {"1": "Home win", "X": "Draw", "2": "Away win", "1X": "Home or dra
 BOOK_KEYS = {"home": "1", "draw": "X", "away": "2", "home_or_draw": "1X", "home_or_away": "12", "draw_or_away": "X2"}
 
 FLAT_MIN, FLAT_MAX, FLAT_EDGE = 1.20, 1.50, 0.02
+FLAT_EDGE_LOW = 0.03                 # leagues where Pinnacle's own price is less sure, and internationals
+EDGE_MAX = 0.10                      # above this an "edge" is nearly always a stale price or the wrong game: not bet
+LOWER_LEAGUES = {"E2", "E3", "SC0", "B1", "T1", "G1"}
 FLAT_STAKE = 250
 ROLL_MIN, ROLL_MAX, ROLL_EDGE = 1.15, 1.35, -0.02
 ROLL_START, ROLL_REFILLS, ROLL_TARGET = 5_000, 6, 30
@@ -449,20 +452,64 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
     return sorted(rows, key=lambda x: -x["edge"])
 
 
-def value_bets(board: list[dict], lo: float = FLAT_MIN, hi: float = FLAT_MAX, edge: float = FLAT_EDGE,
+def lower(x: dict) -> bool:
+    """A lower league or an international: Pinnacle's price there is less sure, so the bar is higher."""
+    return bool(x.get("intl")) or x.get("league") in LOWER_LEAGUES
+
+
+def edge_bar(x: dict) -> float:
+    return FLAT_EDGE_LOW if lower(x) else FLAT_EDGE
+
+
+def value_bets(board: list[dict], lo: float = FLAT_MIN, hi: float = FLAT_MAX, edge: float | None = None,
                before_ms: int | None = None) -> list[dict]:
-    """Flat value bets; with before_ms, only those kicking off before it."""
-    return [x for x in board if lo <= x["odds"] <= hi and x["edge"] >= edge and x["odds_age_h"] <= ODDS_FRESH_H
-            and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X" and (before_ms is None or x["t_ms"] <= before_ms)]
+    """Flat value bets: an edge of 2% (3% in lower leagues and internationals, or `edge` if given) up to 10%; with
+    before_ms, only those kicking off before it."""
+    return [x for x in board if lo <= x["odds"] <= hi and (edge if edge is not None else edge_bar(x)) <= x["edge"] <= EDGE_MAX
+            and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"
+            and (before_ms is None or x["t_ms"] <= before_ms)]
+
+
+def roll_bar(x: dict) -> float:
+    """The worst edge a rollover pick may have: 2% under fair, or at least fair in lower leagues and internationals."""
+    return 0.0 if lower(x) else ROLL_EDGE
 
 
 def rollover_pick(board: list[dict], now_ms: int) -> dict | None:
     """Today's one rollover bet (see the module note), or None if nothing qualifies."""
     c = [x for x in board if ROLL_MIN <= x["odds"] <= ROLL_MAX and x["t_ms"] <= now_ms + 30 * HOUR
-         and (x.get("agree") if not x.get("intl") else x["edge"] >= 0)
-         and x["edge"] >= ROLL_EDGE and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H
-         and x["market"] != "X"]
+         and (x.get("intl") or x.get("agree")) and roll_bar(x) <= x["edge"] <= EDGE_MAX
+         and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"]
     return max(c, key=lambda x: (x["p"], x["edge"])) if c else None
+
+
+def rollover_misses(board: list[dict], now_ms: int, n: int = 3) -> list[dict]:
+    """When nothing qualifies: the games in the next 30 hours closest to being the rollover pick, each with the tests
+    it fails in plain words, fewest failures first."""
+    out = []
+    for x in board:
+        if x["market"] == "X" or x["t_ms"] > now_ms + 30 * HOUR or not 1.10 <= x["odds"] <= 1.45:
+            continue
+        why = []
+        if not ROLL_MIN <= x["odds"] <= ROLL_MAX:
+            why.append(f"odds {x['odds']:.2f}, needs {ROLL_MIN:.2f}–{ROLL_MAX:.2f}")
+        if not x.get("intl") and not x.get("agree"):
+            why.append("form not better than the opponent's" if x.get("agree") is False else "too few recent games to judge form")
+        if x["edge"] < roll_bar(x):
+            where = "an international" if x.get("intl") else "a lower league" if lower(x) else None
+            why.append(f"{-x['edge'] * 100:.1f}% under fair; {where} needs at least fair" if where
+                       else f"{-x['edge'] * 100:.1f}% under fair, allowed {-ROLL_EDGE * 100:.0f}%")
+        if x["edge"] > EDGE_MAX:
+            why.append(f"{x['edge'] * 100:.0f}% above fair: likely a stale price or the wrong game")
+        if x["odds_age_h"] > ODDS_FRESH_H:
+            why.append(f"Nigerian odds {x['odds_age_h']:.0f}h old, need under {ODDS_FRESH_H}h")
+        if x["sharp_age_h"] > SHARP_FRESH_H:
+            why.append(f"Pinnacle's price {x['sharp_age_h']:.0f}h old")
+        if why:
+            out.append({k: x.get(k) for k in ("key", "home", "away", "market", "odds", "book", "t_ms", "league", "league_name",
+                                              "edge")} | {"why": why})
+    out.sort(key=lambda m: (len(m["why"]), -m["edge"]))
+    return out[:n]
 
 
 def chain_odds(p: float, days: int) -> float:
