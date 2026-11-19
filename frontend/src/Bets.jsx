@@ -17,9 +17,12 @@ const ago = (ms) => {
   const m = Math.max(0, Math.round(ms / 60000));
   return m < 1 ? "now" : m < 60 ? `${m}m ago` : m < 2880 ? `${Math.floor(m / 60)}h ${m % 60}m ago` : `${Math.floor(m / 1440)}d ago`;
 };
-const MARKET = { 1: "Home win", X: "Draw", 2: "Away win", "1X": "Home or draw", 12: "Either team wins", X2: "Away or draw" };
+const MARKET = { 1: "Home win", X: "Draw", 2: "Away win", "1X": "Home or draw", 12: "Either team wins", X2: "Away or draw",
+  O25: "Over 2.5 goals", U25: "Under 2.5 goals" };
+const GOALS = ["O25", "U25"];
 const pick = (x) => (x.market === "1" ? x.home : x.market === "2" ? x.away : x.market === "1X" ? `${x.home} or draw`
-  : x.market === "X2" ? `${x.away} or draw` : x.market === "X" ? "Draw" : `No draw: ${x.home} or ${x.away}`);
+  : x.market === "X2" ? `${x.away} or draw` : x.market === "X" ? "Draw" : GOALS.includes(x.market) ? MARKET[x.market]
+  : `No draw: ${x.home} or ${x.away}`);
 const BOOK = { bet9ja: "Bet9ja", betking: "BetKing", nairabet: "Nairabet", sportybet: "SportyBet" };
 
 const Top = ({ title, facts = [], children }) => (
@@ -42,8 +45,8 @@ const poorWhy = (f) => [f.ppg < 1.5 ? `${f.ppg.toFixed(1)} points a game` : null
   .filter(Boolean).join(", ");
 const Form = ({ x, dash = "-" }) => (x.agree
   ? <>{<span className="up">better</span>}{poor(x.fav_form) && <span className="down">, but poor</span>}</>
-  : x.agree === false ? <span className="down">not better</span> : <span className="muted">{x.intl ? "price only" : dash}</span>);
-const bar = (x, s) => (x.intl || (s.lower || []).includes(x.league) ? s.flat_low : s.flat[2]);
+  : x.agree === false ? <span className="down">not better</span> : <span className="muted">{x.intl || GOALS.includes(x.market) ? "price only" : dash}</span>);
+const bar = (x, s) => (x.intl || (s.lower || []).includes(x.league) || GOALS.includes(x.market) ? s.flat_low : s.flat[2]);
 
 function Why({ x, s }) {
   const f = x.fav_form, o = x.opp_form, pat = x.pattern, rec = x.fav_record;
@@ -61,7 +64,8 @@ function Why({ x, s }) {
       {x.others?.length > 1 && <li>All books: {x.others.map((b) => `${BOOK[b.book] || b.book} ${odd(b.odds)}`).join(" · ")}.</li>}
       {s && (
         <li>
-          Take it at <b>{odd((1 + bar(x, s)) / x.fair_p)}</b> or better{bar(x, s) > s.flat[2] ? `: ${pct(bar(x, s))} needed here, a ${x.intl ? "international" : "lower league"}` : ""}.
+          Take it at <b>{odd((1 + bar(x, s)) / x.fair_p)}</b> or better{bar(x, s) > s.flat[2] ? `: ${pct(bar(x, s))} needed here, ${x.intl ? "an international"
+            : GOALS.includes(x.market) ? "a goals bet" : "a lower league"}` : ""}.
         </li>
       )}
     </ul>

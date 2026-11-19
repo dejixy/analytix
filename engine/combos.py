@@ -19,8 +19,8 @@ day, no more than 10% above fair (above that it is nearly always a stale price o
 The search is exact up to rounding: a knapsack over total log-odds in steps of 0.001 (each bet's odds rounded by at most
 0.05%), keeping each game's best option per step so the slip can be read back; a slip's total is then checked exactly.
 
-past() replays it on three seasons of football-data's games, one slip a day for each target, with Bet365's home and away
-prices as the Nigerian book's stand-in (as in engine/betstudy.py).
+past() replays it on three seasons of football-data's games, one slip a day for each target, with Bet365's home win,
+away win and over/under 2.5 prices as the Nigerian book's stand-in (as in engine/betstudy.py).
 """
 import math
 
@@ -199,10 +199,11 @@ def solvers(board: list[dict], books: dict[str, dict], now_ms: int, days: int) -
 
 # ── on past games ────────────────────────────────────────────────────────────
 def past(history: list[dict], book: str = "bet365", targets: tuple = LADDER) -> dict:
-    """One slip a day (Lagos days) for each target, built the same way from that day's home and away wins at the stand-in
-    book's price: slips, won, the wins the chances expected, average total odds and the return a slip with its
-    standard error, for safest-first and each minimum chance. {"safest" or "0.70": {str(target): {...}}}"""
-    col = dict(zip(("1", "2"), S.SOFT[book]))
+    """One slip a day (Lagos days) for each target, built the same way from that day's home wins, away wins and over/under
+    2.5 goals at the stand-in book's price: slips, won, the wins the chances expected, average total odds and the
+    return a slip with its standard error, for safest-first and each minimum chance.
+    {"safest" or "0.70": {str(target): {...}}}"""
+    col = {**dict(zip(("1", "2"), S.SOFT[book])), **dict(zip(B.GOALS, S.SOFT_OU[book]))}
     days: dict[int, list[dict]] = {}
     for g in history:
         if g.get("hg") is None:
@@ -211,7 +212,10 @@ def past(history: list[dict], book: str = "bet365", targets: tuple = LADDER) -> 
             if all(g.get(c) for c in S.SHARP) else None
         if not fair:
             continue
-        for m in ("1", "2"):
+        ou = B.devig(dict(zip(B.GOALS, (g.get(c) for c in S.SHARP_OU))))
+        if ou:
+            fair = {**fair, **ou}
+        for m in ("1", "2", *(B.GOALS if ou else ())):
             o = g.get(col[m])
             if not o or o < LEG_MIN or fair[m] < FLOORS[-1] or o * fair[m] - 1 > B.EDGE_MAX:
                 continue

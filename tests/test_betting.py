@@ -553,3 +553,87 @@ def test_the_combo_service_and_its_past(tmp_path):
     assert two["n"] > 50 and 0 <= two["won"] <= two["n"] and two["se"] > 0 and 1.5 <= two["odds"] <= 1.65
     assert past["200"]["n"] == 0                                              # three games a day can't reach it
     assert set(past) == {str(x) for x in C.LADDER}
+
+
+FD_GOALS = """Div,Date,Time,HomeTeam,AwayTeam,FTHG,FTAG,PSH,PSD,PSA,P>2.5,P<2.5,PC>2.5,PC<2.5,Avg>2.5,Avg<2.5,B365>2.5,B365<2.5
+E0,21/11/2026,15:00,Arsenal,Fulham,,,1.40,4.8,8.0,1.62,2.38,,,1.60,2.30,1.57,2.35
+E0,21/11/2026,17:30,Burnley,Everton,,,2.90,3.2,2.60,,,,,2.10,1.72,2.05,1.75
+"""
+
+
+def test_over_under_goals():
+    from engine import betstudy as S
+    from engine import combos as C
+    assert B.wins("O25", 2, 1) and not B.wins("O25", 1, 1) and B.wins("U25", 0, 2) and not B.wins("U25", 3, 0)
+    assert not B.wins("2", 1, 1) and B.wins("2", 0, 1)                                  # the win markets unchanged
+    g = F.parse_fd(FD_GOALS, "E0")
+    assert g[0]["P>2.5"] == 1.62 and g[1]["Avg<2.5"] == 1.72
+    s = F.sharp_from_fd(g, NOW)
+    assert s[0]["ou_odds"] == {"O25": 1.62, "U25": 2.38} and s[0]["ou_src"].startswith("Pinnacle")
+    assert s[1]["ou_src"].startswith("market average") and "ou_odds" in s[1]                 # no Pinnacle: the average
+    # the board: over/under priced from the sharp game's own over/under, judged on the price alone, 3% bar
+    sharp = [{**s[0], "t_ms": NOW + 6 * H, "read_ms": NOW - H}]
+    books = {"bet9ja": {"t_ms": NOW, "rows": [{"home": "Arsenal", "away": "Fulham", "t_ms": NOW + 6 * H,
+                                              "odds": {"1": 1.36, "O25": 1.70, "U25": 2.20}}]}}
+    board = {x["market"]: x for x in B.build(books, sharp, [], {}, NOW)}
+    over = board["O25"]
+    assert abs(over["p"] - B.devig({"O25": 1.62, "U25": 2.38})["O25"]) < 1e-12 and over["pattern"] is None
+    assert over["sharp_src"].startswith("Pinnacle") and "agree" not in over and B.lower(over) and not B.lower(board["1"])
+    assert B.edge_bar(over) == B.FLAT_EDGE_LOW
+    # The Odds API's win prices with football-data's over/under for the same game
+    rt = SimpleNamespace(mode="live")
+    svc = BetsService(rt)
+    svc.sharp_oa = [{"id": "oa:1", "league": "E0", "home": "Arsenal", "away": "Fulham", "t_ms": s[0]["t_ms"] + 600_000,
+                     "fair": B.devig({"1": 1.42, "X": 4.7, "2": 7.8}), "src": "Pinnacle (The Odds API)", "read_ms": NOW}]
+    svc.sharp_fd = s
+    got = svc.sharp()
+    assert len(got) == 2 and got[0]["id"] == "oa:1" and got[0]["ou_odds"] == {"O25": 1.62, "U25": 2.38}
+    assert "ou_odds" not in svc.sharp_oa[0]                                             # the saved read is untouched
+    # the push, settling and the close
+    _, rows = F.parse_push({"book": "bet9ja", "rows": [{"home": "A", "away": "B", "t_ms": NOW, "odds": {"over_2_5": "1.70", "under_2_5": 2.2}}]})
+    assert rows[0]["odds"] == {"O25": 1.70, "U25": 2.2}
+    bk = B.Book()
+    bk.add_flat({**over, "key": "g1"}, NOW)
+    bk.settle([{"home": "Arsenal", "away": "Fulham", "t_ms": over["t_ms"], "hg": 2, "ag": 1}],
+              [{"home": "Arsenal", "away": "Fulham", "t_ms": over["t_ms"], "fair": None, "ou": B.devig({"O25": 1.55, "U25": 2.50})}])
+    assert bk.flat[0]["status"] == "won" and bk.flat[0]["clv"] > 0                    # 1.70 beat a 1.55 close
+    # three seasons: over/under rows in the replay, and over/under legs on past slips
+    hist = _history(n=600)
+    for k, h in enumerate(hist):
+        h.update({"P>2.5": 1.80, "P<2.5": 2.05, "B365>2.5": 1.85, "B365<2.5": 1.95, "Max>2.5": 1.95, "Max<2.5": 2.10,
+                  "B365H": h["PSH"] * 0.97, "B365A": h["PSA"] * 0.97, "MaxH": h["PSH"], "MaxA": h["PSA"]})
+    rules = {r["rule"]: r for r in S.study(hist)["books"]["best"]["rules"]}
+    ou = rules["…any odds, edge 3%+"]
+    assert rules["Over/under 2.5 goals: odds 1.20–1.50, edge 3%+"]["n"] == 0 and ou["n"] > 0
+    assert rules["Every over/under 2.5 price, no edge needed"]["n"] == 1200
+    assert C.past(hist)["safest"]["1.5"]["n"] >= 0
+
+
+def test_the_collector_reads_over_under():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    raw = {"D": {"E": [{"DS": "Arsenal - Fulham", "GN": "Premier League", "STARTDATE": "2026-11-21 16:00:00", "ID": 7,
+                        "O": {"S_1X2_1": "1.36", "S_OU@2.5_O": "1.70", "S_OU@2.5_U": "2.10", "S_OU@3.5_O": "2.9"}}]}}
+    r = N.bet9ja_rows(raw)[0]
+    assert r["over_2_5"] == 1.70 and r["under_2_5"] == 2.10 and r["home"] == 1.36
+    goals = {}
+
+    class Lib:                                                                # NaijaBet_Api's reader, by its shape
+        def normalizer(self, data):
+            return [{"match": "Arsenal - Fulham", "match_id": 7, "home": 1.36}]
+
+        def get_all(self):
+            return self.normalizer(raw)
+    lib = Lib()
+    N.keep_goals(lib, goals)
+    assert lib.get_all()[0]["home"] == 1.36 and goals == {7: {"over_2_5": 1.70, "under_2_5": 2.10}}
+    sporty = {"data": [{"name": "Premier League", "events": [{"homeTeamName": "Arsenal", "awayTeamName": "Fulham",
+               "estimateStartTime": 1795000000000, "eventId": "sr:match:1", "markets": [
+                   {"id": "1", "outcomes": [{"id": "1", "odds": "1.37"}, {"id": "2", "odds": "5.0"}, {"id": "3", "odds": "8.1"}]},
+                   {"id": "18", "specifier": "total=3.5", "outcomes": [{"id": "12", "odds": "2.95"}, {"id": "13", "odds": "1.38"}]},
+                   {"id": "18", "specifier": "total=2.5", "outcomes": [{"id": "12", "odds": "1.72"}, {"id": "13", "odds": "2.08"}]}]}]}]}
+    row = N.sporty_rows(sporty)[0]
+    assert row["over_2_5"] == 1.72 and row["under_2_5"] == 2.08 and row["home"] == 1.37
+    assert N.goals_line("x", [{"odds": {"over_2_5": 1.7, "under_2_5": 2.1}}, {"odds": {"home": 1.2}}]) == "  x: over/under 2.5 on 1 of 2 games"

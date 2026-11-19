@@ -6,7 +6,10 @@ The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live m
                    season (with ANALYTIX_ODDS_API_KEY; a credit for each league that has games, none for one without),
                    and football-data's fixtures every six hours for all 14 leagues (free; Pinnacle or the market
                    average). The fresher wins. 30 minutes to 3 hours before kick-off, any league with a game that could be
-                   bet is read again (a credit a league, at most every 2 hours, while 100+ credits are left)
+                   bet is read again (a credit a league, at most every 2 hours, while 100+ credits are left).
+                   Over/under 2.5 goals comes only from football-data's fixtures (Pinnacle's, else the market average),
+                   added to the same game when The Odds API has its win prices: free, but read a day or two before
+                   kick-off, so goals bets need the higher 3% edge
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
     paper book     every ten minutes: new flat value bets are booked at a flat stake, today's rollover pick is made once
@@ -182,7 +185,8 @@ class BetsService:
         want = {}
         for x in board:
             if (now + FRESH_FROM_H * B.HOUR <= x["t_ms"] <= now + FRESH_TO_H * B.HOUR and B.ROLL_MIN <= x["odds"] <= B.FLAT_MAX
-                    and x["edge"] >= B.ROLL_EDGE and x["market"] != "X" and now - self._fresh_at.get(x["league"], 0) > FRESH_EVERY_H * B.HOUR):
+                    and x["edge"] >= B.ROLL_EDGE and x["market"] not in ("X", *B.GOALS)    # a read doesn't refresh goals prices
+                    and now - self._fresh_at.get(x["league"], 0) > FRESH_EVERY_H * B.HOUR):
                 sport = self._sport(x["league"])
                 if sport:
                     want[x["league"]] = sport
@@ -236,8 +240,9 @@ class BetsService:
             except Exception as exc:                      # noqa: BLE001 - football-data's results still settle it
                 log.warning("bets scores: %s", exc)
         closing = [{"home": g["home"], "away": g["away"], "t_ms": g["t_ms"], "fair": B.devig(
-                    {"1": g.get("PSCH") or g.get("AvgCH"), "X": g.get("PSCD") or g.get("AvgCD"), "2": g.get("PSCA") or g.get("AvgCA")})}
-                   for g in self.history if g["t_ms"] > now - 10 * B.DAY and (g.get("PSCH") or g.get("AvgCH"))]
+                    {"1": g.get("PSCH") or g.get("AvgCH"), "X": g.get("PSCD") or g.get("AvgCD"), "2": g.get("PSCA") or g.get("AvgCA")}),
+                    "ou": B.devig({"O25": g.get("PC>2.5") or g.get("AvgC>2.5"), "U25": g.get("PC<2.5") or g.get("AvgC<2.5")})}
+                   for g in self.history if g["t_ms"] > now - 10 * B.DAY and (g.get("PSCH") or g.get("AvgCH") or g.get("PC>2.5"))]
         self.book.settle(results, closing)
 
     # ── odds from the laptop ──────────────────────────────────────────────
@@ -320,8 +325,12 @@ class BetsService:
             return self._sharp_rows[1]
         out = list(self.sharp_oa)
         for g in self.sharp_fd:
-            if not B.match_fixture(g["home"], g["away"], g["t_ms"], out, within_h=12):
+            m = B.match_fixture(g["home"], g["away"], g["t_ms"], out, within_h=12)
+            if not m:
                 out.append(g)
+            elif g.get("ou_odds") and not m.get("ou_odds"):     # The Odds API's win prices, football-data's over/under
+                i = next(k for k in range(len(out)) if out[k] is m)
+                out[i] = {**m, **{k: g[k] for k in ("ou_odds", "ou_src", "ou_read_ms")}}
         self._sharp_rows = (v, out)
         return out
 
@@ -413,7 +422,7 @@ class BetsService:
                 "record": self.book.record(), "flat_recent": self.book.flat[-40:][::-1], "patterns": pats,
                 "method": B.method(), "methods": self.methods, "study": self.study,
                 "settings": {"flat": [B.FLAT_MIN, B.FLAT_MAX, B.FLAT_EDGE, B.FLAT_STAKE], "flat_low": B.FLAT_EDGE_LOW,
-                             "edge_max": B.EDGE_MAX, "lower": sorted(B.LOWER_LEAGUES),
+                             "edge_max": B.EDGE_MAX, "lower": sorted(B.LOWER_LEAGUES), "goals": list(B.GOALS),
                              "roll": [B.ROLL_MIN, B.ROLL_MAX, B.ROLL_EDGE]},
                 "sources": {"books": {k: {"t_ms": v["t_ms"], "games": len(v["rows"])} for k, v in self.books.items()},
                             "history_games": len(self.history), "sharp_oa": len(self.sharp_oa), "sharp_fd": len(self.sharp_fd),

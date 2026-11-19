@@ -33,13 +33,15 @@ from pathlib import Path
 
 HOUR = 3_600_000
 DAY = 24 * HOUR
-MARKETS = ("1", "X", "2", "1X", "12", "X2")
+MARKETS = ("1", "X", "2", "1X", "12", "X2", "O25", "U25")
+GOALS = ("O25", "U25")               # over / under 2.5 goals: priced from Pinnacle's own over/under (football-data)
 MARKET_NAME = {"1": "Home win", "X": "Draw", "2": "Away win", "1X": "Home or draw", "12": "Either team wins",
-               "X2": "Away or draw"}
-BOOK_KEYS = {"home": "1", "draw": "X", "away": "2", "home_or_draw": "1X", "home_or_away": "12", "draw_or_away": "X2"}
+               "X2": "Away or draw", "O25": "Over 2.5 goals", "U25": "Under 2.5 goals"}
+BOOK_KEYS = {"home": "1", "draw": "X", "away": "2", "home_or_draw": "1X", "home_or_away": "12", "draw_or_away": "X2",
+             "over_2_5": "O25", "under_2_5": "U25"}
 
 FLAT_MIN, FLAT_MAX, FLAT_EDGE = 1.20, 1.50, 0.02
-FLAT_EDGE_LOW = 0.03                 # leagues where Pinnacle's own price is less sure, and internationals
+FLAT_EDGE_LOW = 0.03                 # leagues where Pinnacle's own price is less sure, internationals, and goals bets
 EDGE_MAX = 0.10                      # above this an "edge" is nearly always a stale price or the wrong game: not bet
 LOWER_LEAGUES = {"E2", "E3", "SC0", "B1", "T1", "G1"}
 FLAT_STAKE = 250
@@ -214,6 +216,8 @@ def markets_from_1x2(p: dict[str, float]) -> dict[str, float]:
 
 
 def wins(market: str, hg: int, ag: int) -> bool:
+    if market in GOALS:
+        return (hg + ag >= 3) == (market == "O25")
     r = "1" if hg > ag else "2" if ag > hg else "X"
     return r in market
 
@@ -398,6 +402,12 @@ def favourite_side(market: str, p: dict[str, float]) -> str | None:
     return None
 
 
+def goals_fair(s: dict) -> dict[str, float]:
+    """A sharp game's fair over/under 2.5 chances ({"O25", "U25"}), by the margin method in use, or {} without them."""
+    o = s.get("ou_odds")
+    return (devig(o) if o else None) or {}
+
+
 # ── the board ────────────────────────────────────────────────────────────────
 def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: dict, now_ms: int,
           teams: Teams | None = None) -> list[dict]:
@@ -413,18 +423,21 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
             if not s or s["t_ms"] < now_ms + 10 * 60_000:      # the sharp kick-off is the reliable one
                 continue
             fair1x2 = (devig(s["odds"]) if s.get("odds") else None) or s["fair"]     # the current method, from raw prices
-            fair = markets_from_1x2(fair1x2)
+            fair = {**markets_from_1x2(fair1x2), **goals_fair(s)}
             intl = bool(s.get("intl"))
             for m, price in r["odds"].items():
                 if m not in fair or not price or price <= 1:
                     continue
-                p_adj, pat = (fair[m], None) if intl else adjust(fair[m], m, s.get("league", ""), cal, price_kind(s["src"]))
+                goals = m in GOALS
+                src = s.get("ou_src", s["src"]) if goals else s["src"]
+                read_ms = s.get("ou_read_ms", s["read_ms"]) if goals else s["read_ms"]
+                p_adj, pat = (fair[m], None) if intl or goals else adjust(fair[m], m, s.get("league", ""), cal, price_kind(src))
                 out.append({"key": f"{s['id']}:{m}", "match_id": s["id"], "home": s["home"], "away": s["away"],
                             "league": s.get("league", ""), "league_name": s.get("league_name", ""), "t_ms": s["t_ms"],
                             "market": m, "book": book, "odds": price, "odds_age_h": age_h, "fair_p": fair[m], "p": fair[m],
                             "p_hist": p_adj, "fair_odds": 1 / fair[m], "edge": price * fair[m] - 1, "edge_hist": price * p_adj - 1,
-                            "sharp_src": s["src"], "fair1x2": fair1x2,
-                            "sharp_age_h": (now_ms - s["read_ms"]) / HOUR, "pattern": pat, "intl": intl})
+                            "sharp_src": src, "fair1x2": fair1x2,
+                            "sharp_age_h": (now_ms - read_ms) / HOUR, "pattern": pat, "intl": intl})
     groups: dict[str, list[dict]] = {}
     for x in out:
         groups.setdefault(x["key"], []).append(x)
@@ -454,8 +467,9 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
 
 
 def lower(x: dict) -> bool:
-    """A lower league or an international: Pinnacle's price there is less sure, so the bar is higher."""
-    return bool(x.get("intl")) or x.get("league") in LOWER_LEAGUES
+    """A lower league, an international or a goals bet: the sharp price there is less sure (a goals price comes from
+    football-data's copy of Pinnacle's, read a day or two before), so the bar is higher."""
+    return bool(x.get("intl")) or x.get("league") in LOWER_LEAGUES or x.get("market") in GOALS
 
 
 def edge_bar(x: dict) -> float:
@@ -495,7 +509,8 @@ def rollover_misses(board: list[dict], now_ms: int, n: int = 3) -> list[dict]:
         if not ROLL_MIN <= x["odds"] <= ROLL_MAX:
             why.append(f"odds {x['odds']:.2f}, needs {ROLL_MIN:.2f}–{ROLL_MAX:.2f}")
         if x["edge"] < roll_bar(x):
-            where = "an international" if x.get("intl") else "a lower league" if lower(x) else None
+            where = ("an international" if x.get("intl") else "a goals bet" if x.get("market") in GOALS
+                     else "a lower league" if lower(x) else None)
             why.append(f"{-x['edge'] * 100:.1f}% under fair; {where} needs at least fair" if where
                        else f"{-x['edge'] * 100:.1f}% under fair, allowed {-ROLL_EDGE * 100:.0f}%")
         if x["edge"] > EDGE_MAX:
@@ -587,8 +602,9 @@ class Book:
                         self._roll(b, won)
             if closing and b.get("clv") is None:
                 c = match_fixture(b["home"], b["away"], b["t_ms"], closing, within_h=30)
-                if c and c.get("fair"):
-                    q = markets_from_1x2(c["fair"]).get(b["market"])
+                if c and (c.get("fair") or c.get("ou")):
+                    q = (c.get("ou") or {}).get(b["market"]) if b["market"] in GOALS else \
+                        markets_from_1x2(c["fair"]).get(b["market"]) if c.get("fair") else None
                     if q:
                         b["clv"] = b["odds"] * q - 1
         return done

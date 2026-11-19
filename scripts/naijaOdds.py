@@ -22,6 +22,10 @@ friendlies...), and reads those. --no-intl leaves out the internationals, --no-e
 SportyBet isn't in NaijaBet_Api: it's read straight from the feed its website uses, by Sportradar's competition numbers
 (the same numbers NaijaBet_Api keeps for it). --find --books sportybet shows what came back and saves a sample to
 sportybet_sample.json.
+
+Over/under 2.5 goals: read from Bet9ja (its feed carries it beside the win prices; NaijaBet_Api drops it, so it's taken
+from the same replies) and SportyBet. Each read says how many games had it; --find also saves one Bet9ja competition's
+reply to bet9ja_group_sample.json.
 """
 import argparse
 import json
@@ -33,7 +37,7 @@ import time
 import urllib.error
 import urllib.request
 
-KEYS = ("home", "draw", "away", "home_or_draw", "home_or_away", "draw_or_away")
+KEYS = ("home", "draw", "away", "home_or_draw", "home_or_away", "draw_or_away", "over_2_5", "under_2_5")
 INTL_WORDS = ("international", "nations league", "friendl", "world cup", "wc qual", "qualif", "africa cup", "afcon",
               "copa america", "gold cup", "asian cup", "euro 20", "uefa euro")
 INTL_SKIP = ("women", "club", "u21", "u23", "u20", "u19", "u17", "youth", "volley", "basket", "futsal", "beach", "esoccer",
@@ -115,7 +119,8 @@ class Group:
 
 
 B9_ODDS = {"home": "S_1X2_1", "draw": "S_1X2_X", "away": "S_1X2_2", "home_or_draw": "S_DC_1X", "home_or_away": "S_DC_12",
-           "draw_or_away": "S_DC_X2"}
+           "draw_or_away": "S_DC_X2", "over_2_5": "S_OU@2.5_O", "under_2_5": "S_OU@2.5_U"}
+GOAL_KEYS = ("over_2_5", "under_2_5")
 
 
 def bet9ja_rows(data: dict) -> list[dict]:
@@ -190,21 +195,23 @@ SPORTY = {"Premier League": 17, "Championship": 18, "League One": 24, "League Tw
           "Bundesliga": 35, "Ligue 1": 34, "Eredivisie": 37, "Liga Portugal": 238, "Premiership": 36, "Pro League": 38,
           "Super Lig": 52, "Super League 1": 185, "Champions League": 7, "Europa League": 679, "Conference League": 34480}
 SPORTY_EVENTS = "https://www.sportybet.com/api/ng/factsCenter/pcEvents"
-SPORTY_UPCOMING = ("https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents?sportId=sr%3Asport%3A1&marketId=1%2C10"
+SPORTY_UPCOMING = ("https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents?sportId=sr%3Asport%3A1&marketId=1%2C10%2C18"
                    "&pageSize=100&pageNum={page}&option=1")
 SPORTY_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
                   "Accept": "application/json", "Content-Type": "application/json", "Referer": "https://www.sportybet.com/ng/",
                   "clientid": "web", "platform": "web"}
-SPORTY_IDS = {"1": {"1": "home", "2": "draw", "3": "away"}, "10": {"9": "home_or_draw", "10": "home_or_away", "11": "draw_or_away"}}
+SPORTY_IDS = {"1": {"1": "home", "2": "draw", "3": "away"}, "10": {"9": "home_or_draw", "10": "home_or_away", "11": "draw_or_away"},
+              "18": {"12": "over_2_5", "13": "under_2_5"}}                # over/under, only its total=2.5 line
 SPORTY_DESC = {"home": "home", "1": "home", "draw": "draw", "x": "draw", "away": "away", "2": "away",
                "home or draw": "home_or_draw", "1x": "home_or_draw", "1/x": "home_or_draw",
                "home or away": "home_or_away", "12": "home_or_away", "1/2": "home_or_away",
-               "draw or away": "draw_or_away", "x2": "draw_or_away", "x/2": "draw_or_away"}
+               "draw or away": "draw_or_away", "x2": "draw_or_away", "x/2": "draw_or_away",
+               "over 2.5": "over_2_5", "under 2.5": "under_2_5"}
 
 
 def sporty_rows(data, league: str = "") -> list[dict]:
     """Every match in a SportyBet reply, whatever its nesting: a node with homeTeamName and awayTeamName is a match, its
-    markets "1" (1X2) and "10" (double chance) give the odds."""
+    markets "1" (1X2), "10" (double chance) and "18" at total=2.5 (over/under 2.5 goals) give the odds."""
     out = []
 
     def walk(x, lg):
@@ -213,6 +220,8 @@ def sporty_rows(data, league: str = "") -> list[dict]:
             if x.get("homeTeamName") and x.get("awayTeamName"):
                 odds = {}
                 for m in x.get("markets") or []:
+                    if str(m.get("id")) == "18" and str(m.get("specifier") or "").replace(" ", "") != "total=2.5":
+                        continue
                     ids = SPORTY_IDS.get(str(m.get("id")), {})
                     for o in m.get("outcomes") or []:
                         if o.get("isActive") == 0:
@@ -245,7 +254,7 @@ def read_sportybet(find: bool = False) -> list[dict]:
     s.headers.update(SPORTY_HEADERS)
     rows, failed, sample = [], [], None
     for name, tid in SPORTY.items():
-        body = [{"sportId": "sr:sport:1", "marketId": "1,10", "tournamentId": [[f"sr:tournament:{tid}"]]}]
+        body = [{"sportId": "sr:sport:1", "marketId": "1,10,18", "tournamentId": [[f"sr:tournament:{tid}"]]}]
         try:
             r = s.post(SPORTY_EVENTS, json=body, timeout=30)
             r.raise_for_status()
@@ -296,7 +305,12 @@ def read_book(name: str, intl: bool = True, extra: list[int] | None = None, find
         from NaijaBet_Api.bookmakers import Bet9ja, Betking, Nairabet
         cls = {"bet9ja": Bet9ja, "betking": Betking, "nairabet": Nairabet}[name]
         bk = cls()
+        goals: dict = {}
+        if name == "bet9ja":
+            keep_goals(bk, goals, find)
         rows = bk.get_all()
+        for r in rows:
+            r.update({k: v for k, v in goals.get(r.get("match_id"), {}).items() if not r.get(k)})
         if getattr(bk, "errors", None):
             print(f"  {name}: {len(bk.errors)} leagues failed ({', '.join(str(k) for k in list(bk.errors)[:4])})")
         if name == "bet9ja" and (more or extra):
@@ -314,6 +328,29 @@ def read_book(name: str, intl: bool = True, extra: list[int] | None = None, find
     return out
 
 
+def keep_goals(bk, into: dict, find: bool = False) -> None:
+    """NaijaBet_Api's Bet9ja reader keeps only the win and double-chance prices: read over/under 2.5 from the same
+    replies as they're parsed ({match id: {over_2_5, under_2_5}})."""
+    parse = bk.normalizer
+
+    def normalizer(data):
+        for r in bet9ja_rows(data):
+            got = {k: r[k] for k in GOAL_KEYS if r.get(k)}
+            if got:
+                into[r.get("match_id")] = got
+        if find and not os.path.exists("bet9ja_group_sample.json"):
+            with open("bet9ja_group_sample.json", "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            print("  saved one Bet9ja competition's reply to bet9ja_group_sample.json")
+        return parse(data)
+    bk.normalizer = normalizer
+
+
+def goals_line(book: str, rows: list[dict]) -> str:
+    n = sum(1 for r in rows if r["odds"].get("over_2_5") and r["odds"].get("under_2_5"))
+    return f"  {book}: over/under 2.5 on {n} of {len(rows)} games"
+
+
 def push(server: str, token: str, book: str, rows: list[dict]) -> str:
     body = json.dumps({"book": book, "rows": rows, "sent_ms": int(time.time() * 1000)}).encode()
     req = urllib.request.Request(f"{server.rstrip('/')}/api/bets/odds", data=body, method="POST",
@@ -327,6 +364,8 @@ def once(args) -> None:
         book = book.strip().lower()
         try:
             rows = read_book(book, not args.no_intl, args.bet9ja_groups, args.find, not args.no_extra)
+            if book in ("bet9ja", "sportybet"):
+                print(goals_line(book, rows))
             if args.find:
                 print(f"  {book}: {len(rows)} games read (not sent: --find)")
                 continue

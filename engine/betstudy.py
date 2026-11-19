@@ -7,7 +7,7 @@ There is no history of Nigerian books' prices, so two stand-ins play the soft bo
     best     the best price of every book it follows (MaxH/A): an upper bound, kinder than any one Nigerian book
 
 The fair chance is Pinnacle's price at that same moment, the margin taken out by the method in use (engine/betting.py).
-Only home and away wins can be replayed (football-data has no double-chance prices). The history adjustment is
+Home and away wins and over/under 2.5 goals can be replayed (football-data has no double-chance prices). The history adjustment is
 walk-forward: a season is adjusted only by the seasons before it, and each team's form only uses earlier games, so no
 rule sees its own result. Each rule reports its bets, how many won, the return on a flat stake with its standard error,
 and how often the price beat Pinnacle's close (the sign an edge is real).
@@ -22,6 +22,9 @@ from engine import betting as B
 SOFT = {"bet365": ("B365H", "B365A"), "best": ("MaxH", "MaxA")}
 SHARP = ("PSH", "PSD", "PSA")
 CLOSE = ("PSCH", "PSCD", "PSCA")
+SOFT_OU = {"bet365": ("B365>2.5", "B365<2.5"), "best": ("Max>2.5", "Max<2.5")}
+SHARP_OU = ("P>2.5", "P<2.5")
+CLOSE_OU = ("PC>2.5", "PC<2.5")
 TOP = {"E0", "SP1", "I1", "D1", "F1"}
 WAT = 3600_000                                            # Lagos is an hour ahead of UTC
 
@@ -60,6 +63,40 @@ def candidates(history: list[dict], teams: B.Teams | None = None) -> list[dict]:
                         "p": fair[m], "p_adj": p_adj, "close": close[m] if close else None, "agree": agree,
                         "won": B.wins(m, g["hg"], g["ag"])})
     return out
+
+
+def goals_candidates(history: list[dict]) -> list[dict]:
+    """Every past over and under 2.5 goals with a stand-in soft book's price, Pinnacle's fair chance and close, and the
+    result."""
+    out = []
+    for g in history:
+        if g.get("hg") is None:
+            continue
+        fair = B.devig(dict(zip(B.GOALS, (g.get(c) for c in SHARP_OU))))
+        if not fair:
+            continue
+        close = B.devig(dict(zip(B.GOALS, (g.get(c) for c in CLOSE_OU))))
+        for i, m in enumerate(B.GOALS):
+            prices = {k: g.get(cols[i]) for k, cols in SOFT_OU.items()}
+            if any(prices.values()):
+                out.append({"t_ms": g["t_ms"], "league": g["league"], "season": season(g["t_ms"]), "market": m,
+                            "prices": prices, "p": fair[m], "close": close[m] if close else None,
+                            "won": B.wins(m, g["hg"], g["ag"])})
+    return out
+
+
+def goals_rules(cands: list[dict], book: str) -> list[dict]:
+    """The flat rule on over/under 2.5 goals (a 3% edge, as for every less sure price), and wider versions of it."""
+    def pick(lo=0.0, hi=1e9, edge=B.FLAT_EDGE_LOW):
+        return [(c, o) for c in cands if (o := c["prices"].get(book)) and lo <= o <= hi
+                and (edge is None or o * c["p"] - 1 >= edge)]
+    rows = [
+        ("Over/under 2.5 goals: odds 1.20–1.50, edge 3%+", pick(B.FLAT_MIN, B.FLAT_MAX)),
+        ("…any odds, edge 3%+", pick()),
+        ("…any odds, edge 0%+", pick(edge=0.0)),
+        ("Every over/under 2.5 price, no edge needed", pick(edge=None)),
+    ]
+    return [{"rule": r, **score(b)} for r, b in rows]
 
 
 def score(bets: list[tuple[dict, float]]) -> dict:
@@ -134,10 +171,12 @@ def rollover(cands: list[dict], book: str, form: bool = False) -> dict:
 
 def study(history: list[dict], teams: B.Teams | None = None) -> dict:
     cands = candidates(history, teams)
+    goals = goals_candidates(history)
     out = {"games": len({(c["t_ms"], c["league"]) for c in cands}), "seasons": sorted({c["season"] for c in cands}),
            "method": B.method(), "books": {}}
     for book in SOFT:
         if any(c["prices"].get(book) for c in cands):
-            out["books"][book] = {"rules": rules(cands, book), "rollover": rollover(cands, book),
+            out["books"][book] = {"rules": rules(cands, book) + (goals_rules(goals, book) if goals else []),
+                                  "rollover": rollover(cands, book),
                                   "rollover_form": rollover(cands, book, form=True)}
     return out
