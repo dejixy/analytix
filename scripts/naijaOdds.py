@@ -40,30 +40,46 @@ INTL_SKIP = ("women", "club", "u21", "u23", "u20", "u19", "u17", "youth", "volle
              "e-soccer", "esport", "virtual", "srl", "simulated", "handball", "hockey", "rugby", "cricket", "tennis", "darts",
              "baseball", "american football", "aussie", "snooker", "badminton", "boxing", "mma", "golf", "cycling", "motor",
              "water polo", "waterpolo", "floorball", "bandy", "special", "outright", "winner")
-CLUB_WORDS = ("champions league", "europa league", "conference league", "eredivisie", "primeira", "liga portugal",
-              "premiership", "pro league", "jupiler", "first division a", "super lig", "süper lig", "superlig",
-              "super league", "superleague")
-CLUB_SKIP = tuple(w for w in INTL_SKIP if w != "club") + ("afc ", "caf ", "concacaf", "asia", "africa", "china", "india",
-                                                          "swiss", "switzerland", "chinese", "indian", "2nd", "second")
+# The competitions beyond NaijaBet_Api's ten: each is a (where, what) pair, both found in its path of names, so a
+# namesake elsewhere (Denmark's Superligaen, Northern Ireland's Premiership) doesn't count
+CLUBS = {"Champions League": (("international clubs", "uefa", "europe"), ("champions league",)),
+         "Europa League": (("international clubs", "uefa", "europe"), ("europa league",)),
+         "Conference League": (("international clubs", "uefa", "europe"), ("conference league",)),
+         "Eredivisie": (("netherlands", "holland"), ("eredivisie",)),
+         "Liga Portugal": (("portugal",), ("primeira", "liga portugal", "betclic")),
+         "Scottish Premiership": (("scotland",), ("premiership",)),
+         "Belgian Pro League": (("belgium",), ("pro league", "jupiler", "first division a")),
+         "Super Lig": (("turkey", "türkiye", "turkiye"), ("super lig", "süper lig", "superlig")),
+         "Greek Super League": (("greece",), ("super league",))}
+CLUB_SKIP = tuple(w for w in INTL_SKIP if w != "club") + ("afc ", "caf ", "concacaf", "liga portugal 2", "super league 2",
+                                                          "qualif")
+FUTURES = ("antepost", "outright", "top goalscorer", "to reach", "w/o ", "relegation")   # Bet9ja's futures, not matches
 NAME_KEYS = ("GN", "G_DESC", "DS", "DESC", "S_DESC", "N", "NAME", "Name", "name")
 ID_KEYS = ("GID", "G_ID", "ID", "Id", "id")
 
 
-def intl_groups(data, cap: int = 30) -> dict[int, str]:
+def intl_groups(data, cap: int = 40) -> dict[int, str]:
     """{group id: "Soccer / International / UEFA Nations League"} for every competition in Bet9ja's list of sports that
     looks like men's international football."""
-    return find_groups(data, INTL_WORDS, INTL_SKIP, cap)
+    return find_groups(data, lambda low: any(w in low for w in INTL_WORDS) and not any(w in low for w in INTL_SKIP), cap)
 
 
-def club_groups(data, cap: int = 30) -> dict[int, str]:
+def club_target(low: str) -> str | None:
+    """Which of CLUBS a path of names is, if any."""
+    if any(w in low for w in CLUB_SKIP):
+        return None
+    return next((name for name, (where, what) in CLUBS.items() if any(w in low for w in where) and any(w in low for w in what)), None)
+
+
+def club_groups(data, cap: int = 40) -> dict[int, str]:
     """The same for the European cups and the six leagues beyond NaijaBet_Api's ten."""
-    return find_groups(data, CLUB_WORDS, CLUB_SKIP, cap)
+    return find_groups(data, lambda low: club_target(low) is not None, cap)
 
 
-def find_groups(data, words, skip, cap: int = 30) -> dict[int, str]:
-    """{group id: its path of names} for every competition in Bet9ja's list of sports whose path has one of `words` and
-    none of `skip`. The list's layout isn't documented, so this walks all of it: a node with a name and a numeric id (its
-    own, or the key it sits under) counts, judged on its whole path of names."""
+def find_groups(data, match, cap: int = 40) -> dict[int, str]:
+    """{group id: its path of names} for every football competition in Bet9ja's list of sports whose path `match`es,
+    leaving out its futures sections (Antepost). The list's layout isn't documented, so this walks all of it: a node with a
+    name and a numeric id (its own, or the key it sits under) counts, judged on its whole path of names."""
     out: dict[int, str] = {}
 
     def walk(x, key=None, trail=""):
@@ -75,7 +91,7 @@ def find_groups(data, words, skip, cap: int = 30) -> dict[int, str]:
                 gid = key
             here = f"{trail} / {name}" if name else trail
             low = here.lower()
-            if name and gid and any(w in low for w in words) and not any(w in low for w in skip):
+            if (name and gid and "soccer" in low and not any(w in low for w in FUTURES) and match(low)):
                 out.setdefault(int(gid), here.strip(" /"))
             for k, v in x.items():
                 walk(v, k, here)
@@ -145,6 +161,10 @@ def bet9ja_extra(bk, extra: list[int], find: bool = False, intl: bool = True) ->
         print(f"  bet9ja: couldn't read its list of competitions ({type(exc).__name__}: {str(exc)[:100]})")
     for g in extra:
         groups.setdefault(g, f"group {g} (given by hand)")
+    if find:
+        missing = [n for n in CLUBS if not any(club_target(p.lower()) == n for p in groups.values())]
+        if missing:
+            print(f"  bet9ja: not found in its list: {', '.join(missing)}")
     if find or not groups:
         print(f"  bet9ja: {len(groups)} more competitions" + (":" if groups else
               ". Add one by hand with --bet9ja-groups and the number at the end of its address on Bet9ja's site"))

@@ -368,6 +368,24 @@ def test_collector_finds_cups_and_reads_sportybet():
         "9": {"S_DESC": "Rugby Union", "SG": {"70": {"SG_DESC": "England", "G": {"9001": {"G_DESC": "Premiership"}}}}}}}}
     assert sorted(N.club_groups(data)) == [1001, 1002, 1004, 1005]
     assert 1001 not in N.intl_groups(data)                                    # a club cup isn't an international
+    seen = {"D": {"PAL": {
+        "1": {"S_DESC": "Antepost Soccer", "SG": {"5": {"SG_DESC": "International Clubs", "G": {
+            "9781282": {"G_DESC": "UEFA Champions League2026/27 - To Reach the Final"}}},
+            "6": {"SG_DESC": "Netherlands", "G": {"9767247": {"G_DESC": "Eredivisie 2026/27 - Top 3"}}}}},
+        "2": {"S_DESC": "Soccer", "SG": {
+            "7": {"SG_DESC": "Romania", "G": {"983830": {"G_DESC": "SuperLiga"}}},
+            "8": {"SG_DESC": "Northern Ireland", "G": {"1078221": {"G_DESC": "Premiership"}}},
+            "9": {"SG_DESC": "Denmark", "G": {"1": {"G_DESC": "Superligaen"}}},
+            "10": {"SG_DESC": "Turkey", "G": {"2": {"G_DESC": "Super Lig"}}},
+            "11": {"SG_DESC": "Greece", "G": {"3": {"G_DESC": "Super League 1"}, "4": {"G_DESC": "Super League 2"}}},
+            "12": {"SG_DESC": "Portugal", "G": {"5": {"G_DESC": "Liga Portugal Betclic"}, "6": {"G_DESC": "Liga Portugal 2"}}},
+            "13": {"SG_DESC": "Belgium", "G": {"7": {"G_DESC": "Pro League"}}},
+            "14": {"SG_DESC": "International Clubs", "G": {"8": {"G_DESC": "UEFA Champions League"}, "9": {"G_DESC": "AFC Champions League Elite"}}}}},
+        "3": {"S_DESC": "Ski Jumping", "SG": {"15": {"SG_DESC": "Individual LH", "G": {"10": {"G_DESC": "Lillehammer HS140 Qualification"}}}}},
+        "4": {"S_DESC": "Squash", "SG": {"10991": {"SG_DESC": "International", "G": {"11": {"G_DESC": "China Open"}}}}}}}}
+    # what the first live run found: futures (Antepost), namesakes and other sports, now all left out
+    assert sorted(N.club_groups(seen)) == [2, 3, 5, 7, 8]
+    assert N.intl_groups(seen) == {}
     reply = {"bizCode": 10000, "data": [{"id": "sr:tournament:7", "name": "UEFA Champions League", "events": [
         {"eventId": "sr:match:1", "homeTeamName": "Arsenal", "awayTeamName": "Benfica", "estimateStartTime": 1795636800000,
          "markets": [{"id": "1", "outcomes": [{"id": "1", "odds": "1.42"}, {"id": "2", "odds": "4.90"}, {"id": "3", "odds": "7.20"}]},
