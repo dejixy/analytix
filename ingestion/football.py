@@ -81,7 +81,11 @@ def _when(date: str, time: str | None) -> int | None:
 
 
 ODDS_COLS = ("PSH", "PSD", "PSA", "PSCH", "PSCD", "PSCA", "AvgH", "AvgD", "AvgA", "AvgCH", "AvgCD", "AvgCA",
-             "B365H", "B365D", "B365A", "MaxH", "MaxD", "MaxA")
+             "B365H", "B365D", "B365A", "MaxH", "MaxD", "MaxA",
+             # over/under 2.5 goals: Pinnacle's, its close, the market average and its close, Bet365's, the best price
+             "P>2.5", "P<2.5", "PC>2.5", "PC<2.5", "Avg>2.5", "Avg<2.5", "AvgC>2.5", "AvgC<2.5", "B365>2.5", "B365<2.5",
+             "Max>2.5", "Max<2.5")
+OU_COLS = (("P>2.5", "P<2.5", "Pinnacle (football-data)"), ("Avg>2.5", "Avg<2.5", "market average (football-data)"))
 
 
 def parse_fd(text: str, league: str | None = None) -> list[dict]:
@@ -141,9 +145,18 @@ def sharp_from_fd(fixtures: list[dict], read_ms: int) -> list[dict]:
             if fair:
                 out.append({"id": f"fd:{g['league']}:{B.norm(g['home'])}:{B.norm(g['away'])}:{g['t_ms'] // B.DAY}",
                             "league": g["league"], "league_name": LEAGUES[g["league"]][0], "home": g["home"], "away": g["away"],
-                            "t_ms": g["t_ms"], "fair": fair, "odds": odds, "src": src, "read_ms": read_ms})
+                            "t_ms": g["t_ms"], "fair": fair, "odds": odds, "src": src, "read_ms": read_ms, **ou_of(g, read_ms)})
                 break
     return out
+
+
+def ou_of(g: dict, read_ms: int) -> dict:
+    """A game's over/under 2.5 prices from football-data, Pinnacle's else the market average: {ou_odds, ou_src,
+    ou_read_ms}, or {} without a pair."""
+    for o, u, src in OU_COLS:
+        if g.get(o) and g.get(u) and g[o] > 1 and g[u] > 1:
+            return {"ou_odds": {"O25": g[o], "U25": g[u]}, "ou_src": src, "ou_read_ms": read_ms}
+    return {}
 
 
 # ── The Odds API ─────────────────────────────────────────────────────────────
