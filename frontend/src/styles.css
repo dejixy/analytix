@@ -1620,3 +1620,8 @@ kbd {
 .term .az-table td.bt-name, .term .az-table td.bt-name .az-cat { font-family: var(--t-sans); }
 
 .term .bt-lead td { color: var(--t-ink); font-weight: 600; }
+.term .bt-target { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.term .bt-target input { width: 70px; background: var(--t-panel); color: var(--t-ink); border: 1px solid var(--t-edge); font: inherit; font-size: 12px; padding: 3px 6px; -moz-appearance: textfield; }
+.term .bt-target input::-webkit-outer-spin-button, .term .bt-target input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.term .bt-target input:focus { outline: none; border-color: var(--t-ink2); }
+.term .bt-target input[aria-invalid="true"] { border-color: var(--t-red); }
