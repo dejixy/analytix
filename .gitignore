@@ -17,6 +17,7 @@ data/analyzer_screen.jsonl
 data/analyzer_heating.jsonl
 data/bets.json
 data/bets_odds.json
+data/bets_sharp.json
 data/bot.json
 data/*.tmp
 data/bigmovers.json

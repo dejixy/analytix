@@ -46,6 +46,7 @@ from config import (
     ANALYZER_HEAT_LOG,
     BETS_FILE,
     BETS_ODDS_FILE,
+    BETS_SHARP_FILE,
 )
 from api.alerts import AlertService
 from api.baskets import Bot
@@ -138,7 +139,8 @@ class Runtime:
         self.edges = EdgeService(self, log_file=EDGE_LOG_FILE if mode == "live" else None)   # the edge terminal
         self.longtail.on_edge = self.edges.on_message   # the edge markets' live trades, from the socket recording them
         self.watchers = WatcherService(self, WATCHERS_FILE if mode == "live" else None)   # trade tickets, paper-tracked
-        self.bets = BetsService(self, BETS_FILE if mode == "live" else None, BETS_ODDS_FILE if mode == "live" else None)
+        self.bets = BetsService(self, BETS_FILE if mode == "live" else None, BETS_ODDS_FILE if mode == "live" else None,
+                                BETS_SHARP_FILE if mode == "live" else None)
         self.analyzer = AnalyzerService(self, ANALYZER_DUNE_FILE, ANALYZER_SCREEN_LOG if mode == "live" else None,
                                         ANALYZER_HEAT_LOG if mode == "live" else None)   # where money is being made, by category and chain
         self._saved_fp: dict[tuple, tuple] = {}

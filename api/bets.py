@@ -12,7 +12,8 @@ The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live m
     paper book     every ten minutes: new flat value bets are booked at a flat stake, today's rollover pick is made once
                    (after 06:00 Lagos, and only once the last one has settled), open bets are settled from results
                    (The Odds API's scores, else football-data) and given their closing-line value
-Kept in data/bets.json (the book) and data/bets_odds.json (the last push from each book).
+Kept in data/bets.json (the book), data/bets_odds.json (the last push from each book) and data/bets_sharp.json (the last
+paid sharp read, so a restart reuses it until it's a day old instead of spending credits again).
 
 The board (every Nigerian price against its sharp game, with form and history) is built on a worker thread and kept for a
 minute, or until new odds or prices arrive, so building it never holds up the rest of the app.
@@ -42,8 +43,9 @@ FRESH_FROM_H, FRESH_TO_H, FRESH_EVERY_H = 0.5, 3, 2      # read again 30 min to 
 
 
 class BetsService:
-    def __init__(self, runtime, path=None, odds_path=None):
+    def __init__(self, runtime, path=None, odds_path=None, sharp_path=None):
         self.rt = runtime
+        self.sharp_path = Path(sharp_path) if sharp_path else None
         self.book = B.Book(path)
         self.odds_path = Path(odds_path) if odds_path else None
         self.books: dict[str, dict] = self._load_odds()
@@ -70,6 +72,7 @@ class BetsService:
         self._tasks: list[asyncio.Task] = []
         self.fetch_history, self.fetch_fixtures, self.fetch_odds_api = F.fetch_history, F.fetch_fixtures, F.fetch_odds_api
         self.fetch_sports = F.fetch_sports
+        self._load_sharp()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -82,8 +85,16 @@ class BetsService:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self.book.save()
 
+    def _first_wait(self, key: str, now_s: float | None = None) -> float:
+        """Seconds before a part's first read after a start: the sharp read waits until the saved one is a day old."""
+        wait = {"history": 20, "fixtures": 40, "sharp": 120, "book": 300}[key]
+        st = self.status[key]
+        if key == "sharp" and st.get("ok") and st.get("at"):
+            wait = max(wait, st["at"] / 1000 + EVERY_S["sharp"] - (now_s or time.time()))
+        return wait
+
     async def _loop(self, key: str) -> None:
-        await asyncio.sleep({"history": 20, "fixtures": 40, "sharp": 120, "book": 300}[key])
+        await asyncio.sleep(self._first_wait(key))
         while True:
             await self.refresh(key)
             st = self.status[key]
@@ -146,6 +157,7 @@ class BetsService:
             raise RuntimeError("; ".join(errors))
         self.sharp_oa = rows
         self._changed(sharp=True)
+        self._save_sharp(now)
 
     def _sport(self, code: str) -> tuple[str, str] | None:
         """(name, The Odds API sport key) for a league code, a cup or an international competition."""
@@ -178,6 +190,7 @@ class BetsService:
             self.sharp_oa = [r for r in self.sharp_oa if r["league"] not in got] + rows
             self._changed(sharp=True)
             self.status["sharp"]["fresh"] = {"at": now, "leagues": sorted(got)}
+        self._save_sharp()
 
     async def _book(self) -> None:
         """Refresh the sharp price of games about to start, book new flat value bets, make today's rollover pick,
@@ -242,6 +255,35 @@ class BetsService:
         n = sum(1 for r in got["rows"] if B.match_fixture(r["home"], r["away"], r["t_ms"], sharp))
         self._match_n[book] = ((got["t_ms"], v), n)
         return n
+
+    def _save_sharp(self, read_ms: int | None = None) -> None:
+        """The last paid sharp read, with what it needs to be reused after a restart."""
+        if not self.sharp_path:
+            return
+        if read_ms:
+            self._sharp_read_ms = read_ms
+        keep = {"read_ms": getattr(self, "_sharp_read_ms", None), "rows": self.sharp_oa, "credits": self.credits,
+                "intl": self.intl, "cups": self.cups, "fresh_at": self._fresh_at}
+        try:
+            self.sharp_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.sharp_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(keep))
+            os.replace(tmp, self.sharp_path)
+        except OSError as exc:
+            log.warning("bets: couldn't save the sharp read: %s", exc)
+
+    def _load_sharp(self) -> None:
+        try:
+            got = json.loads(self.sharp_path.read_text()) if self.sharp_path and self.sharp_path.exists() else None
+        except (OSError, ValueError):
+            got = None
+        if not got or not got.get("read_ms") or not isinstance(got.get("rows"), list):
+            return
+        self.sharp_oa, self.credits, self._sharp_read_ms = got["rows"], got.get("credits"), got["read_ms"]
+        self.intl = {k: tuple(v) for k, v in (got.get("intl") or {}).items()}
+        self.cups = {**self.cups, **{k: tuple(v) for k, v in (got.get("cups") or {}).items()}}
+        self._fresh_at = {k: int(v) for k, v in (got.get("fresh_at") or {}).items()}
+        self.status["sharp"] = {"ok": True, "at": got["read_ms"], "error": None, "saved": True}
 
     def _load_odds(self) -> dict:
         try:

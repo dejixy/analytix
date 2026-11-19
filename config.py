@@ -151,6 +151,7 @@ ANALYZER_SCREEN_LOG = Path(os.getenv("ANALYTIX_SCREEN_LOG", str(ROOT / "data" / 
 ANALYZER_HEAT_LOG = Path(os.getenv("ANALYTIX_HEAT_LOG", str(ROOT / "data" / "analyzer_heating.jsonl")))   # tokens flagged
 BETS_FILE = Path(os.getenv("ANALYTIX_BETS_FILE", str(ROOT / "data" / "bets.json")))              # the paper bets
 BETS_ODDS_FILE = Path(os.getenv("ANALYTIX_BETS_ODDS_FILE", str(ROOT / "data" / "bets_odds.json")))  # last Nigerian odds
+BETS_SHARP_FILE = Path(os.getenv("ANALYTIX_BETS_SHARP_FILE", str(ROOT / "data" / "bets_sharp.json")))  # last sharp read
 ANALYZER_DUNE_FILE = Path(os.getenv("ANALYTIX_DUNE_FILE", str(ROOT / "data" / "analyzer_dune.json")))  # Dune queries
 BOT_FILE = Path(os.getenv("ANALYTIX_BOT_FILE", str(ROOT / "data" / "bot.json")))            # the trading bot's rules
 # Baskets shown in the bot panel, in order. The others keep running and recording in the background, silently: no
