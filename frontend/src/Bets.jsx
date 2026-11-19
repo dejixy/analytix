@@ -47,6 +47,12 @@ const Form = ({ x, dash = "-" }) => (x.agree
   ? <>{<span className="up">better</span>}{poor(x.fav_form) && <span className="down">, but poor</span>}</>
   : x.agree === false ? <span className="down">not better</span> : <span className="muted">{x.intl || GOALS.includes(x.market) ? "price only" : dash}</span>);
 const bar = (x, s) => (x.intl || (s.lower || []).includes(x.league) || GOALS.includes(x.market) ? s.flat_low : s.flat[2]);
+// Value by either rule: the new one goes by Pinnacle's chance alone, the old one (before PR #140) by the history-adjusted chance
+const ruled = (x) => (x.rule === "old" ? { p: x.p_hist, edge: x.edge_hist } : { p: x.p, edge: x.edge });
+const Rule = ({ x }) => (x.rule ? (
+  <span className="az-flag muted" title={x.rule === "old" ? "Old rule: Pinnacle's chance moved by history" : "New rule: Pinnacle's chance alone"}>
+    {x.rule === "old" ? "old rule" : "new rule"}
+  </span>) : null);
 
 function Why({ x, s }) {
   const f = x.fav_form, o = x.opp_form, pat = x.pattern, rec = x.fav_record;
@@ -54,8 +60,8 @@ function Why({ x, s }) {
     <ul className="bt-why">
       <li>
         Sharp price says <b>{pct(x.fair_p, 1)}</b> ({x.sharp_src}). At {odd(x.odds)} on {BOOK[x.book] || x.book} that is an edge
-        of <b className={tone(x.edge)}>{sgn(x.edge)}</b>.{x.pattern && x.p_hist != null ? <> History would move it to {pct(x.p_hist, 1)}
-        ({sgn(x.edge_hist)}); the rule leaves that out.</> : null}
+        of <b className={tone(x.edge)}>{sgn(x.edge)}</b>.{x.pattern && x.p_hist != null ? <> {x.rule === "old" ? "History moves it to" : "History would move it to"} {pct(x.p_hist, 1)}{" "}
+        ({sgn(x.edge_hist)}){x.rule === "old" ? ": the old rule goes by that" : "; the new rule leaves that out"}.</> : null}
       </li>
       {x.agree_why && <li>Form: <Form x={x} dash="unclear" />, {x.agree_why}{x.agree && poor(f) ? `; on its own it's poor: ${poorWhy(f)}` : ""}.</li>}
       {f && o && <li>Last {f.n}: {x.fav} {f.results} ({f.gf.toFixed(1)} scored, {f.ga.toFixed(1)} conceded a game) · opponent {o.results} ({o.gf.toFixed(1)}, {o.ga.toFixed(1)}).</li>}
@@ -64,7 +70,7 @@ function Why({ x, s }) {
       {x.others?.length > 1 && <li>All books: {x.others.map((b) => `${BOOK[b.book] || b.book} ${odd(b.odds)}`).join(" · ")}.</li>}
       {s && (
         <li>
-          Take it at <b>{odd((1 + bar(x, s)) / x.fair_p)}</b> or better{bar(x, s) > s.flat[2] ? `: ${pct(bar(x, s))} needed here, ${x.intl ? "an international"
+          Take it at <b>{odd((1 + bar(x, s)) / (x.rule === "old" ? x.p_hist : x.fair_p))}</b> or better{x.rule === "old" ? " on the old rule" : ""}{bar(x, s) > s.flat[2] ? `: ${pct(bar(x, s))} needed here, ${x.intl ? "an international"
             : GOALS.includes(x.market) ? "a goals bet" : "a lower league"}` : ""}.
         </li>
       )}
@@ -149,9 +155,10 @@ function Value({ d }) {
   const [open, setOpen] = useState(null);
   const rows = view === "value" ? d.value : d.near;
   const [lo, hi, edge, stake] = d.settings.flat;
+  const olds = d.value.filter((x) => x.rule === "old").length;
   return (
     <section className="panel">
-      <Top title={d.public ? "Value bets" : "Value bets, flat stake"} facts={[`${d.value.length} now`, `odds ${lo}–${hi}`, `edge ${pct(edge)}+ (${pct(d.settings.flat_low)}+ lower leagues)`, d.public ? null : `${naira(stake)} a bet`]}>
+      <Top title={d.public ? "Value bets" : "Value bets, flat stake"} facts={[`${d.value.length} now${olds ? ` (${olds} on the old rule)` : ""}`, `odds ${lo}–${hi}`, `edge ${pct(edge)}+ (${pct(d.settings.flat_low)}+ lower leagues)`, d.public ? null : `${naira(stake)} a bet`]}>
         <Seg value={view} set={setView} opts={[["value", "Value"], ["near", `Everything ${lo}–${hi}`]]} />
       </Top>
       {rows.length ? (
@@ -162,11 +169,11 @@ function Value({ d }) {
               <Fragment key={x.key}>
                 <tr onClick={() => setOpen(open === x.key ? null : x.key)} className={open === x.key ? "on" : ""}>
                   <td className="muted num">{kick(x.t_ms)}</td>
-                  <td className="bt-name"><b>{pick(x)}</b><span className="muted az-cat">{x.home} v {x.away} · {x.league_name || x.league}</span></td>
+                  <td className="bt-name"><b>{pick(x)}</b><Rule x={x} /><span className="muted az-cat">{x.home} v {x.away} · {x.league_name || x.league}</span></td>
                   <td className="r num">{odd(x.odds)} <span className="muted">{BOOK[x.book] || x.book}</span></td>
-                  <td className="r num muted">{odd(1 / x.p)}</td>
-                  <td className={`r num ${tone(x.edge)}`}>{sgn(x.edge)}</td>
-                  <td className="r num">{pct(x.p, 1)}</td>
+                  <td className="r num muted">{odd(1 / ruled(x).p)}</td>
+                  <td className={`r num ${tone(ruled(x).edge)}`}>{sgn(ruled(x).edge)}</td>
+                  <td className="r num">{pct(ruled(x).p, 1)}</td>
                   <td title={x.agree_why || ""}><Form x={x} /></td>
                   <td className={`r ${x.pattern ? tone(x.pattern.rate - x.pattern.implied) : "muted"}`}
                     title={x.pattern ? `Favourites at this price won ${pct(x.pattern.rate, 1)} of ${x.pattern.n.toLocaleString()} games, priced at ${pct(x.pattern.implied, 1)}` : ""}>
@@ -179,7 +186,7 @@ function Value({ d }) {
         </table></div>
       ) : (
         <p className="az-note">
-          {d.board_n ? `None of the ${d.board_n} prices in the next ${d.show_days} days is above fair by ${pct(edge)} or more right now. "Everything" shows them all.`
+          {d.board_n ? `None of the ${d.board_n} prices in the next ${d.show_days} days is above fair by ${pct(edge)} or more right now, on either rule. "Everything" shows them all.`
             : Object.values(d.matched || {}).some((n) => n > 0) ? `Your books' games matched their sharp lines, but none kicks off in the next ${d.show_days} days with fresh odds. Check the collector is still running.`
             : Object.keys(d.sources.books).length ? "Your books' games haven't matched a sharp line yet: the sharp prices may still be loading (a few minutes after a restart)."
             : d.public ? "No prices in from the Nigerian books right now."
@@ -334,8 +341,8 @@ function Record({ rec, recent, pub }) {
           <tbody>
             {recent.map((b) => (
               <tr key={b.key}>
-                <td className="muted num">{kick(b.t_ms)}</td><td className="bt-name"><b>{pick(b)}</b> <span className="muted">{BOOK[b.book] || b.book}</span></td>
-                <td className="r num">{odd(b.odds)}</td><td className={`r num ${tone(b.edge)}`}>{sgn(b.edge)}</td>
+                <td className="muted num">{kick(b.t_ms)}</td><td className="bt-name"><b>{pick(b)}</b> <span className="muted">{BOOK[b.book] || b.book}</span><Rule x={b} /></td>
+                <td className="r num">{odd(b.odds)}</td><td className={`r num ${tone(ruled(b).edge)}`}>{sgn(ruled(b).edge)}</td>
                 <td className={`r num ${tone(b.clv)}`}>{b.clv == null ? "-" : sgn(b.clv)}</td>
                 <td className={b.status === "won" ? "up" : b.status === "lost" ? "down" : "muted"}>{b.status}{b.score ? ` ${b.score}` : ""}</td>
                 {!pub && <td className={`r num ${tone(b.profit)}`}>{b.profit == null ? "-" : naira(b.profit)}</td>}

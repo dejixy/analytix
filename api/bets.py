@@ -410,10 +410,11 @@ class BetsService:
                         pats.append({"kind": kind, "market": m, "name": B.MARKET_NAME[m], "odds": [round(1 / hi, 2), round(1 / lo, 2)],
                                      "n": c[0], "rate": c[1] / c[0], "implied": c[2] / c[0]})
         return {"now_ms": now, "enabled": self.rt.mode == "live",
-                "value": B.value_bets(board)[:60], "board_n": len(board), "book_days": B.BOOK_DAYS, "show_days": B.SHOW_DAYS,
+                "value": [{**x, "rule": B.rule_of(x)} for x in B.value_bets(board)[:60]], "board_n": len(board),
+                "book_days": B.BOOK_DAYS, "show_days": B.SHOW_DAYS,
                 "matched": {k: self._matched(k) for k in self.books},
                 "next_kick": min((x["t_ms"] for x in board), default=None),
-                "near": [x for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"][:40],
+                "near": [{**x, "rule": B.rule_of(x)} for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"][:40],
                 "rollover": {"today": today, "candidate": candidate, "chain": chain, "target": B.ROLL_TARGET,
                              "misses": B.rollover_misses(board, now) if not (today or candidate) else [],
                              "refills_max": B.ROLL_REFILLS, "start": B.ROLL_START,
