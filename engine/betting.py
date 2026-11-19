@@ -476,13 +476,26 @@ def edge_bar(x: dict) -> float:
     return FLAT_EDGE_LOW if lower(x) else FLAT_EDGE
 
 
+def rule_of(x: dict, edge: float | None = None) -> str | None:
+    """Which rule finds value in a price: "new" when Pinnacle's chance alone gives an edge of 2% (3% in lower leagues,
+    internationals and goals bets, or `edge` if given) up to 10%; else "old" when the history-adjusted chance does
+    (the rule before PR #140); else None."""
+    bar = edge if edge is not None else edge_bar(x)
+    if bar <= x["edge"] <= EDGE_MAX:
+        return "new"
+    if x.get("pattern") and x.get("edge_hist") is not None and bar <= x["edge_hist"] <= EDGE_MAX:
+        return "old"
+    return None
+
+
 def value_bets(board: list[dict], lo: float = FLAT_MIN, hi: float = FLAT_MAX, edge: float | None = None,
-               before_ms: int | None = None) -> list[dict]:
-    """Flat value bets: an edge of 2% (3% in lower leagues and internationals, or `edge` if given) up to 10%; with
+               before_ms: int | None = None, old: bool = True) -> list[dict]:
+    """Flat value bets by either rule (rule_of; with old=False, the new rule only), the new rule's first; with
     before_ms, only those kicking off before it."""
-    return [x for x in board if lo <= x["odds"] <= hi and (edge if edge is not None else edge_bar(x)) <= x["edge"] <= EDGE_MAX
-            and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"
-            and (before_ms is None or x["t_ms"] <= before_ms)]
+    out = [x for x in board if lo <= x["odds"] <= hi and rule_of(x, edge) in (("new", "old") if old else ("new",))
+           and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"
+           and (before_ms is None or x["t_ms"] <= before_ms)]
+    return sorted(out, key=lambda x: (rule_of(x, edge) != "new", -(x["edge"] if rule_of(x, edge) == "new" else x["edge_hist"])))
 
 
 def roll_bar(x: dict) -> float:
@@ -562,8 +575,8 @@ class Book:
     @staticmethod
     def _slim(x: dict) -> dict:
         keep = ("key", "match_id", "home", "away", "league", "league_name", "t_ms", "market", "book", "odds", "fair_p", "p",
-                "edge", "sharp_src")
-        return {k: x.get(k) for k in keep}
+                "edge", "sharp_src", "p_hist", "edge_hist")
+        return {**{k: x.get(k) for k in keep}, "rule": rule_of(x)}
 
     def add_flat(self, x: dict, now_ms: int, stake: float = FLAT_STAKE) -> dict | None:
         if any(b["key"] == x["key"] for b in self.flat):

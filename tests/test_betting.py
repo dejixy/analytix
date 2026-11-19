@@ -297,8 +297,8 @@ def _row(**k):
 def test_bars_cap_and_lower_leagues():
     rows = [_row(key="top"), _row(key="low", league="E2"), _row(key="low_ok", league="SC0", edge=0.035),
             _row(key="intl", league="soccer_uefa_nations_league", intl=True), _row(key="stale", edge=0.14)]
-    assert [x["key"] for x in B.value_bets(rows)] == ["top", "low_ok"]       # 3% in lower leagues; over 10% is not bet
-    assert [x["key"] for x in B.value_bets(rows, edge=0.0)] == ["top", "low", "low_ok", "intl"]
+    assert [x["key"] for x in B.value_bets(rows)] == ["low_ok", "top"]       # 3% in lower leagues; over 10% is not bet
+    assert [x["key"] for x in B.value_bets(rows, edge=0.0)] == ["low_ok", "top", "low", "intl"]
     roll = [_row(key="low", league="E3", odds=1.25, edge=-0.01, p=0.9), _row(key="top", odds=1.25, edge=-0.01, p=0.8)]
     assert B.rollover_pick(roll, NOW)["key"] == "top"                          # a lower league needs at least fair
     roll[0]["edge"] = 0.0
@@ -440,7 +440,7 @@ def test_the_rule_is_pinnacle_alone():
     assert x["p"] == x["fair_p"] and abs(x["edge"] - (1.44 * x["fair_p"] - 1)) < 1e-9     # the rule's chance is Pinnacle's
     if x["pattern"]:
         assert x["p_hist"] > x["p"] and x["edge_hist"] > x["edge"]           # history is kept beside it, not used
-    assert (x in B.value_bets([x])) == (B.FLAT_EDGE <= x["edge"] <= B.EDGE_MAX)
+    assert (x in B.value_bets([x], old=False)) == (B.FLAT_EDGE <= x["edge"] <= B.EDGE_MAX)
     roll = [{**x, "odds": 1.30, "edge": 1.30 * x["p"] - 1, "agree": False}]
     if roll[0]["edge"] >= B.ROLL_EDGE:
         assert B.rollover_pick(roll, NOW) is not None                        # form no longer blocks a rollover pick
@@ -637,3 +637,19 @@ def test_the_collector_reads_over_under():
     row = N.sporty_rows(sporty)[0]
     assert row["over_2_5"] == 1.72 and row["under_2_5"] == 2.08 and row["home"] == 1.37
     assert N.goals_line("x", [{"odds": {"over_2_5": 1.7, "under_2_5": 2.1}}, {"odds": {"home": 1.2}}]) == "  x: over/under 2.5 on 1 of 2 games"
+
+
+def test_value_bets_by_either_rule():
+    pat = {"n": 400, "won": 330, "rate": 0.825, "implied": 0.80, "scope": "E0", "kind": "sharp", "range": [1.16, 1.25], "shift": 0.02}
+    rows = [_row(key="new", edge=0.022, edge_hist=0.03, pattern=pat),
+            _row(key="old", edge=0.004, edge_hist=0.026, pattern=pat),                  # only history lifts it over 2%
+            _row(key="old_low", league="E2", edge=0.004, edge_hist=0.026, pattern=pat),  # a lower league needs 3%
+            _row(key="no_pat", edge=0.004, edge_hist=0.026),                              # no history pattern: no old rule
+            _row(key="old_cap", edge=0.05, edge_hist=0.14, pattern=pat),                  # the new rule's
+            _row(key="old_big", edge=0.01, edge_hist=0.12, pattern=pat)]                  # over 10% either way: not bet
+    assert {x["key"]: B.rule_of(x) for x in rows} == {"new": "new", "old": "old", "old_low": None, "no_pat": None,
+                                                      "old_cap": "new", "old_big": None}
+    assert [x["key"] for x in B.value_bets(rows)] == ["old_cap", "new", "old"]          # the new rule's first
+    assert [x["key"] for x in B.value_bets(rows, old=False)] == ["old_cap", "new"]
+    bk = B.Book()
+    assert bk.add_flat(rows[1], NOW)["rule"] == "old" and bk.flat[0]["edge_hist"] == 0.026
