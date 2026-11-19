@@ -122,6 +122,8 @@ def test_the_public_link_sees_the_bets_page_only(client):
     assert client.post("/api/bets/odds", headers=cf, json={"book": "x", "rows": []}).status_code == 404
     combo = client.get("/api/bets/combo?target=50&days=3", headers=cf)
     assert combo.status_code == 200 and combo.json()["target"] == 50 and combo.json()["days"] == 3
+    assert client.get("/api/bets/combo/code?target=5", headers=cf).json()["status"] == "none"     # no SportyBet slip here
+    assert client.get("/api/bets/code-jobs", headers=cf).status_code == 404                      # the laptop's side: private
     assert client.get("/api/health", headers={"host": "quiet-river.trycloudflare.com"}).status_code == 404   # host alone
     assert client.get("/robots.txt", headers=cf).text.startswith("User-agent: *")
     with pytest.raises(Exception):

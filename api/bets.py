@@ -21,6 +21,11 @@ paid sharp read, so a restart reuses it until it's a day old instead of spending
 The board (every Nigerian price against its sharp game, with form and history) is built on a worker thread and kept for a
 minute, or until new odds or prices arrive, so building it never holds up the rest of the app. The combo builder
 (GET /api/bets/combo, engine/combos.py) searches the same board, kept per board and window.
+
+SportyBet booking codes: SportyBet turns the server away (403) as Bet9ja does, so a code is made on the laptop. The page
+asks for one (GET /api/bets/combo/code: the SportyBet slip for its settings is queued); the collector looks every 15
+seconds (GET /api/bets/code-jobs), books the slip on SportyBet and sends the code back (POST /api/bets/code-jobs). A
+code is kept for its slip until SportyBet's deadline; at most CODES_AN_HOUR new ones are asked for an hour.
 """
 import asyncio
 import json
@@ -45,6 +50,8 @@ EVERY_S = {"history": 86400, "fixtures": 6 * 3600, "sharp": 86400, "book": 600}
 MIN_CREDITS = 40
 FRESH_MIN_CREDITS = 100        # the pre-kick-off reads stop here, keeping the rest of the month for the daily read
 FRESH_FROM_H, FRESH_TO_H, FRESH_EVERY_H = 0.5, 3, 2      # read again 30 min to 3 h before kick-off, a league every 2 h
+CODES_AN_HOUR = 30
+CODE_WAIT_S = 180            # a code not back from the laptop by then: the collector loop isn't running
 
 
 class BetsService:
@@ -77,6 +84,7 @@ class BetsService:
         self._rebuild_task: asyncio.Task | None = None
         self._match_n: dict[str, tuple] = {}
         self._tasks: list[asyncio.Task] = []
+        self.codes: dict[str, dict] = {}                      # SportyBet booking codes by slip: {signature: job}
         self.fetch_history, self.fetch_fixtures, self.fetch_odds_api = F.fetch_history, F.fetch_fixtures, F.fetch_odds_api
         self.fetch_sports = F.fetch_sports
         self._load_sharp()
@@ -246,10 +254,14 @@ class BetsService:
         self.book.settle(results, closing)
 
     # ── odds from the laptop ──────────────────────────────────────────────
-    async def push(self, payload: dict, token: str = "") -> dict:
+    @staticmethod
+    def _check(token: str) -> None:
         want = os.getenv("ANALYTIX_BETS_TOKEN", "")
         if want and token != want:
             raise PermissionError("wrong or missing X-Bets-Token")
+
+    async def push(self, payload: dict, token: str = "") -> dict:
+        self._check(token)
         book, rows = F.parse_push(payload)
         if not book:
             raise ValueError("no book named")
@@ -377,7 +389,7 @@ class BetsService:
         await asyncio.to_thread(lambda: [self._matched(k) for k in list(self.books)])
         return {**self.public(board), "public": public}
 
-    async def combo(self, target: float, days: int = 1, least: float | None = None) -> dict:
+    async def combo(self, target: float, days: int = 1, least: float | None = None, book: str | None = None) -> dict:
         """The best slip for a total-odds target over the next `days` (1, 3 or 7), and the ladder of sizes: safest games
         first, or with every game at least `least` likely (0.60 to 0.90)."""
         days = days if days in C.DAYS else 1
@@ -388,8 +400,64 @@ class BetsService:
         kept = self._combos[1]
         if days not in kept:
             kept[days] = await asyncio.to_thread(C.solvers, board, dict(self.books), now, days)
-        out = await asyncio.to_thread(C.build, kept[days], target, self.combo_past, least)
+        out = await asyncio.to_thread(C.build, kept[days], target, self.combo_past, least, book)
         return {**out, "days": days, "now_ms": now}
+
+    # ── SportyBet booking codes, made on the laptop ───────────────────────
+    async def combo_code(self, target: float, days: int = 1, least: float | None = None) -> dict:
+        """The booking code for the SportyBet slip at these settings: ready, being made, or why there's none."""
+        out = await self.combo(target, days, least, "sportybet")
+        s = out["slip"]
+        if not s:
+            return {"status": "none", "why": "no SportyBet slip at these settings"}
+        if not s["coded"]:
+            return {"status": "none", "why": "the collector on the laptop hasn't sent SportyBet's ids yet: update it"}
+        sel = [{"eventId": x["sel"]["event"], "marketId": x["sel"]["market"], "specifier": x["sel"]["specifier"] or None,
+                "outcomeId": x["sel"]["outcome"]} for x in s["legs"]]
+        sig = "|".join(sorted(f"{x['eventId']}/{x['marketId']}/{x['specifier'] or ''}/{x['outcomeId']}" for x in sel))
+        now = time.time()
+        self._expire_codes(now)
+        job = self.codes.get(sig)
+        if job:
+            return self._job_view(job)
+        if sum(1 for j in self.codes.values() if now - j["asked"] < 3600) >= CODES_AN_HOUR:
+            return {"status": "none", "why": f"{CODES_AN_HOUR} codes asked for in the last hour: try again later"}
+        job = {"id": sig, "selections": sel, "status": "waiting", "asked": now, "games": s["n"], "odds": s["odds"],
+               "until_ms": s["last_ms"]}
+        self.codes[sig] = job
+        return self._job_view(job)
+
+    def _expire_codes(self, now: float) -> None:
+        for k, j in list(self.codes.items()):
+            if j["status"] == "waiting" and now - j["asked"] > CODE_WAIT_S:
+                j.update(status="failed", why="the laptop didn't answer: is the collector running with --loop?")
+            end = (j.get("deadline_ms") or j["until_ms"]) / 1000
+            if now > end or (j["status"] == "failed" and now - j["asked"] > CODE_WAIT_S + 60):
+                del self.codes[k]
+
+    @staticmethod
+    def _job_view(j: dict) -> dict:
+        return {k: j.get(k) for k in ("status", "code", "url", "deadline_ms", "missing", "games", "odds", "why")}
+
+    def code_jobs(self, token: str = "") -> list[dict]:
+        """For the collector: the slips waiting for a code."""
+        self._check(token)
+        self._expire_codes(time.time())
+        return [{"id": j["id"], "selections": j["selections"]} for j in self.codes.values() if j["status"] == "waiting"]
+
+    def code_done(self, payload: dict, token: str = "") -> dict:
+        """From the collector: SportyBet's answer for a slip ({id, code, url, deadline_ms, missing} or {id, error})."""
+        self._check(token)
+        j = self.codes.get(str(payload.get("id") or ""))
+        if not j:
+            return {"ok": False}
+        if payload.get("code"):
+            j.update(status="ready", code=str(payload["code"])[:20], url=str(payload.get("url") or "")[:300] or None,
+                     deadline_ms=int(payload["deadline_ms"]) if str(payload.get("deadline_ms") or "").isdigit() else None,
+                     missing=[str(m)[:120] for m in (payload.get("missing") or [])][:20])
+        else:
+            j.update(status="failed", why=f"SportyBet said: {str(payload.get('error') or 'no code')[:160]}")
+        return {"ok": True}
 
     def public(self, board: list[dict] | None = None) -> dict:
         now = int(time.time() * 1000)

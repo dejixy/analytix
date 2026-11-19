@@ -23,6 +23,11 @@ SportyBet isn't in NaijaBet_Api: it's read straight from the feed its website us
 (the same numbers NaijaBet_Api keeps for it). --find --books sportybet shows what came back and saves a sample to
 sportybet_sample.json.
 
+SportyBet booking codes: SportyBet only answers Nigerian addresses, so the combo builder's codes are made here. With
+--loop, between reads it looks every 15 seconds for slips the page asked a code for, books each on SportyBet (no account
+or stake: the same "book bet" its website has) and sends the code back. --try-code makes one code for a single bet and
+prints SportyBet's answer, to check it works.
+
 Over/under 2.5 goals: read from Bet9ja (its feed carries it beside the win prices; NaijaBet_Api drops it, so it's taken
 from the same replies) and SportyBet. Each read says how many games had it; --find also saves one Bet9ja competition's
 reply to bet9ja_group_sample.json.
@@ -200,6 +205,7 @@ SPORTY_UPCOMING = ("https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvent
 SPORTY_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
                   "Accept": "application/json", "Content-Type": "application/json", "Referer": "https://www.sportybet.com/ng/",
                   "clientid": "web", "platform": "web"}
+SPORTY_SHARE = "https://www.sportybet.com/api/ng/orders/share"
 SPORTY_IDS = {"1": {"1": "home", "2": "draw", "3": "away"}, "10": {"9": "home_or_draw", "10": "home_or_away", "11": "draw_or_away"},
               "18": {"12": "over_2_5", "13": "under_2_5"}}                # over/under, only its total=2.5 line
 SPORTY_DESC = {"home": "home", "1": "home", "draw": "draw", "x": "draw", "away": "away", "2": "away",
@@ -218,7 +224,7 @@ def sporty_rows(data, league: str = "") -> list[dict]:
         if isinstance(x, dict):
             lg = x.get("name") if isinstance(x.get("name"), str) and isinstance(x.get("events"), list) else lg
             if x.get("homeTeamName") and x.get("awayTeamName"):
-                odds = {}
+                odds, sel = {}, {}
                 for m in x.get("markets") or []:
                     if str(m.get("id")) == "18" and str(m.get("specifier") or "").replace(" ", "") != "total=2.5":
                         continue
@@ -231,12 +237,14 @@ def sporty_rows(data, league: str = "") -> list[dict]:
                         try:
                             if k and float(o.get("odds")) > 1:
                                 odds[k] = float(o["odds"])
+                                sel[k] = {"event": x.get("eventId"), "market": str(m.get("id")),
+                                          "specifier": str(m.get("specifier") or ""), "outcome": str(o.get("id"))}
                         except (TypeError, ValueError):
                             pass
                 t = x.get("estimateStartTime")
                 if odds and t:
                     out.append({"match": f"{x['homeTeamName']} - {x['awayTeamName']}", "time": int(t) / 1000,
-                                "league": lg or "", "match_id": x.get("eventId"), **odds})
+                                "league": lg or "", "match_id": x.get("eventId"), "sporty_ids": sel, **odds})
                 return
             for v in x.values():
                 walk(v, lg)
@@ -290,6 +298,72 @@ def read_sportybet(find: bool = False) -> list[dict]:
     return list({r["match_id"] or r["match"]: r for r in rows}.values())
 
 
+def sporty_session():
+    import requests
+    s = requests.Session()
+    s.headers.update(SPORTY_HEADERS)
+    return s
+
+
+def sporty_code(session, selections: list[dict]) -> dict:
+    """Book a slip on SportyBet: {code, url, deadline_ms, missing} or {error}. selections: [{eventId, marketId,
+    specifier, outcomeId}]."""
+    try:
+        r = session.post(SPORTY_SHARE, json={"selections": selections}, timeout=30)
+        body = r.json() if r.content else {}
+    except Exception as exc:                                      # noqa: BLE001 - reported back to the page
+        return {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+    d = body.get("data") if isinstance(body, dict) else None
+    if r.status_code != 200 or not isinstance(d, dict) or not d.get("shareCode"):
+        msg = (body.get("message") or body.get("msg")) if isinstance(body, dict) else None
+        return {"error": f"HTTP {r.status_code}" + (f": {str(msg)[:120]}" if msg else "")}
+    missing = []
+    for o in d.get("unavailableOutcomes") or []:
+        if isinstance(o, dict):
+            missing.append(" ".join(str(o.get(k) or "") for k in ("homeTeamName", "awayTeamName", "marketDesc", "desc")).strip()
+                           or str(o.get("eventId") or "a bet"))
+    return {"code": d["shareCode"], "url": d.get("shareURL"), "deadline_ms": d.get("deadline"), "missing": missing}
+
+
+def server_call(server: str, token: str, path: str, body: dict | None = None):
+    req = urllib.request.Request(f"{server.rstrip('/')}{path}", data=json.dumps(body).encode() if body is not None else None,
+                                 method="POST" if body is not None else "GET",
+                                 headers={"Content-Type": "application/json", "X-Bets-Token": token})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode() or "null")
+
+
+def serve_codes(args, session) -> None:
+    """The slips the page asked a SportyBet code for: book each and send the code back."""
+    try:
+        jobs = server_call(args.server, args.token, "/api/bets/code-jobs") or []
+    except Exception:                                             # noqa: BLE001 - the tunnel may be down; the next look
+        return
+    for job in jobs:
+        got = sporty_code(session, job.get("selections") or [])
+        print(time.strftime("%H:%M:%S"), f"SportyBet code for a {len(job.get('selections') or [])}-game slip:",
+              got.get("code") or got.get("error"))
+        try:
+            server_call(args.server, args.token, "/api/bets/code-jobs", {"id": job["id"], **got})
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"  couldn't send it back ({type(exc).__name__})")
+
+
+def try_code() -> None:
+    """One SportyBet code for a single bet from its current list, with SportyBet's whole answer printed."""
+    rows = read_sportybet()
+    row = next((r for r in rows if (r.get("sporty_ids") or {}).get("home")), None)
+    if not row:
+        sys.exit("SportyBet sent no games with their ids: run with --find --books sportybet and send the sample")
+    i = row["sporty_ids"]["home"]
+    sel = [{"eventId": i["event"], "marketId": i["market"], "specifier": i["specifier"] or None, "outcomeId": i["outcome"]}]
+    s = sporty_session()
+    r = s.post(SPORTY_SHARE, json={"selections": sel}, timeout=30)
+    print(f"{row['match']}, home win: HTTP {r.status_code}")
+    print(r.text[:800])
+    print("code:", sporty_code(s, sel))
+
+
 def split_match(name: str) -> tuple[str, str] | None:
     for sep in (" - ", " vs ", " v ", " – "):
         if sep in name:
@@ -323,8 +397,12 @@ def read_book(name: str, intl: bool = True, extra: list[int] | None = None, find
             continue
         odds = {k: r.get(k) for k in KEYS if r.get(k)}
         if odds:
-            out.append({"home": teams[0], "away": teams[1], "t_ms": int(float(r["time"]) * 1000),
-                        "league": str(r.get("league") or ""), "odds": odds})
+            row = {"home": teams[0], "away": teams[1], "t_ms": int(float(r["time"]) * 1000),
+                   "league": str(r.get("league") or ""), "odds": odds}
+            ids = {k: v for k, v in (r.get("sporty_ids") or {}).items() if k in odds and v.get("event")}
+            if ids:                                               # SportyBet's own ids, to make a booking code from
+                row["ids"] = ids
+            out.append(row)
     return out
 
 
@@ -393,7 +471,10 @@ def main() -> None:
     ap.add_argument("--no-extra", action="store_true", help="only NaijaBet_Api's ten leagues: no cups, extra leagues or internationals")
     ap.add_argument("--bet9ja-groups", default="", help="Bet9ja competition ids (or their addresses), comma-separated")
     ap.add_argument("--find", action="store_true", help="list the international competitions found; send nothing")
+    ap.add_argument("--try-code", action="store_true", help="make one SportyBet booking code and print SportyBet's answer")
     args = ap.parse_args()
+    if args.try_code:
+        return try_code()
     args.bet9ja_groups = [int(re.findall(r"\d+", g)[-1]) for g in args.bet9ja_groups.split(",") if re.findall(r"\d+", g)]
     if args.find and "--books" not in sys.argv:
         args.books = "bet9ja"
@@ -409,7 +490,12 @@ def main() -> None:
             print(f"  failed: {type(exc).__name__}: {exc}")
         if not args.loop:
             break
-        time.sleep(args.every * 60)
+        session = sporty_session() if "sportybet" in args.books else None
+        wake = time.time() + args.every * 60
+        while time.time() < wake:                                 # between reads: the page's SportyBet code requests
+            if session:
+                serve_codes(args, session)
+            time.sleep(min(15, max(0, wake - time.time())))
 
 
 if __name__ == "__main__":

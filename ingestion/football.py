@@ -287,8 +287,13 @@ def parse_push(payload: dict) -> tuple[str, list[dict]]:
         try:
             odds = {B.BOOK_KEYS[k]: float(v) for k, v in (r.get("odds") or {}).items() if k in B.BOOK_KEYS and v and float(v) > 1}
             if r.get("home") and r.get("away") and odds:
-                rows.append({"home": str(r["home"])[:60], "away": str(r["away"])[:60], "t_ms": int(r["t_ms"]),
-                             "league": str(r.get("league") or "")[:60], "odds": odds})
+                row = {"home": str(r["home"])[:60], "away": str(r["away"])[:60], "t_ms": int(r["t_ms"]),
+                       "league": str(r.get("league") or "")[:60], "odds": odds}
+                ids = {B.BOOK_KEYS[k]: {f: str(v.get(f) or "")[:60] for f in ("event", "market", "specifier", "outcome")}
+                       for k, v in (r.get("ids") or {}).items() if k in B.BOOK_KEYS and isinstance(v, dict) and v.get("event")}
+                if ids:                                           # the book's own ids for each bet (SportyBet)
+                    row["ids"] = {m: v for m, v in ids.items() if m in odds}
+                rows.append(row)
         except (TypeError, ValueError, KeyError):
             continue
     return book, rows

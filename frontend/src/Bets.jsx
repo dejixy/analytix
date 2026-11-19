@@ -209,22 +209,71 @@ const saved = () => {
 };
 const chance = (p) => (p == null ? "-" : pct(p, p < 0.01 ? 2 : 1));
 
-function Combo({ stamp }) {
+// A SportyBet booking code for the slip, made on the laptop (SportyBet turns the server away): asked for, then followed
+function SportyCode({ q, slip, pub }) {
+  const [job, setJob] = useState(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => setJob(null), [q, slip]);
+  useEffect(() => {
+    if (job?.status !== "waiting") return undefined;
+    const h = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/bets/combo/code?${q}`);
+        if (r.ok) setJob(await r.json());
+      } catch { /* tried again on the next tick */ }
+    }, 3000);
+    return () => clearTimeout(h);
+  }, [job, q]);
+  const ask = async () => {
+    setJob({ status: "waiting" });
+    try {
+      const r = await fetch(`/api/bets/combo/code?${q}`);
+      setJob(r.ok ? await r.json() : { status: "failed", why: "the server didn't answer" });
+    } catch {
+      setJob({ status: "failed", why: "the server didn't answer" });
+    }
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(job.code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* the code is on screen to type */ }
+  };
+  return (
+    <div className="bt-code">
+      {!job ? <button className="az-go" onClick={ask}>Get SportyBet code</button>
+        : job.status === "waiting" ? <span className="muted">Asking SportyBet{pub ? "" : " through your laptop"}…</span>
+        : job.status === "ready" ? (
+          <>
+            <span className="muted">SportyBet code</span><b className="bt-code-v num">{job.code}</b>
+            <button className="az-go" onClick={copy}>{copied ? "copied" : "copy"}</button>
+            {job.url && <a className="az-go" href={job.url} target="_blank" rel="noreferrer">open on SportyBet</a>}
+            {job.deadline_ms && <span className="muted">valid until {kick(job.deadline_ms)}</span>}
+            {job.missing?.length > 0 && <span className="down">left out by SportyBet: {job.missing.join(", ")}</span>}
+          </>
+        ) : <><span className="muted">No code: {job.why}</span><button className="az-go" onClick={ask}>try again</button></>}
+    </div>
+  );
+}
+
+function Combo({ stamp, pub }) {
   const [target, setTarget] = useState(() => saved().target || "10");
   const [days, setDays] = useState(() => saved().days || "1");
   const [least, setLeast] = useState(() => saved().least || "");
+  const [book, setBook] = useState(() => saved().book || "");
   const [c, setC] = useState(null);
   const t = Number(target);
   const ok = t >= 1.1 && t <= 200;
   useEffect(() => {
     try {
-      localStorage.setItem(SAVED, JSON.stringify({ target, days, least }));
+      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book }));
     } catch { /* private window: not kept */ }
     if (!ok) return undefined;
     let live = true;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}`);
+        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}`);
         const j = await r.json();
         if (live && r.ok) setC(j);
       } catch { /* the header shows when the server is down */ }
@@ -233,7 +282,7 @@ function Combo({ stamp }) {
       live = false;
       clearTimeout(h);
     };
-  }, [t, ok, target, days, least, stamp]);
+  }, [t, ok, target, days, least, book, stamp]);
   const s = c?.slip;
   const g = c?.settings;
   const past = (r) => r.past && r.past.n ? r.past : null;
@@ -253,6 +302,13 @@ function Combo({ stamp }) {
             {LEAST.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
           </select>
         </label>
+        <label className="bt-target">
+          <span className="muted">Book</span>
+          <select className="az-select" value={book} onChange={(e) => setBook(e.target.value)}>
+            <option value="">any</option>
+            {[...new Set([...(c?.books || []), ...(book ? [book] : [])])].map((k) => <option key={k} value={k}>{BOOK[k] || k}</option>)}
+          </select>
+        </label>
         <Seg value={days} set={setDays} opts={WINDOWS} />
       </Top>
       {!c ? <p className="az-note">Finding the best slip…</p> : s ? (
@@ -266,6 +322,9 @@ function Combo({ stamp }) {
             <div><span className="muted">Edge at this price</span><b className={`num ${tone(s.edge)}`}>{sgn(s.edge)}</b></div>
             <div><span className="muted">Last kick-off</span><b className="num">{kick(s.last_ms)}</b></div>
           </div>
+          {s.book === "sportybet" ? (s.coded ? <SportyCode q={`target=${t}&days=${days}&least=${least || 0}`} slip={s.legs.map((x) => x.key).join()} pub={pub} />
+            : !pub && <div className="bt-code"><span className="muted">A SportyBet code needs the updated collector on your laptop.</span></div>)
+            : (c.books || []).includes("sportybet") && <div className="bt-code"><button className="az-go" onClick={() => setBook("sportybet")}>Build it on SportyBet for a booking code</button></div>}
           <div className="az-scroll"><table className="az-table bt-t">
             <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Fair odds</th><th className="r">Edge</th><th className="r">Chance</th></tr></thead>
             <tbody>
@@ -536,7 +595,7 @@ export default function Bets() {
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
           <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} s={d.settings} /></div>
           <div className="tw-7"><Value d={d} /></div>
-          <Combo stamp={d.now_ms} />
+          <Combo stamp={d.now_ms} pub={d.public} />
           {!d.public && <Record rec={d.record} recent={d.flat_recent} pub={d.public} />}
           {d.study && <Study s={d.study} methods={d.methods} method={d.method} />}
           <div className={d.public ? "term-wide" : "tw-6"}><Patterns rows={d.patterns} /></div>
