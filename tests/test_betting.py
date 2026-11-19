@@ -444,3 +444,84 @@ def test_the_rule_is_pinnacle_alone():
     roll = [{**x, "odds": 1.30, "edge": 1.30 * x["p"] - 1, "agree": False}]
     if roll[0]["edge"] >= B.ROLL_EDGE:
         assert B.rollover_pick(roll, NOW) is not None                        # form no longer blocks a rollover pick
+
+
+def _leg(g, m, o, p, league="E0", book="bet9ja"):
+    return {"match_id": g, "market": m, "odds": o, "p": p, "league": league, "t_ms": NOW + 5 * H, "book": book}
+
+
+def test_the_combo_search_is_the_best_slip():
+    import itertools
+    import math
+    from engine import combos as C
+    rnd = random.Random(11)
+    for _ in range(60):                                                       # against every slip there is
+        bets = [_leg(g, m, round(rnd.uniform(1.1, 3.0), 2), 0) for g in range(rnd.randint(1, 6))
+                for m in rnd.sample(["1", "2", "1X", "X2"], rnd.randint(1, 3))]
+        for b in bets:
+            b["p"] = min(0.97, 1 / b["odds"] * rnd.uniform(0.9, 1.06))
+            b["league"] = rnd.choice(["E0", "E2"])
+        target = round(rnd.uniform(1.1, 30), 2)
+        games = {}
+        for b in bets:
+            games.setdefault(b["match_id"], []).append(b)
+        fits = [s for c in itertools.product(*[[None, *v] for v in games.values()]) if (s := [x for x in c if x])
+                and target <= math.prod(x["odds"] for x in s) <= target * (1 + C.TOL)]
+        got = C.Solver(bets).find(target)
+        assert (got is None) == (not fits)
+        if fits:
+            assert abs(C.value(got) - max(map(C.value, fits))) < 0.003
+            assert target <= math.prod(x["odds"] for x in got) <= target * (1 + C.TOL)
+            assert len({x["match_id"] for x in got}) == len(got)              # one bet a game
+    # for the same total, fewer games and surer leagues win: each game counts a point (two lower down) against it
+    two = [_leg("a", "1", 2.0, 0.5), _leg("b", "1", 2.0, 0.5)]
+    four = [_leg(k, "1", 1.4142, 1 / 1.4142) for k in "cdef"]
+    assert {x["match_id"] for x in C.Solver(two + four).find(3.99, tol=0.02)} == {"a", "b"}
+    low = [_leg("a", "1", 2.0, 0.5, league="E2"), _leg("b", "1", 2.0, 0.5, league="E3"), _leg("c", "1", 2.0, 0.5), _leg("d", "1", 2.0, 0.5)]
+    assert {x["match_id"] for x in C.Solver(low).find(3.99, tol=0.02)} == {"c", "d"}
+    assert C.Solver(two).find(9) is None and abs(C.Solver(two).reach() - 4) < 0.01
+
+
+def test_combo_bets_follow_the_rules():
+    from engine import combos as C
+    row = _row(key="k", match_id="m1", odds=1.40, others=[{"book": "bet9ja", "odds": 1.40}, {"book": "betking", "odds": 1.36}])
+    board = [row, {**row, "key": "k2", "market": "1X", "others": [{"book": "betking", "odds": 1.12}]},
+             {**row, "key": "x", "market": "X", "others": [{"book": "betking", "odds": 2.9}]},              # no draws
+             {**row, "key": "long", "match_id": "m2", "others": [{"book": "betking", "odds": 3.4}]},         # over 3.00
+             {**row, "key": "stale", "match_id": "m3", "others": [{"book": "betking", "odds": 2.2}]},        # 2.2 × 0.73: 61% over fair
+             {**row, "key": "late", "match_id": "m4", "t_ms": NOW + 3 * D, "others": [{"book": "betking", "odds": 1.5}]},
+             {**row, "key": "old", "match_id": "m5", "sharp_age_h": 30, "others": [{"book": "betking", "odds": 1.5}]},
+             {**row, "key": "gone", "match_id": "m6", "t_ms": NOW + 60_000, "others": [{"book": "betking", "odds": 1.5}]}]
+    got = C.legs(board, "betking", NOW - H, NOW, NOW + D)
+    assert [(x["key"], x["odds"]) for x in got] == [("k", 1.36), ("k2", 1.12)] and got[0]["book"] == "betking"
+    assert abs(got[0]["edge"] - (1.36 * 0.73 - 1)) < 1e-12
+    assert C.legs(board, "betking", NOW - 3 * H, NOW, NOW + D) == []                  # the book's odds are too old
+    assert [x["key"] for x in C.legs(board, "betking", NOW, NOW, NOW + 7 * D)] == ["k", "k2", "late"]
+    sv = C.solvers(board, {"bet9ja": {"t_ms": NOW}, "betking": {"t_ms": NOW}}, NOW, 1)
+    out = C.build(sv, 1.38)
+    assert out["slip"]["book"] == "bet9ja" and out["slip"]["n"] == 1 and out["slip"]["odds"] == 1.40   # the better price
+    assert out["bets"] == 3 and out["books"] == ["bet9ja", "betking"] and len(out["ladder"]) == len(C.LADDER)
+    assert C.build(sv, 500)["target"] == C.T_MAX and C.build(sv, 0)["target"] == C.T_MIN
+
+
+def test_the_combo_service_and_its_past(tmp_path):
+    from engine import combos as C
+    rt = SimpleNamespace(mode="live")
+    svc = BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json")
+    t = int(time.time() * 1000)
+    sharp = [_sharp(h, a, t + (5 + i) * H, oh, 4.0, 4.0, read=t, sid=f"s{i}") for i, (h, a, oh) in
+             enumerate([("Big City", "Rovers", 1.50), ("Town", "Albion", 1.80), ("United", "Villa", 2.00), ("Athletic", "Wanderers", 2.50)])]
+    svc.books = {"bet9ja": {"t_ms": t, "rows": [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"],
+                                                 "odds": {"1": round(1 / s["fair"]["1"], 2)}} for s in sharp]}}
+    svc._board = (time.time(), svc._gen, B.build(svc.books, sharp, [], {}, t))
+    got = asyncio.run(svc.combo(4.0, 1))
+    assert got["days"] == 1 and got["slip"] and 4.0 <= got["slip"]["odds"] <= 4.4 and got["slip"]["book"] == "bet9ja"
+    assert asyncio.run(svc.combo(4.0, 5))["days"] == 1                                 # only 1, 3 or 7 days
+    hist = _history(n=600)
+    for g in hist:
+        g.update(B365H=g["PSH"] * 0.97, B365A=g["PSA"] * 0.97)
+    past = C.past(hist)
+    three = past["3"]                                                         # three games a day here
+    assert three["n"] > 50 and 0 <= three["won"] <= three["n"] and three["se"] > 0 and 3 <= three["odds"] <= 3.3
+    assert abs(three["expected"] - three["won"]) < 4 * three["expected"] ** 0.5 + 3
+    assert set(past) == {str(x) for x in C.LADDER}

@@ -2,8 +2,8 @@ import { Fragment, useEffect, useState } from "react";
 import { fmtTime } from "./format.js";
 
 /* The bets suite (/bets, /api/bets): Nigerian bookmakers' football odds against a sharp price, history and form.
-   Today's rollover pick and its paper chain, the flat value bets, the paper record, what history says, and the
-   sources. Every bet here is a paper bet until you place it yourself. Colours: green and red for data only. */
+   Today's rollover pick and its paper chain, the flat value bets, the combo builder, the paper record, what history
+   says, and the sources. Every bet here is a paper bet until you place it yourself. Colours: green and red for data only. */
 
 const EVERY_MS = 30_000;
 const naira = (v) => (v == null ? "-" : `${v < 0 ? "−" : ""}₦${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`);
@@ -181,6 +181,119 @@ function Value({ d }) {
             : d.public ? "No prices in from the Nigerian books right now."
             : "No Nigerian odds received yet. Run the collector on your laptop (see Sources), and the board fills within a minute."}
         </p>
+      )}
+    </section>
+  );
+}
+
+const WINDOWS = [["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
+const SAVED = "analytix.bets.combo";
+const saved = () => {
+  try {
+    return JSON.parse(localStorage.getItem(SAVED)) || {};
+  } catch {
+    return {};
+  }
+};
+const chance = (p) => (p == null ? "-" : pct(p, p < 0.01 ? 2 : 1));
+
+function Combo({ stamp }) {
+  const [target, setTarget] = useState(() => saved().target || "50");
+  const [days, setDays] = useState(() => saved().days || "1");
+  const [c, setC] = useState(null);
+  const t = Number(target);
+  const ok = t >= 1.1 && t <= 200;
+  useEffect(() => {
+    try {
+      localStorage.setItem(SAVED, JSON.stringify({ target, days }));
+    } catch { /* private window: not kept */ }
+    if (!ok) return undefined;
+    let live = true;
+    const h = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}`);
+        const j = await r.json();
+        if (live && r.ok) setC(j);
+      } catch { /* the header shows when the server is down */ }
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(h);
+    };
+  }, [t, ok, target, days, stamp]);
+  const s = c?.slip;
+  const g = c?.settings;
+  const past = (r) => r.past && r.past.n ? r.past : null;
+  return (
+    <section className="panel term-wide">
+      <Top title="Combo builder" facts={c ? [`${c.bets} bets`, `odds ${odd(g.legs[0])}–${odd(g.legs[1])} a game`, "one book a slip"] : []}>
+        <label className="bt-target">
+          <span className="muted">Total odds</span>
+          <input type="number" inputMode="decimal" min="1.1" max="200" step="any" value={target} aria-invalid={!ok}
+            onChange={(e) => setTarget(e.target.value)}
+            onBlur={() => setTarget(String(Math.min(200, Math.max(1.1, Number(target) || 1.1))))} />
+        </label>
+        <Seg value={days} set={setDays} opts={WINDOWS} />
+      </Top>
+      {!c ? <p className="az-note">Finding the best slip…</p> : s ? (
+        <>
+          <div className="az-kpis">
+            <div><span className="muted">Total odds</span><b className="num">{odd(s.odds)}</b></div>
+            <div><span className="muted">Bookmaker</span><b>{BOOK[s.book] || s.book}</b></div>
+            <div><span className="muted">Games</span><b className="num">{s.n}</b></div>
+            <div><span className="muted">Chance of winning</span><b className="num">{chance(s.p)}</b></div>
+            <div><span className="muted">Edge at this price</span><b className={`num ${tone(s.edge)}`}>{sgn(s.edge)}</b></div>
+            <div><span className="muted">Last kick-off</span><b className="num">{kick(s.last_ms)}</b></div>
+          </div>
+          <div className="az-scroll"><table className="az-table bt-t">
+            <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Fair odds</th><th className="r">Edge</th><th className="r">Chance</th></tr></thead>
+            <tbody>
+              {s.legs.map((x) => (
+                <tr key={x.key}>
+                  <td className="muted num">{kick(x.t_ms)}</td>
+                  <td className="bt-name"><b>{pick(x)}</b><span className="muted az-cat">{x.home} v {x.away} · {x.league_name || x.league}</span></td>
+                  <td className="r num">{odd(x.odds)}</td>
+                  <td className="r num muted">{odd(1 / x.p)}</td>
+                  <td className={`r num ${tone(x.edge)}`}>{sgn(x.edge)}</td>
+                  <td className="r num">{pct(x.p, 1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </>
+      ) : (
+        <p className="az-note">
+          {!c.bets ? "No fresh odds from the books for games in this window right now."
+            : c.target > c.reach ? `The ${c.bets} bets in this window reach ${odd(c.reach)} at most.`
+            : `No slip lands between ${odd(c.target)} and ${odd(c.target * (1 + g.tol))} in this window.`}
+        </p>
+      )}
+      {c && c.bets > 0 && (
+        <div className="az-scroll"><table className="az-table bt-t az-click">
+          <thead><tr><th>Target</th><th className="r">Slip</th><th className="r">Games</th><th>Book</th><th className="r">Chance of winning</th><th className="r">Edge</th>
+            <th className="r" title="One slip a day on three seasons of past games, at Bet365's prices">Past slips won</th>
+            <th className="r" title="One slip a day on three seasons of past games, at Bet365's prices">Past return</th></tr></thead>
+          <tbody>
+            {c.ladder.map((r) => {
+              const p = past(r);
+              return (
+                <tr key={r.target} onClick={() => setTarget(String(r.target))}
+                  className={`${t === r.target ? "on" : ""} ${r.target === c.best_target ? "bt-lead" : ""}`}>
+                  <td className="num">{r.target}</td>
+                  <td className="r num">{r.n ? odd(r.odds) : "-"}</td>
+                  <td className="r num">{r.n || "-"}</td>
+                  <td>{r.n ? BOOK[r.book] || r.book : "-"}</td>
+                  <td className="r num">{r.n ? chance(r.p) : "-"}</td>
+                  <td className={`r num ${r.n ? tone(r.edge) : ""}`}>{r.n ? sgn(r.edge) : "-"}</td>
+                  <td className="r num" title={p ? `the chances expected ${p.expected.toFixed(0)}` : ""}>{p ? `${p.won} of ${p.n.toLocaleString()}` : "-"}</td>
+                  <td className="r num">{p && p.n > 1 ? (p.se > 0
+                    ? <><span className={Math.abs(p.roi) >= 2 * p.se ? tone(p.roi) : ""}>{sgn(p.roi)}</span> <span className="muted">± {pct(p.se, 1)}</span></>
+                    : <span className="muted">{sgn(p.roi, 0)}</span>) : "-"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table></div>
       )}
     </section>
   );
@@ -401,6 +514,7 @@ export default function Bets() {
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
           <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} s={d.settings} /></div>
           <div className="tw-7"><Value d={d} /></div>
+          <Combo stamp={d.now_ms} />
           {!d.public && <Record rec={d.record} recent={d.flat_recent} pub={d.public} />}
           {d.study && <Study s={d.study} methods={d.methods} method={d.method} />}
           <div className={d.public ? "term-wide" : "tw-6"}><Patterns rows={d.patterns} /></div>

@@ -16,7 +16,8 @@ Kept in data/bets.json (the book), data/bets_odds.json (the last push from each 
 paid sharp read, so a restart reuses it until it's a day old instead of spending credits again).
 
 The board (every Nigerian price against its sharp game, with form and history) is built on a worker thread and kept for a
-minute, or until new odds or prices arrive, so building it never holds up the rest of the app.
+minute, or until new odds or prices arrive, so building it never holds up the rest of the app. The combo builder
+(GET /api/bets/combo, engine/combos.py) searches the same board, kept per board and window.
 """
 import asyncio
 import json
@@ -30,6 +31,7 @@ from zoneinfo import ZoneInfo
 from api.public import scrub
 from engine import betting as B
 from engine import betstudy as S
+from engine import combos as C
 from ingestion import football as F
 
 log = logging.getLogger("analytix.bets")
@@ -54,6 +56,8 @@ class BetsService:
         self.teams: B.Teams | None = None
         self.methods: dict = {}                               # each margin method's fit to three seasons of results
         self.study: dict = {}                                 # the rules replayed on three seasons (engine/betstudy.py)
+        self.combo_past: dict = {}                            # the combo builder replayed on them (engine/combos.py)
+        self._combos: tuple | None = None                     # (board, {days: {book: Solver}})
         self.sharp_fd: list[dict] = []
         self.sharp_oa: list[dict] = []
         self.credits: int | None = None
@@ -123,8 +127,13 @@ class BetsService:
             scores = B.compare_methods(history)
             B.set_method(B.best_method(scores))
             teams = B.Teams(history)
-            return scores, B.calibration(history), teams, S.study(history, teams)
-        self.methods, self.cal, self.teams, self.study = await asyncio.to_thread(crunch)
+            try:
+                past = C.past(history)
+            except Exception as exc:                      # noqa: BLE001 - the rest of the history still stands
+                log.warning("bets combo replay: %s", exc)
+                past = {}
+            return scores, B.calibration(history), teams, S.study(history, teams), past
+        self.methods, self.cal, self.teams, self.study, self.combo_past = await asyncio.to_thread(crunch)
         self.history = history
         self._changed()
         if errors:
@@ -358,6 +367,19 @@ class BetsService:
         board = await self.board_async(wait=False) if self.books else []
         await asyncio.to_thread(lambda: [self._matched(k) for k in list(self.books)])
         return {**self.public(board), "public": public}
+
+    async def combo(self, target: float, days: int = 1) -> dict:
+        """The best slip for a total-odds target over the next `days` (1, 3 or 7), and the ladder of sizes."""
+        days = days if days in C.DAYS else 1
+        board = await self.board_async(wait=False) if self.books else []
+        now = int(time.time() * 1000)
+        if not self._combos or self._combos[0] is not board:
+            self._combos = (board, {})
+        kept = self._combos[1]
+        if days not in kept:
+            kept[days] = await asyncio.to_thread(C.solvers, board, dict(self.books), now, days)
+        out = await asyncio.to_thread(C.build, kept[days], target, self.combo_past)
+        return {**out, "days": days, "now_ms": now}
 
     def public(self, board: list[dict] | None = None) -> dict:
         now = int(time.time() * 1000)

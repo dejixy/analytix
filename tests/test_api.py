@@ -120,6 +120,8 @@ def test_the_public_link_sees_the_bets_page_only(client):
     for path in ("/api/health", "/api/snapshot", "/terminal", "/analyzer", "/api/analyzer", "/docs", "/openapi.json"):
         assert client.get(path, headers=cf).status_code == 404, path
     assert client.post("/api/bets/odds", headers=cf, json={"book": "x", "rows": []}).status_code == 404
+    combo = client.get("/api/bets/combo?target=50&days=3", headers=cf)
+    assert combo.status_code == 200 and combo.json()["target"] == 50 and combo.json()["days"] == 3
     assert client.get("/api/health", headers={"host": "quiet-river.trycloudflare.com"}).status_code == 404   # host alone
     assert client.get("/robots.txt", headers=cf).text.startswith("User-agent: *")
     with pytest.raises(Exception):

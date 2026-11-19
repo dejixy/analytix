@@ -221,6 +221,12 @@ async def bets(request: Request):
     return await _rt(request).bets.snapshot(public=bool(request.scope.get("analytix_public")))
 
 
+@router.get("/bets/combo")
+async def bets_combo(request: Request, target: float = 10, days: int = 1):
+    """The combo builder: the best accumulator for a total-odds target (1.1 to 200) over the next 1, 3 or 7 days."""
+    return await _rt(request).bets.combo(target, days)
+
+
 @router.post("/bets/odds")
 async def bets_odds(request: Request):
     """Nigerian bookmakers' odds, pushed from a laptop in Nigeria by scripts/naijaOdds.py."""
