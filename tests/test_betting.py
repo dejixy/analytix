@@ -731,3 +731,20 @@ def test_sportybet_booking_codes(tmp_path, monkeypatch):
     N.serve_codes(SimpleNamespace(server="http://localhost:8001", token="t"), ok)
     assert calls[1] == ("/api/bets/code-jobs", {"id": "j1", "code": "AB12CD", "url": "https://x", "deadline_ms": 1795000000000,
                                                 "missing": ["Town Albion"]})
+
+
+def test_the_collector_says_why_it_cant_look_for_codes(monkeypatch, capsys):
+    import importlib.util
+    import urllib.error
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+
+    def refused(*a, **k):
+        raise urllib.error.HTTPError("http://localhost:8001/api/bets/code-jobs", 404, "Not Found", {}, None)
+    monkeypatch.setattr(N, "server_call", refused)
+    args = SimpleNamespace(server="http://localhost:8001", token="")
+    N.serve_codes(args, None)
+    N.serve_codes(args, None)                                                 # the same trouble again: said once
+    out = capsys.readouterr().out
+    assert out.count("couldn't look for SportyBet code requests: HTTP 404") == 1 and "older version" in out

@@ -333,11 +333,24 @@ def server_call(server: str, token: str, path: str, body: dict | None = None):
         return json.loads(r.read().decode() or "null")
 
 
+_last_error = [""]
+
+
 def serve_codes(args, session) -> None:
     """The slips the page asked a SportyBet code for: book each and send the code back."""
     try:
         jobs = server_call(args.server, args.token, "/api/bets/code-jobs") or []
-    except Exception:                                             # noqa: BLE001 - the tunnel may be down; the next look
+        _last_error[0] = ""
+    except Exception as exc:                                      # noqa: BLE001 - the tunnel may be down; the next look
+        msg = f"{type(exc).__name__}: {str(exc)[:120]}"
+        if isinstance(exc, urllib.error.HTTPError):
+            msg = f"HTTP {exc.code}" + (" (the server is on an older version: pull and restart it)" if exc.code in (404, 405)
+                                        else " (wrong or missing token)" if exc.code == 403 else "")
+        if msg != _last_error[0]:                                 # said once, not every 15 seconds
+            print(time.strftime("%H:%M:%S"), f"  couldn't look for SportyBet code requests: {msg}")
+            _last_error[0] = msg
+        return
+    if not isinstance(jobs, list):
         return
     for job in jobs:
         got = sporty_code(session, job.get("selections") or [])
@@ -492,6 +505,9 @@ def main() -> None:
             break
         session = sporty_session() if "sportybet" in args.books else None
         wake = time.time() + args.every * 60
+        if session:
+            print(time.strftime("%H:%M:%S"), "  making SportyBet codes the page asks for, until the next read at",
+                  time.strftime("%H:%M", time.localtime(wake)))
         while time.time() < wake:                                 # between reads: the page's SportyBet code requests
             if session:
                 serve_codes(args, session)

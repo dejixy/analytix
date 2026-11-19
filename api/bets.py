@@ -51,6 +51,7 @@ MIN_CREDITS = 40
 FRESH_MIN_CREDITS = 100        # the pre-kick-off reads stop here, keeping the rest of the month for the daily read
 FRESH_FROM_H, FRESH_TO_H, FRESH_EVERY_H = 0.5, 3, 2      # read again 30 min to 3 h before kick-off, a league every 2 h
 CODES_AN_HOUR = 30
+PUBLIC_WHY = "no code right now: try again in a minute"
 CODE_WAIT_S = 180            # a code not back from the laptop by then: the collector loop isn't running
 
 
@@ -404,8 +405,13 @@ class BetsService:
         return {**out, "days": days, "now_ms": now}
 
     # ── SportyBet booking codes, made on the laptop ───────────────────────
-    async def combo_code(self, target: float, days: int = 1, least: float | None = None) -> dict:
-        """The booking code for the SportyBet slip at these settings: ready, being made, or why there's none."""
+    async def combo_code(self, target: float, days: int = 1, least: float | None = None, public: bool = False) -> dict:
+        """The booking code for the SportyBet slip at these settings: ready, being made, or why there's none (through the
+        public link, without the laptop's side of it)."""
+        out = await self._combo_code(target, days, least)
+        return out if not public else {**out, "why": PUBLIC_WHY if out.get("why") else None}
+
+    async def _combo_code(self, target: float, days: int, least: float | None) -> dict:
         out = await self.combo(target, days, least, "sportybet")
         s = out["slip"]
         if not s:

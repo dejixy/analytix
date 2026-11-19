@@ -187,9 +187,9 @@ function Value({ d }) {
       ) : (
         <p className="az-note">
           {d.board_n ? `None of the ${d.board_n} prices in the next ${d.show_days} days is above fair by ${pct(edge)} or more right now, on either rule. "Everything" shows them all.`
+            : d.public ? "No fresh prices from the Nigerian books right now."
             : Object.values(d.matched || {}).some((n) => n > 0) ? `Your books' games matched their sharp lines, but none kicks off in the next ${d.show_days} days with fresh odds. Check the collector is still running.`
             : Object.keys(d.sources.books).length ? "Your books' games haven't matched a sharp line yet: the sharp prices may still be loading (a few minutes after a restart)."
-            : d.public ? "No prices in from the Nigerian books right now."
             : "No Nigerian odds received yet. Run the collector on your laptop (see Sources), and the board fills within a minute."}
         </p>
       )}
@@ -243,7 +243,7 @@ function SportyCode({ q, slip, pub }) {
   return (
     <div className="bt-code">
       {!job ? <button className="az-go" onClick={ask}>Get SportyBet code</button>
-        : job.status === "waiting" ? <span className="muted">Asking SportyBet{pub ? "" : " through your laptop"}…</span>
+        : job.status === "waiting" ? <span className="muted">Asking SportyBet{pub ? "" : " through your laptop (it answers between reads of the books)"}…</span>
         : job.status === "ready" ? (
           <>
             <span className="muted">SportyBet code</span><b className="bt-code-v num">{job.code}</b>
@@ -252,7 +252,8 @@ function SportyCode({ q, slip, pub }) {
             {job.deadline_ms && <span className="muted">valid until {kick(job.deadline_ms)}</span>}
             {job.missing?.length > 0 && <span className="down">left out by SportyBet: {job.missing.join(", ")}</span>}
           </>
-        ) : <><span className="muted">No code: {job.why}</span><button className="az-go" onClick={ask}>try again</button></>}
+        ) : <><span className="muted">{pub ? "No code right now. Try again in a minute." : `No code: ${job.why}`}</span>
+          <button className="az-go" onClick={ask}>try again</button></>}
     </div>
   );
 }
