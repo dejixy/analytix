@@ -384,7 +384,10 @@ def test_collector_finds_cups_and_reads_sportybet():
         "3": {"S_DESC": "Ski Jumping", "SG": {"15": {"SG_DESC": "Individual LH", "G": {"10": {"G_DESC": "Lillehammer HS140 Qualification"}}}}},
         "4": {"S_DESC": "Squash", "SG": {"10991": {"SG_DESC": "International", "G": {"11": {"G_DESC": "China Open"}}}}}}}}
     # what the first live run found: futures (Antepost), namesakes and other sports, now all left out
-    assert sorted(N.club_groups(seen)) == [2, 3, 5, 7, 8]
+    seen["D"]["PAL"]["5"] = {"S_DESC": "Players Soccer", "SG": {"3585": {"SG_DESC": "UEFA Champions League", "G": {
+        "10535268": {"G_DESC": "PSG - Roma"}}}, "14899": {"SG_DESC": "Turkey Super Lig"}}}
+    seen["D"]["PAL"]["2"]["SG"]["13"]["G"]["12"] = {"G_DESC": "Challenger Pro League"}
+    assert sorted(N.club_groups(seen)) == [2, 3, 5, 7, 8]                    # nor player bets, nor Belgium's second tier
     assert N.intl_groups(seen) == {}
     reply = {"bizCode": 10000, "data": [{"id": "sr:tournament:7", "name": "UEFA Champions League", "events": [
         {"eventId": "sr:match:1", "homeTeamName": "Arsenal", "awayTeamName": "Benfica", "estimateStartTime": 1795636800000,
