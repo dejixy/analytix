@@ -187,6 +187,7 @@ function Value({ d }) {
 }
 
 const WINDOWS = [["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
+const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
 const SAVED = "analytix.bets.combo";
 const saved = () => {
   try {
@@ -200,18 +201,19 @@ const chance = (p) => (p == null ? "-" : pct(p, p < 0.01 ? 2 : 1));
 function Combo({ stamp }) {
   const [target, setTarget] = useState(() => saved().target || "10");
   const [days, setDays] = useState(() => saved().days || "1");
+  const [least, setLeast] = useState(() => saved().least || "");
   const [c, setC] = useState(null);
   const t = Number(target);
   const ok = t >= 1.1 && t <= 200;
   useEffect(() => {
     try {
-      localStorage.setItem(SAVED, JSON.stringify({ target, days }));
+      localStorage.setItem(SAVED, JSON.stringify({ target, days, least }));
     } catch { /* private window: not kept */ }
     if (!ok) return undefined;
     let live = true;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}`);
+        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}`);
         const j = await r.json();
         if (live && r.ok) setC(j);
       } catch { /* the header shows when the server is down */ }
@@ -220,18 +222,25 @@ function Combo({ stamp }) {
       live = false;
       clearTimeout(h);
     };
-  }, [t, ok, target, days, stamp]);
+  }, [t, ok, target, days, least, stamp]);
   const s = c?.slip;
   const g = c?.settings;
   const past = (r) => r.past && r.past.n ? r.past : null;
+  const floor = c && (c.least || g.floors[g.floors.length - 1]);
   return (
     <section className="panel term-wide">
-      <Top title="Combo builder" facts={c ? [`${c.bets} bets`, `every game ${pct(g.floors[g.floors.length - 1])}+`, `up to ${g.games} games`, "one book a slip"] : []}>
+      <Top title="Combo builder" facts={c ? [`${c.bets} bets`, c.least ? `every game ${pct(c.least)}+` : "safest games first", `up to ${g.games} games`, "one book a slip"] : []}>
         <label className="bt-target">
           <span className="muted">Total odds</span>
           <input type="number" inputMode="decimal" min="1.1" max="200" step="any" value={target} aria-invalid={!ok}
             onChange={(e) => setTarget(e.target.value)}
             onBlur={() => setTarget(String(Math.min(200, Math.max(1.1, Number(target) || 1.1))))} />
+        </label>
+        <label className="bt-target">
+          <span className="muted">Each game</span>
+          <select className="az-select" value={least} onChange={(e) => setLeast(e.target.value)}>
+            {LEAST.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+          </select>
         </label>
         <Seg value={days} set={setDays} opts={WINDOWS} />
       </Top>
@@ -266,7 +275,7 @@ function Combo({ stamp }) {
         <p className="az-note">
           {!c.bets ? "No fresh odds from the books for games in this window right now."
             : c.target > c.reach ? `With up to ${g.games} games, the bets in this window reach ${odd(c.reach)} at most.`
-            : `No slip of ${pct(g.floors[g.floors.length - 1])}+ games lands between ${odd(c.target)} and ${odd(c.target * (1 + g.tol))} in this window.`}
+            : `No slip of ${pct(floor)}+ games lands between ${odd(c.target)} and ${odd(c.target * (1 + g.tol))} in this window.`}
         </p>
       )}
       {c && c.bets > 0 && (

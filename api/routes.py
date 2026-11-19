@@ -222,9 +222,10 @@ async def bets(request: Request):
 
 
 @router.get("/bets/combo")
-async def bets_combo(request: Request, target: float = 10, days: int = 1):
-    """The combo builder: the best accumulator for a total-odds target (1.1 to 200) over the next 1, 3 or 7 days."""
-    return await _rt(request).bets.combo(target, days)
+async def bets_combo(request: Request, target: float = 10, days: int = 1, least: float = 0):
+    """The combo builder: the best accumulator for a total-odds target (1.1 to 200) over the next 1, 3 or 7 days, safest
+    games first (least=0) or with every game at least `least` likely (0.60 to 0.90)."""
+    return await _rt(request).bets.combo(target, days, least or None)
 
 
 @router.post("/bets/odds")

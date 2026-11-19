@@ -4,9 +4,11 @@ The combo builder (/bets "Combo builder", GET /api/bets/combo): the best accumul
 A slip goes on one bookmaker, with at most one bet a game and at most 15 games, and its total lands from the target to
 10% above it. The chances are Pinnacle's, as everywhere on the page.
 
-Safest games first: the builder asks for every game on the slip to be 90% likely, and if no slip reaches the target that
-way, 85%, then 80%, and so on down to 60%; below that it builds nothing. At the first level that reaches the target it
-takes the slip with the best return (total odds × chance), which for a given total is also the slip most likely to win.
+Safest games first (the default): the builder asks for every game on the slip to be 90% likely, and if no slip reaches
+the target that way, 85%, then 80%, and so on down to 60%; below that it builds nothing. At the first level that reaches
+the target it takes the slip with the best return (total odds × chance), which for a given total is also the slip most
+likely to win. With a minimum chance chosen instead (60% to 90%), it takes the best-return slip whose every game is at
+least that likely: fewer, longer-priced games than safest-first when the minimum is lower.
 Each bet's edge counts a point lower there (two in lower leagues and internationals, where Pinnacle's price is less
 sure): the edges that look best are the ones most likely overstated. The chance and return shown are the measured ones.
 
@@ -151,26 +153,39 @@ def slip(s: list[dict], with_legs: bool = True) -> dict:
     return out
 
 
-def best_of(books: dict[str, Builder], target: float) -> list[dict] | None:
-    """The slip for a target over every book: the safest level any book reaches it at, the best return there."""
-    for floor in FLOORS:
+def snap(least: float | None) -> float | None:
+    """A chosen minimum chance as one of the levels (None, or 0: safest first)."""
+    return min(FLOORS, key=lambda f: abs(f - least)) if least else None
+
+
+def mode(least: float | None) -> str:
+    return "safest" if least is None else f"{least:.2f}"
+
+
+def best_of(books: dict[str, Builder], target: float, least: float | None = None) -> list[dict] | None:
+    """The slip for a target over every book: the safest level any book reaches it at, the best return there; or, with
+    a minimum chance, the best return with every game at least that likely."""
+    for floor in (FLOORS if least is None else (least,)):
         got = [s for s in (b.find(target, floor) for b in books.values()) if s]
         if got:
             return max(got, key=value)
     return None
 
 
-def build(solvers: dict[str, Builder], target: float, past: dict | None = None) -> dict:
-    """The page's data: the slip for the target, and each size on the ladder with its record on past games."""
+def build(solvers: dict[str, Builder], target: float, past: dict | None = None, least: float | None = None) -> dict:
+    """The page's data: the slip for the target, and each size on the ladder with its record on past games (safest first,
+    or every game at least `least` likely)."""
     target = min(max(float(target), T_MIN), T_MAX)
-    s = best_of(solvers, target)
-    ladder = []
+    least = snap(least)
+    s = best_of(solvers, target, least)
+    ladder, done_past = [], (past or {}).get(mode(least)) or {}
     for t in LADDER:
-        x = best_of(solvers, t)
-        ladder.append({"target": t, **(slip(x, False) if x else {}), "past": (past or {}).get(str(t))})
+        x = best_of(solvers, t, least)
+        ladder.append({"target": t, **(slip(x, False) if x else {}), "past": done_past.get(str(t))})
     done = [r for r in ladder if r.get("n")]
     top = max(done, key=lambda r: r["edge"]) if done else None
-    return {"target": target, "slip": slip(s) if s else None, "ladder": ladder, "best_target": top["target"] if top else None,
+    return {"target": target, "least": least, "slip": slip(s) if s else None, "ladder": ladder,
+            "best_target": top["target"] if top else None,
             "reach": max((sv.reach() for sv in solvers.values()), default=1.0),
             "bets": sum(sv.n for sv in solvers.values()), "books": sorted(k for k, sv in solvers.items() if sv.n),
             "settings": {"leg_min": LEG_MIN, "floors": list(FLOORS), "games": MAX_GAMES, "tol": TOL, "range": [T_MIN, T_MAX],
@@ -186,7 +201,7 @@ def solvers(board: list[dict], books: dict[str, dict], now_ms: int, days: int) -
 def past(history: list[dict], book: str = "bet365", targets: tuple = LADDER) -> dict:
     """One slip a day (Lagos days) for each target, built the same way from that day's home and away wins at the stand-in
     book's price: slips, won, the wins the chances expected, average total odds and the return a slip with its
-    standard error. {str(target): {...}}"""
+    standard error, for safest-first and each minimum chance. {"safest" or "0.70": {str(target): {...}}}"""
     col = dict(zip(("1", "2"), S.SOFT[book]))
     days: dict[int, list[dict]] = {}
     for g in history:
@@ -203,22 +218,25 @@ def past(history: list[dict], book: str = "bet365", targets: tuple = LADDER) -> 
             days.setdefault((g["t_ms"] + S.WAT) // B.DAY, []).append(
                 {"match_id": (g["t_ms"], g["home"]), "league": g["league"], "market": m, "odds": o, "p": fair[m],
                  "won": B.wins(m, g["hg"], g["ag"]), "t_ms": g["t_ms"], "book": book})
-    got: dict[float, list[tuple[float, float, bool]]] = {t: [] for t in targets}
+    leasts = (None, *sorted(FLOORS))
+    got: dict = {(lst, t): [] for lst in leasts for t in targets}
     for d in sorted(days):
-        day = {"bet365": Builder(days[d], top=max(targets))}
-        for t in targets:
-            s = best_of(day, t)
-            if s:
-                got[t].append((math.prod(x["odds"] for x in s), math.prod(x["p"] for x in s), all(x["won"] for x in s)))
-    out = {}
-    for t, xs in got.items():
+        day = {"bet365": Builder(days[d], top=max(targets))}            # each level's search is shared by every mode
+        for lst in leasts:
+            for t in targets:
+                s = best_of(day, t, lst)
+                if s:
+                    got[(lst, t)].append((math.prod(x["odds"] for x in s), math.prod(x["p"] for x in s),
+                                          all(x["won"] for x in s)))
+    out: dict = {mode(lst): {} for lst in leasts}
+    for (lst, t), xs in got.items():
         n = len(xs)
         if not n:
-            out[str(t)] = {"n": 0}
+            out[mode(lst)][str(t)] = {"n": 0}
             continue
         profit = [(o - 1) if w else -1.0 for o, _, w in xs]
         roi = sum(profit) / n
         se = math.sqrt(sum((v - roi) ** 2 for v in profit) / (n - 1) / n) if n > 1 else None
-        out[str(t)] = {"n": n, "won": sum(w for *_, w in xs), "expected": sum(p for _, p, _ in xs),
-                       "odds": sum(o for o, *_ in xs) / n, "roi": roi, "se": se}
+        out[mode(lst)][str(t)] = {"n": n, "won": sum(w for *_, w in xs), "expected": sum(p for _, p, _ in xs),
+                                  "odds": sum(o for o, *_ in xs) / n, "roi": roi, "se": se}
     return out

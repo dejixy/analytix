@@ -499,6 +499,12 @@ def test_the_combo_takes_the_safest_games_first():
     assert C.best_of({"bet9ja": C.Builder(safe)}, 50) is None and abs(C.Builder(safe).reach() - 1.16 ** 15) < 1e-9
     out = C.build(books, 2.0)
     assert out["slip"]["least"] == 0.86 and out["slip"]["n"] == 6 and out["settings"]["games"] == C.MAX_GAMES
+    # a chosen minimum: the best return with every game at least that likely, so fewer, longer-priced games
+    own = C.best_of(books, 2.0, 0.70)
+    assert len(own) == 2 and min(x["p"] for x in own) >= 0.70                 # two 1.45s at 70%
+    assert C.best_of(books, 50, 0.85) is None                                 # 85%+ games can't reach 50 in 15
+    chosen = C.build(books, 2.0, least=0.72)
+    assert chosen["least"] == 0.70 and chosen["slip"]["n"] == 2 and out["least"] is None
 
 
 def test_combo_bets_follow_the_rules():
@@ -540,6 +546,9 @@ def test_the_combo_service_and_its_past(tmp_path):
     for g in hist:
         g.update(PSH=1.30, PSD=5.0, PSA=9.0, B365H=1.27, B365A=8.5)            # a home favourite every game, three a day
     past = C.past(hist)
+    assert set(past) == {"safest", "0.60", "0.65", "0.70", "0.75", "0.80", "0.85", "0.90"}
+    assert past["0.90"]["1.5"]["n"] == 0                                      # 1.27s are about 75% likely
+    past = past["safest"]
     two = past["1.5"]
     assert two["n"] > 50 and 0 <= two["won"] <= two["n"] and two["se"] > 0 and 1.5 <= two["odds"] <= 1.65
     assert past["200"]["n"] == 0                                              # three games a day can't reach it
