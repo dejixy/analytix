@@ -396,8 +396,10 @@ def test_collector_finds_cups_and_reads_sportybet():
                      {"id": "18", "outcomes": [{"id": "12", "odds": "1.80"}]}]},
         {"eventId": "sr:match:2", "homeTeamName": "No", "awayTeamName": "Odds", "estimateStartTime": 1795636800000, "markets": []}]}]}
     rows = N.sporty_rows(reply, "Champions League")
-    assert rows == [{"match": "Arsenal - Benfica", "time": 1795636800.0, "league": "UEFA Champions League", "match_id": "sr:match:1",
-                     "home": 1.42, "draw": 4.9, "away": 7.2, "home_or_draw": 1.08}]
+    assert [{k: v for k, v in r.items() if k != "sporty_ids"} for r in rows] == [
+        {"match": "Arsenal - Benfica", "time": 1795636800.0, "league": "UEFA Champions League", "match_id": "sr:match:1",
+         "home": 1.42, "draw": 4.9, "away": 7.2, "home_or_draw": 1.08}]
+    assert rows[0]["sporty_ids"]["home_or_draw"] == {"event": "sr:match:1", "market": "10", "specifier": "", "outcome": "9"}
     by_desc = {"events": [{"homeTeamName": "A", "awayTeamName": "B", "estimateStartTime": 1, "markets": [
         {"id": "1", "outcomes": [{"desc": "Home", "odds": "1.5"}, {"desc": "Draw", "odds": "4"}, {"desc": "Away", "odds": "6"}]}]}]}
     assert N.sporty_rows(by_desc)[0]["away"] == 6.0
@@ -653,3 +655,79 @@ def test_value_bets_by_either_rule():
     assert [x["key"] for x in B.value_bets(rows, old=False)] == ["old_cap", "new"]
     bk = B.Book()
     assert bk.add_flat(rows[1], NOW)["rule"] == "old" and bk.flat[0]["edge_hist"] == 0.026
+
+
+def test_sportybet_booking_codes(tmp_path, monkeypatch):
+    import importlib.util
+    from engine import combos as C
+    # the push keeps SportyBet's ids, the board carries them per book, the combo builder's legs keep them
+    _, rows = F.parse_push({"book": "sportybet", "rows": [{"home": "Big City", "away": "Rovers", "t_ms": NOW, "odds": {"home": 1.31, "draw": 5},
+                            "ids": {"home": {"event": "sr:match:9", "market": "1", "specifier": "", "outcome": "1"},
+                                    "away": {"event": "sr:match:9", "market": "1", "outcome": "3"}}}]})   # no away price: dropped
+    assert rows[0]["ids"] == {"1": {"event": "sr:match:9", "market": "1", "specifier": "", "outcome": "1"}}
+    t = int(time.time() * 1000)
+    sharp = [_sharp(h, a, t + (5 + i) * H, oh, 7.0, 12.0, read=t, sid=f"s{i}") for i, (h, a, oh) in
+             enumerate([("Big City", "Rovers", 1.20), ("Town", "Albion", 1.25), ("United", "Villa", 1.30)])]
+    sel = lambda i: {"event": f"sr:match:{i}", "market": "1", "specifier": "", "outcome": "1"}
+    books = {"sportybet": {"t_ms": t, "rows": [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"], "odds": {"1": round(1 / s["fair"]["1"], 2)},
+                                                "ids": {"1": sel(i)}} for i, s in enumerate(sharp)]},
+             "bet9ja": {"t_ms": t, "rows": [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"], "odds": {"1": round(1 / s["fair"]["1"], 2) + 0.02}}
+                                            for s in sharp]}}
+    board = B.build(books, sharp, [], {}, t)
+    x = next(r for r in board if r["home"] == "Big City")
+    assert x["book"] == "bet9ja" and {o["book"]: o.get("sel") for o in x["others"]} == {"bet9ja": None, "sportybet": sel(0)}
+    sv = C.solvers(board, books, t, 1)
+    assert C.build(sv, 1.55)["slip"]["book"] == "bet9ja" and not C.build(sv, 1.55)["slip"]["coded"]
+    only = C.build(sv, 1.55, book="sportybet")
+    assert only["slip"]["book"] == "sportybet" and only["slip"]["coded"] and only["books"] == ["bet9ja", "sportybet"]
+    # the page asks; the laptop collects the job, books it on SportyBet and sends the code back
+    monkeypatch.setenv("ANALYTIX_BETS_TOKEN", "s3cret")
+    svc = BetsService(SimpleNamespace(mode="live"))
+    svc.books, svc._board = books, (time.time(), svc._gen, board)
+    first = asyncio.run(svc.combo_code(1.55))
+    assert first["status"] == "waiting" and first["games"] >= 1
+    with pytest.raises(PermissionError):
+        svc.code_jobs("wrong")
+    jobs = svc.code_jobs("s3cret")
+    assert len(jobs) == 1 and jobs[0]["selections"][0]["eventId"].startswith("sr:match:") and jobs[0]["selections"][0]["specifier"] is None
+    assert asyncio.run(svc.combo_code(1.55))["status"] == "waiting"                     # asked again: the same job
+    svc.code_done({"id": jobs[0]["id"], "code": "N3N8VT", "url": "https://www.sportybet.com/ng/?shareCode=N3N8VT",
+                   "deadline_ms": str(t + 5 * H), "missing": []}, "s3cret")
+    got = asyncio.run(svc.combo_code(1.55))
+    assert got["status"] == "ready" and got["code"] == "N3N8VT" and got["deadline_ms"] == t + 5 * H and svc.code_jobs("s3cret") == []
+    svc.codes[jobs[0]["id"]]["deadline_ms"] = t - 1                                     # past SportyBet's deadline: asked anew
+    assert asyncio.run(svc.combo_code(1.55))["status"] == "waiting"
+    svc.codes[jobs[0]["id"]]["asked"] -= 200                                            # the laptop never answered
+    assert "collector" in asyncio.run(svc.combo_code(1.55))["why"]
+    svc.code_done({"id": "nope", "code": "X"}, "s3cret")                                # an unknown job is ignored
+    # the collector's side: SportyBet's answer read, and an error passed back
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+
+    class Reply:
+        def __init__(self, status, body):
+            self.status_code, self._body, self.content = status, body, b"x"
+
+        def json(self):
+            return self._body
+
+    class Session:
+        def __init__(self, reply):
+            self.reply, self.sent = reply, None
+
+        def post(self, url, json=None, timeout=None):
+            self.sent = (url, json)
+            return self.reply
+    ok = Session(Reply(200, {"bizCode": 10000, "data": {"shareCode": "AB12CD", "shareURL": "https://x", "deadline": 1795000000000,
+                                                         "unavailableOutcomes": [{"homeTeamName": "Town", "awayTeamName": "Albion"}]}}))
+    assert N.sporty_code(ok, [{"eventId": "sr:match:1"}]) == {"code": "AB12CD", "url": "https://x", "deadline_ms": 1795000000000,
+                                                            "missing": ["Town Albion"]}
+    assert ok.sent == (N.SPORTY_SHARE, {"selections": [{"eventId": "sr:match:1"}]})
+    assert N.sporty_code(Session(Reply(403, {"message": "blocked"})), []) == {"error": "HTTP 403: blocked"}
+    calls = []
+    monkeypatch.setattr(N, "server_call", lambda server, token, path, body=None: calls.append((path, body)) or
+                        ([{"id": "j1", "selections": [{"eventId": "sr:match:1"}]}] if body is None else {"ok": True}))
+    N.serve_codes(SimpleNamespace(server="http://localhost:8001", token="t"), ok)
+    assert calls[1] == ("/api/bets/code-jobs", {"id": "j1", "code": "AB12CD", "url": "https://x", "deadline_ms": 1795000000000,
+                                                "missing": ["Town Albion"]})

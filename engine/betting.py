@@ -433,6 +433,7 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
                 read_ms = s.get("ou_read_ms", s["read_ms"]) if goals else s["read_ms"]
                 p_adj, pat = (fair[m], None) if intl or goals else adjust(fair[m], m, s.get("league", ""), cal, price_kind(src))
                 out.append({"key": f"{s['id']}:{m}", "match_id": s["id"], "home": s["home"], "away": s["away"],
+                            "sel": (r.get("ids") or {}).get(m),
                             "league": s.get("league", ""), "league_name": s.get("league_name", ""), "t_ms": s["t_ms"],
                             "market": m, "book": book, "odds": price, "odds_age_h": age_h, "fair_p": fair[m], "p": fair[m],
                             "p_hist": p_adj, "fair_odds": 1 / fair[m], "edge": price * fair[m] - 1, "edge_hist": price * p_adj - 1,
@@ -444,7 +445,8 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
     rows = []
     for xs in groups.values():                             # the best Nigerian price for each game and market
         top = max(xs, key=lambda x: x["odds"])
-        rows.append({**top, "others": sorted(({"book": x["book"], "odds": x["odds"]} for x in xs), key=lambda o: -o["odds"])})
+        rows.append({**top, "others": sorted(({"book": x["book"], "odds": x["odds"], **({"sel": x["sel"]} if x.get("sel") else {})}
+                                              for x in xs), key=lambda o: -o["odds"])})
     stats_cache: dict = {}
     for x in rows:
         side = favourite_side(x["market"], x["fair1x2"])

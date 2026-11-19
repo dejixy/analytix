@@ -57,11 +57,12 @@ def legs(board: list[dict], book: str, book_ms: int | None, now_ms: int, until_m
         if (x["market"] == "X" or not now_ms + 10 * 60_000 <= x["t_ms"] <= until_ms or x["sharp_age_h"] > B.SHARP_FRESH_H
                 or not x.get("p")):
             continue
-        o = next((b["odds"] for b in x.get("others") or [] if b["book"] == book), None)
+        on = next((b for b in x.get("others") or [] if b["book"] == book), None)
+        o = on and on["odds"]
         if not o or o < LEG_MIN or x["p"] < FLOORS[-1] or o * x["p"] - 1 > B.EDGE_MAX:
             continue
         out.append({k: x.get(k) for k in ("key", "match_id", "home", "away", "league", "league_name", "t_ms", "market", "intl", "p")}
-                   | {"book": book, "odds": o, "edge": o * x["p"] - 1})
+                   | {"book": book, "odds": o, "edge": o * x["p"] - 1, "sel": on.get("sel")})
     return out
 
 
@@ -147,7 +148,8 @@ def slip(s: list[dict], with_legs: bool = True) -> dict:
     odds = math.prod(x["odds"] for x in s)
     p = math.prod(x["p"] for x in s)
     out = {"book": s[0]["book"], "odds": odds, "p": p, "fair_odds": 1 / p, "edge": odds * p - 1, "n": len(s),
-           "least": min(x["p"] for x in s), "last_ms": max(x["t_ms"] for x in s)}
+           "least": min(x["p"] for x in s), "last_ms": max(x["t_ms"] for x in s),
+           "coded": all(x.get("sel") for x in s)}                  # the book's own ids for every bet: a code can be made
     if with_legs:
         out["legs"] = sorted(s, key=lambda x: x["t_ms"])
     return out
@@ -172,10 +174,14 @@ def best_of(books: dict[str, Builder], target: float, least: float | None = None
     return None
 
 
-def build(solvers: dict[str, Builder], target: float, past: dict | None = None, least: float | None = None) -> dict:
+def build(solvers: dict[str, Builder], target: float, past: dict | None = None, least: float | None = None,
+          book: str | None = None) -> dict:
     """The page's data: the slip for the target, and each size on the ladder with its record on past games (safest first,
-    or every game at least `least` likely)."""
+    or every game at least `least` likely), from every book or only `book`."""
     target = min(max(float(target), T_MIN), T_MAX)
+    every = sorted(k for k, sv in solvers.items() if sv.n)
+    if book:
+        solvers = {k: v for k, v in solvers.items() if k == book}
     least = snap(least)
     s = best_of(solvers, target, least)
     ladder, done_past = [], (past or {}).get(mode(least)) or {}
@@ -187,7 +193,7 @@ def build(solvers: dict[str, Builder], target: float, past: dict | None = None, 
     return {"target": target, "least": least, "slip": slip(s) if s else None, "ladder": ladder,
             "best_target": top["target"] if top else None,
             "reach": max((sv.reach() for sv in solvers.values()), default=1.0),
-            "bets": sum(sv.n for sv in solvers.values()), "books": sorted(k for k, sv in solvers.items() if sv.n),
+            "bets": sum(sv.n for sv in solvers.values()), "books": every, "book": book or None,
             "settings": {"leg_min": LEG_MIN, "floors": list(FLOORS), "games": MAX_GAMES, "tol": TOL, "range": [T_MIN, T_MAX],
                          "haircut": [HAIRCUT, HAIRCUT_LOW]}}
 

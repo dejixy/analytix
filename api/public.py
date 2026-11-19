@@ -3,14 +3,14 @@ The public link: what someone opening Analytix through Cloudflare (deploy/analyt
 
 The app listens only on the server itself. The SSH tunnel reaches it as localhost and sees everything. A request that
 came through Cloudflare carries Cloudflare's headers and the link's own host name, and sees only the bets page: the
-page, its read-only data (GET /api/bets and /api/bets/combo) and the built assets. "/" goes to the page; everything else is a 404 and a
+page, its read-only data (GET /api/bets, /api/bets/combo and /api/bets/combo/code) and the built assets. "/" goes to the page; everything else is a 404 and a
 websocket is closed, so the terminal, the Analyzer, settings, alerts and the odds push stay private.
 """
 import re
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "testserver"}
 VIA_PROXY = (b"cf-connecting-ip", b"cf-ray", b"cf-visitor", b"cdn-loop", b"x-forwarded-for", b"x-forwarded-host")
-OPEN_PATHS = {"/bets", "/api/bets", "/api/bets/combo"}
+OPEN_PATHS = {"/bets", "/api/bets", "/api/bets/combo", "/api/bets/combo/code"}
 OPEN_PREFIXES = ("/assets/",)
 ROBOTS = b"User-agent: *\nDisallow: /\n"
 

@@ -222,10 +222,38 @@ async def bets(request: Request):
 
 
 @router.get("/bets/combo")
-async def bets_combo(request: Request, target: float = 10, days: int = 1, least: float = 0):
+async def bets_combo(request: Request, target: float = 10, days: int = 1, least: float = 0, book: str = ""):
     """The combo builder: the best accumulator for a total-odds target (1.1 to 200) over the next 1, 3 or 7 days, safest
     games first (least=0) or with every game at least `least` likely (0.60 to 0.90)."""
-    return await _rt(request).bets.combo(target, days, least or None)
+    return await _rt(request).bets.combo(target, days, least or None, book.strip().lower()[:20] or None)
+
+
+@router.get("/bets/combo/code")
+async def bets_combo_code(request: Request, target: float = 10, days: int = 1, least: float = 0):
+    """A SportyBet booking code for the combo builder's SportyBet slip at these settings (made on the laptop)."""
+    return await _rt(request).bets.combo_code(target, days, least or None)
+
+
+@router.get("/bets/code-jobs")
+async def bets_code_jobs(request: Request):
+    """For the laptop collector: SportyBet slips waiting for a booking code."""
+    try:
+        return _rt(request).bets.code_jobs(request.headers.get("x-bets-token", ""))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+
+
+@router.post("/bets/code-jobs")
+async def bets_code_done(request: Request):
+    """From the laptop collector: SportyBet's booking code (or its error) for a waiting slip."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "send JSON")
+    try:
+        return _rt(request).bets.code_done(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
 
 
 @router.post("/bets/odds")
