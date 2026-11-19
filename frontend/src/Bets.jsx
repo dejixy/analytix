@@ -50,8 +50,9 @@ function Why({ x, s }) {
   return (
     <ul className="bt-why">
       <li>
-        Sharp price says <b>{pct(x.fair_p, 1)}</b> ({x.sharp_src}); history moves it to <b>{pct(x.p, 1)}</b>.
-        At {odd(x.odds)} on {BOOK[x.book] || x.book} that is an edge of <b className={tone(x.edge)}>{sgn(x.edge)}</b>.
+        Sharp price says <b>{pct(x.fair_p, 1)}</b> ({x.sharp_src}). At {odd(x.odds)} on {BOOK[x.book] || x.book} that is an edge
+        of <b className={tone(x.edge)}>{sgn(x.edge)}</b>.{x.pattern && x.p_hist != null ? <> History would move it to {pct(x.p_hist, 1)}
+        ({sgn(x.edge_hist)}); the rule leaves that out.</> : null}
       </li>
       {x.agree_why && <li>Form: <Form x={x} dash="unclear" />, {x.agree_why}{x.agree && poor(f) ? `; on its own it's poor: ${poorWhy(f)}` : ""}.</li>}
       {f && o && <li>Last {f.n}: {x.fav} {f.results} ({f.gf.toFixed(1)} scored, {f.ga.toFixed(1)} conceded a game) · opponent {o.results} ({o.gf.toFixed(1)}, {o.ga.toFixed(1)}).</li>}
@@ -60,8 +61,7 @@ function Why({ x, s }) {
       {x.others?.length > 1 && <li>All books: {x.others.map((b) => `${BOOK[b.book] || b.book} ${odd(b.odds)}`).join(" · ")}.</li>}
       {s && (
         <li>
-          Take it at <b>{odd((1 + bar(x, s)) / x.p)}</b> or better (<b>{odd((1 + bar(x, s)) / x.fair_p)}</b> on the sharp price alone,
-          before history){bar(x, s) > s.flat[2] ? `; ${pct(bar(x, s))} needed here, a ${x.intl ? "international" : "lower league"}` : ""}.
+          Take it at <b>{odd((1 + bar(x, s)) / x.fair_p)}</b> or better{bar(x, s) > s.flat[2] ? `: ${pct(bar(x, s))} needed here, a ${x.intl ? "international" : "lower league"}` : ""}.
         </li>
       )}
     </ul>
@@ -102,7 +102,7 @@ function Rollover({ r, pub, s }) {
         </div>
       ) : (
         <>
-          <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off within 30 hours, form backing the favourite, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
+          <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off within 30 hours, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
           {(r.misses || []).length > 0 && (
             <ul className="bt-why">
               {r.misses.map((m) => (
@@ -257,7 +257,7 @@ function Study({ s, methods, method }) {
             </tbody>
           </table></div>
           <p className="az-note">
-            Rollover, one pick a day by today's rule: {run(x.rollover)}. Without the form check: {run(x.rollover_no_form)}.
+            Rollover, one pick a day by today's rule: {run(x.rollover)}. With the form check: {run(x.rollover_form)}.
             {won != null && <> Favourites priced 1.15–1.50 actually won {pct(won, 1)} of {fav.fav_n.toLocaleString()} games.</>}
           </p>
         </>
