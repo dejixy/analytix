@@ -401,3 +401,29 @@ def test_collector_finds_cups_and_reads_sportybet():
     by_desc = {"events": [{"homeTeamName": "A", "awayTeamName": "B", "estimateStartTime": 1, "markets": [
         {"id": "1", "outcomes": [{"desc": "Home", "odds": "1.5"}, {"desc": "Draw", "odds": "4"}, {"desc": "Away", "odds": "6"}]}]}]}
     assert N.sporty_rows(by_desc)[0]["away"] == 6.0
+
+
+def test_a_restart_reuses_the_sharp_read(tmp_path, monkeypatch):
+    rt = SimpleNamespace(mode="live")
+    monkeypatch.setenv("ANALYTIX_ODDS_API_KEY", "k")
+    svc = BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json", tmp_path / "sharp.json")
+    assert svc._first_wait("sharp") == 120                                    # nothing saved: read two minutes after a start
+
+    async def sports():
+        return [{"key": "soccer_uefa_europa_conference_league", "group": "Soccer", "active": True, "has_outrights": False}]
+
+    async def odds_api(sports, what="odds", key=None):
+        return {"E0": [{"id": "x", "home_team": "Arsenal", "away_team": "Fulham", "commence_time": "2026-11-21T15:00:00Z",
+                        "bookmakers": [{"key": "pinnacle", "markets": [{"key": "h2h", "outcomes": [
+                            {"name": "Arsenal", "price": 1.33}, {"name": "Fulham", "price": 10.2}, {"name": "Draw", "price": 5.9}]}]}]}]}, 371, []
+    svc.fetch_sports, svc.fetch_odds_api = sports, odds_api
+    asyncio.run(svc.refresh("sharp"))
+    assert svc.status["sharp"]["ok"] and (tmp_path / "sharp.json").exists()
+
+    again = BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json", tmp_path / "sharp.json")
+    assert [r["id"] for r in again.sharp_oa] == ["oa:x"] and again.credits == 371 and again.status["sharp"]["ok"]
+    assert again.cups["UECL"][1] == "soccer_uefa_europa_conference_league"
+    assert again._first_wait("sharp") > 86000                                 # the next paid read waits for the day to pass
+    assert again._first_wait("sharp", time.time() + 86400) == 120             # a day on, it reads again
+    (tmp_path / "sharp.json").write_text("not json")
+    assert BetsService(rt, None, None, tmp_path / "sharp.json").sharp_oa == []   # a broken file is ignored
