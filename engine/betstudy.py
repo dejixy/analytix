@@ -77,7 +77,7 @@ def score(bets: list[tuple[dict, float]]) -> dict:
 
 def rules(cands: list[dict], book: str) -> list[dict]:
     """Each rule's record on one stand-in book. The first row is the live flat rule; the others change one thing."""
-    def pick(lo=B.FLAT_MIN, hi=B.FLAT_MAX, edge=B.FLAT_EDGE, adj=True, form=False, leagues=None):
+    def pick(lo=B.FLAT_MIN, hi=B.FLAT_MAX, edge=B.FLAT_EDGE, adj=False, form=False, leagues=None):
         out = []
         for c in cands:
             o = c["prices"].get(book)
@@ -91,7 +91,7 @@ def rules(cands: list[dict], book: str) -> list[dict]:
         return out
     rows = [
         ("The flat rule: odds 1.20–1.50, edge 2%+", pick()),
-        ("…without the history adjustment", pick(adj=False)),
+        ("…with the history adjustment", pick(adj=True)),
         ("…and form backs the favourite", pick(form=True)),
         ("…edge 0%+", pick(edge=0.0)),
         ("…edge 1%+", pick(edge=0.01)),
@@ -105,16 +105,16 @@ def rules(cands: list[dict], book: str) -> list[dict]:
     return [{"rule": r, **score(b)} for r, b in rows]
 
 
-def rollover(cands: list[dict], book: str, form: bool = True) -> dict:
-    """The live rollover rule, one pick a day (Lagos days): the highest adjusted chance at odds 1.15–1.35 with the edge
-    no worse than -2% (and form backing it). Followed in runs: a run ends at its first loss."""
+def rollover(cands: list[dict], book: str, form: bool = False) -> dict:
+    """The live rollover rule, one pick a day (Lagos days): the highest sharp chance at odds 1.15–1.35 with the edge no
+    worse than -2% (with form=True, only when form backs it too). Followed in runs: a run ends at its first loss."""
     days: dict[int, tuple[dict, float]] = {}
     for c in cands:
         o = c["prices"].get(book)
-        if not o or not B.ROLL_MIN <= o <= B.ROLL_MAX or o * c["p_adj"] - 1 < B.ROLL_EDGE or (form and not c["agree"]):
+        if not o or not B.ROLL_MIN <= o <= B.ROLL_MAX or o * c["p"] - 1 < B.ROLL_EDGE or (form and not c["agree"]):
             continue
         d = (c["t_ms"] + WAT) // B.DAY
-        if d not in days or c["p_adj"] > days[d][0]["p_adj"]:
+        if d not in days or c["p"] > days[d][0]["p"]:
             days[d] = (c, o)
     runs, run, best = [], 0, 0
     for d in sorted(days):
@@ -139,5 +139,5 @@ def study(history: list[dict], teams: B.Teams | None = None) -> dict:
     for book in SOFT:
         if any(c["prices"].get(book) for c in cands):
             out["books"][book] = {"rules": rules(cands, book), "rollover": rollover(cands, book),
-                                  "rollover_no_form": rollover(cands, book, form=False)}
+                                  "rollover_form": rollover(cands, book, form=True)}
     return out

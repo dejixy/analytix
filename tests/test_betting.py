@@ -268,7 +268,7 @@ def test_margin_methods_and_the_study():
     assert B.devig({"1": 1.9, "2": 1.9}, "shin") == {"1": 0.5, "2": 0.5}
     hist = _history(n=900)
     for g in hist:
-        g.update(B365H=g["PSH"] * 0.98, B365A=g["PSA"] * 0.98, MaxH=g["PSH"] * 1.06, MaxA=g["PSA"] * 1.06, PSD=g["PSD"])
+        g.update(B365H=g["PSH"] * 0.98, B365A=g["PSA"] * 0.98, MaxH=g["PSH"] * 1.10, MaxA=g["PSA"] * 1.10, PSD=g["PSD"])
     sc = B.compare_methods(hist)
     assert all(sc[m]["n"] == 900 for m in B.METHODS) and B.best_method(sc, least=100) in B.METHODS
     assert B.best_method(sc) == "proportional"                               # too few games to choose: the default
@@ -312,7 +312,7 @@ def test_rollover_misses_say_why():
     m = {x["key"]: x["why"] for x in B.rollover_misses(board, NOW, n=6)}
     assert set(m) == {"a", "b", "c", "f"}                                     # too late and too long a price left out
     assert m["a"] == ["4.0% under fair, allowed 2%"]
-    assert m["b"] == ["odds 1.38, needs 1.15–1.35", "form not better than the opponent's"]
+    assert m["b"] == ["odds 1.38, needs 1.15–1.35"]                         # form isn't a test any more
     assert m["c"] == ["1.0% under fair; an international needs at least fair"]
     assert m["f"] == ["0.5% under fair; a lower league needs at least fair"]
 
@@ -427,3 +427,20 @@ def test_a_restart_reuses_the_sharp_read(tmp_path, monkeypatch):
     assert again._first_wait("sharp", time.time() + 86400) == 120             # a day on, it reads again
     (tmp_path / "sharp.json").write_text("not json")
     assert BetsService(rt, None, None, tmp_path / "sharp.json").sharp_oa == []   # a broken file is ignored
+
+
+
+def test_the_rule_is_pinnacle_alone():
+    sharp = [{"id": "s1", "league": "E0", "league_name": "Premier League", "home": "Big City", "away": "Rovers", "t_ms": NOW + 5 * H,
+              "fair": B.devig({"1": 1.40, "X": 4.6, "2": 8.0}), "src": "Pinnacle (The Odds API)", "read_ms": NOW}]
+    hist = _history(home_bonus=0.15)                                          # history says such favourites win far more
+    cal = B.calibration(hist)
+    books = {"bet9ja": {"t_ms": NOW, "rows": [{"home": "Big City", "away": "Rovers", "t_ms": NOW + 5 * H, "odds": {"1": 1.44}}]}}
+    x = B.build(books, sharp, hist, cal, NOW)[0]
+    assert x["p"] == x["fair_p"] and abs(x["edge"] - (1.44 * x["fair_p"] - 1)) < 1e-9     # the rule's chance is Pinnacle's
+    if x["pattern"]:
+        assert x["p_hist"] > x["p"] and x["edge_hist"] > x["edge"]           # history is kept beside it, not used
+    assert (x in B.value_bets([x])) == (B.FLAT_EDGE <= x["edge"] <= B.EDGE_MAX)
+    roll = [{**x, "odds": 1.30, "edge": 1.30 * x["p"] - 1, "agree": False}]
+    if roll[0]["edge"] >= B.ROLL_EDGE:
+        assert B.rollover_pick(roll, NOW) is not None                        # form no longer blocks a rollover pick

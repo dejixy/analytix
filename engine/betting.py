@@ -3,22 +3,22 @@ The bets suite: football odds from Nigerian bookmakers measured against a sharp 
 Pure functions and a small paper book; ingestion/football.py reads the data, api/bets.py runs it, /bets shows it.
 
     fair odds    the sharp market (Pinnacle, else the Betfair exchange, else the average of many books) with its margin
-                 taken out in proportion; double chance is the sum of its two outcomes
+                 taken out by the method that fits past results best (proportional, power or Shin); double chance is the
+                 sum of its two outcomes
     history      three seasons of every covered league (football-data.co.uk): how often favourites at each price actually
-                 won, by league and side, against what the price said. The difference, shrunk toward zero so a thin
-                 sample can't move it much, adjusts the fair chance. Kept apart by the kind of price it was measured
-                 on: a sharp price (Pinnacle, an exchange) is only adjusted by history measured on sharp prices, because
-                 the market average carries a bigger margin and taking it out understates favourites more
+                 won, by league and side, against what the price said. Shown beside each bet (the History column, and
+                 the chance it would give), but not used by the rules: on past games the rule did as well without it,
+                 and Pinnacle's price alone is the better-proven of the two
     stats        each team's last six league games: points, goals and shots on target for and against. A favourite's
                  numbers "agree" when it has more points a game and a bigger share of the shots on target than its
-                 opponent, and hasn't lost two of its last four
-    value        edge = Nigerian odds x adjusted chance - 1. Flat bets: odds 1.20 to 1.50 and an edge of 2%+, odds read in
-                 the last two hours, a sharp price from the last 24; shown up to a week ahead, booked on paper from three
-                 days before kick-off
-    rollover     one pick a day, fixed once made: odds 1.15 to 1.35, kick-off within 30 hours, stats agree, edge no worse
-                 than -2%; the highest adjusted chance of winning. Internationals have no club form or history to check,
-                 so they're taken at the sharp price as it is and only when the Nigerian odds are at or above fair. Followed as a paper chain from N5,000, the balance
-                 riding on each pick, with up to six refills
+                 opponent, and hasn't lost two of its last four. Shown, not used by the rules (on past games the check
+                 left out picks without improving them)
+    value        edge = Nigerian odds x the sharp fair chance - 1. Flat bets: odds 1.20 to 1.50 and an edge of 2%+ (3%+ in
+                 lower leagues and internationals) up to 10%, odds read in the last two hours, a sharp price from the last
+                 24; shown up to a week ahead, booked on paper from three days before kick-off
+    rollover     one pick a day, fixed once made: odds 1.15 to 1.35, kick-off within 30 hours, edge no worse than -2% (at
+                 least fair in lower leagues and internationals); the highest sharp chance of winning. Followed as a
+                 paper chain from N5,000, the balance riding on each pick, with up to six refills
     record       every flat value bet and every rollover pick, followed to its result with its closing-line value (the
                  bet's odds against the fair closing price: beating the close is the earliest sign an edge is real)
 """
@@ -421,8 +421,9 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
                 p_adj, pat = (fair[m], None) if intl else adjust(fair[m], m, s.get("league", ""), cal, price_kind(s["src"]))
                 out.append({"key": f"{s['id']}:{m}", "match_id": s["id"], "home": s["home"], "away": s["away"],
                             "league": s.get("league", ""), "league_name": s.get("league_name", ""), "t_ms": s["t_ms"],
-                            "market": m, "book": book, "odds": price, "odds_age_h": age_h, "fair_p": fair[m], "p": p_adj,
-                            "fair_odds": 1 / fair[m], "edge": price * p_adj - 1, "sharp_src": s["src"], "fair1x2": fair1x2,
+                            "market": m, "book": book, "odds": price, "odds_age_h": age_h, "fair_p": fair[m], "p": fair[m],
+                            "p_hist": p_adj, "fair_odds": 1 / fair[m], "edge": price * fair[m] - 1, "edge_hist": price * p_adj - 1,
+                            "sharp_src": s["src"], "fair1x2": fair1x2,
                             "sharp_age_h": (now_ms - s["read_ms"]) / HOUR, "pattern": pat, "intl": intl})
     groups: dict[str, list[dict]] = {}
     for x in out:
@@ -478,7 +479,7 @@ def roll_bar(x: dict) -> float:
 def rollover_pick(board: list[dict], now_ms: int) -> dict | None:
     """Today's one rollover bet (see the module note), or None if nothing qualifies."""
     c = [x for x in board if ROLL_MIN <= x["odds"] <= ROLL_MAX and x["t_ms"] <= now_ms + 30 * HOUR
-         and (x.get("intl") or x.get("agree")) and roll_bar(x) <= x["edge"] <= EDGE_MAX
+         and roll_bar(x) <= x["edge"] <= EDGE_MAX
          and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"]
     return max(c, key=lambda x: (x["p"], x["edge"])) if c else None
 
@@ -493,8 +494,6 @@ def rollover_misses(board: list[dict], now_ms: int, n: int = 3) -> list[dict]:
         why = []
         if not ROLL_MIN <= x["odds"] <= ROLL_MAX:
             why.append(f"odds {x['odds']:.2f}, needs {ROLL_MIN:.2f}–{ROLL_MAX:.2f}")
-        if not x.get("intl") and not x.get("agree"):
-            why.append("form not better than the opponent's" if x.get("agree") is False else "too few recent games to judge form")
         if x["edge"] < roll_bar(x):
             where = "an international" if x.get("intl") else "a lower league" if lower(x) else None
             why.append(f"{-x['edge'] * 100:.1f}% under fair; {where} needs at least fair" if where
