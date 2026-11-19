@@ -2,9 +2,11 @@
 The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live mode only.
 
     history        football-data.co.uk, three seasons of 14 leagues, once a day: the calibration and team form
-    sharp prices   The Odds API once a day for the main leagues and any international competition in season (with
-                   ANALYTIX_ODDS_API_KEY; ~9 credits a day, one more for each competition), and
-                   football-data's fixtures every six hours (free; Pinnacle or the market average). The fresher wins
+    sharp prices   The Odds API once a day for the main leagues, the European cups and any international competition in
+                   season (with ANALYTIX_ODDS_API_KEY; a credit for each league that has games, none for one without),
+                   and football-data's fixtures every six hours for all 14 leagues (free; Pinnacle or the market
+                   average). The fresher wins. 30 minutes to 3 hours before kick-off, any league with a game that could be
+                   bet is read again (a credit a league, at most every 2 hours, while 100+ credits are left)
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
     paper book     every ten minutes: new flat value bets are booked at a flat stake, today's rollover pick is made once
@@ -31,10 +33,12 @@ from ingestion import football as F
 
 log = logging.getLogger("analytix.bets")
 LAGOS = ZoneInfo("Africa/Lagos")
-ODDS_API_LEAGUES = ("E0", "E1", "E2", "E3", "SP1", "I1", "D1", "F1", "UCL")    # ~9 credits a day; the lower English
-                                                                                 # leagues play through international breaks
+ODDS_API_LEAGUES = ("E0", "E1", "E2", "E3", "SP1", "I1", "D1", "F1", "UCL", "UEL", "UECL")    # read daily; the other six
+                                                                  # leagues come from football-data and the pre-kick-off read
 EVERY_S = {"history": 86400, "fixtures": 6 * 3600, "sharp": 86400, "book": 600}
 MIN_CREDITS = 40
+FRESH_MIN_CREDITS = 100        # the pre-kick-off reads stop here, keeping the rest of the month for the daily read
+FRESH_FROM_H, FRESH_TO_H, FRESH_EVERY_H = 0.5, 3, 2      # read again 30 min to 3 h before kick-off, a league every 2 h
 
 
 class BetsService:
@@ -52,6 +56,8 @@ class BetsService:
         self.sharp_oa: list[dict] = []
         self.credits: int | None = None
         self.intl: dict[str, tuple[str, str]] = {}            # international competitions in season: {sport key: (title, key)}
+        self.cups: dict[str, tuple[str, str]] = dict(F.CUPS)  # the European cups: {code: (name, sport key)}
+        self._fresh_at: dict[str, int] = {}                   # when each league last had a pre-kick-off read
         self._scores_at: dict[str, float] = {}                # when each league's results were last asked for
         self.status: dict[str, dict] = {k: {"ok": None, "at": None, "error": None} for k in ("history", "fixtures", "sharp", "book")}
         self._board: tuple[float, int, list] | None = None    # (built at, generation, rows)
@@ -121,13 +127,14 @@ class BetsService:
     async def _sharp(self) -> None:
         if self.credits is not None and self.credits < MIN_CREDITS:
             raise RuntimeError(f"only {self.credits} credits left this month; using football-data's prices until it resets")
-        sports = {k: (F.LEAGUES.get(k) or F.CUPS[k]) for k in ODDS_API_LEAGUES}
         try:
-            self.intl = F.intl_sports(await self.fetch_sports())
+            listed = await self.fetch_sports()                # free: no credits
+            self.intl, self.cups = F.intl_sports(listed), F.club_cups(listed)
         except Exception as exc:                          # noqa: BLE001 - the leagues still read without it
             if "no key" in str(exc):
                 raise
             log.warning("bets: the list of competitions: %s", scrub(exc))
+        sports = {k: self._sport(k) for k in ODDS_API_LEAGUES}
         sports.update(self.intl)
         got, left, errors = await self.fetch_odds_api(sports, "odds")
         self.credits = left if left is not None else self.credits
@@ -140,9 +147,46 @@ class BetsService:
         self.sharp_oa = rows
         self._changed(sharp=True)
 
+    def _sport(self, code: str) -> tuple[str, str] | None:
+        """(name, The Odds API sport key) for a league code, a cup or an international competition."""
+        return F.LEAGUES.get(code) or self.cups.get(code) or self.intl.get(code)
+
+    async def _pre_kickoff(self, now: int) -> None:
+        """A fresh sharp price shortly before kick-off: the leagues with a game that could be bet (odds 1.15 to 1.50, no
+        worse than 2% under fair) kicking off in 30 minutes to 3 hours, each at most every 2 hours. One credit a league
+        with games, none for one without; skipped below FRESH_MIN_CREDITS."""
+        if not os.getenv("ANALYTIX_ODDS_API_KEY") or (self.credits is not None and self.credits < FRESH_MIN_CREDITS):
+            return
+        board = self._board[2] if self._board else []
+        want = {}
+        for x in board:
+            if (now + FRESH_FROM_H * B.HOUR <= x["t_ms"] <= now + FRESH_TO_H * B.HOUR and B.ROLL_MIN <= x["odds"] <= B.FLAT_MAX
+                    and x["edge"] >= B.ROLL_EDGE and x["market"] != "X" and now - self._fresh_at.get(x["league"], 0) > FRESH_EVERY_H * B.HOUR):
+                sport = self._sport(x["league"])
+                if sport:
+                    want[x["league"]] = sport
+        if not want:
+            return
+        for k in want:
+            self._fresh_at[k] = now
+        got, left, _errors = await self.fetch_odds_api(want, "odds")
+        self.credits = left if left is not None else self.credits
+        rows = []
+        for league, events in got.items():
+            rows += F.parse_odds_api(events, league, want[league][0], now, intl=league in self.intl)
+        if rows:
+            self.sharp_oa = [r for r in self.sharp_oa if r["league"] not in got] + rows
+            self._changed(sharp=True)
+            self.status["sharp"]["fresh"] = {"at": now, "leagues": sorted(got)}
+
     async def _book(self) -> None:
-        """Book new flat value bets, make today's rollover pick, settle what has finished."""
+        """Refresh the sharp price of games about to start, book new flat value bets, make today's rollover pick,
+        settle what has finished."""
         now = int(time.time() * 1000)
+        try:
+            await self._pre_kickoff(now)
+        except Exception as exc:                          # noqa: BLE001 - the day's read still stands
+            log.warning("bets fresh read: %s", scrub(exc))
         board = await self.board_async(now)
         for x in B.value_bets(board, before_ms=now + B.BOOK_DAYS * B.DAY):
             self.book.add_flat(x, now)
@@ -158,7 +202,7 @@ class BetsService:
         open_ = [b for b in [*self.book.flat, *self.book.picks] if b["status"] == "open" and b["t_ms"] < now - 2 * B.HOUR]
         results = [g for g in self.history if g.get("hg") is not None and g["t_ms"] > now - 10 * B.DAY]
         if open_ and os.getenv("ANALYTIX_ODDS_API_KEY") and (self.credits is None or self.credits >= MIN_CREDITS // 2):
-            sport = lambda k: F.LEAGUES.get(k) or F.CUPS.get(k) or self.intl.get(k) or ((k, k) if k.startswith("soccer_") else None)
+            sport = lambda k: self._sport(k) or ((k, k) if k.startswith("soccer_") else None)
             leagues = {b["league"] for b in open_ if sport(b["league"]) and time.time() - self._scores_at.get(b["league"], 0) > 3600}
             try:
                 for k in leagues:                         # at most once an hour a league: two credits a read
@@ -297,12 +341,14 @@ class BetsService:
                 "next_kick": min((x["t_ms"] for x in board), default=None),
                 "near": [x for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"][:40],
                 "rollover": {"today": today, "candidate": candidate, "chain": chain, "target": B.ROLL_TARGET,
+                             "misses": B.rollover_misses(board, now) if not (today or candidate) else [],
                              "refills_max": B.ROLL_REFILLS, "start": B.ROLL_START,
                              "p_finish": B.chain_odds(p_now, left) if p_now else None, "days_left": left,
                              "history": self.book.picks[-30:][::-1]},
                 "record": self.book.record(), "flat_recent": self.book.flat[-40:][::-1], "patterns": pats,
                 "method": B.method(), "methods": self.methods, "study": self.study,
-                "settings": {"flat": [B.FLAT_MIN, B.FLAT_MAX, B.FLAT_EDGE, B.FLAT_STAKE],
+                "settings": {"flat": [B.FLAT_MIN, B.FLAT_MAX, B.FLAT_EDGE, B.FLAT_STAKE], "flat_low": B.FLAT_EDGE_LOW,
+                             "edge_max": B.EDGE_MAX, "lower": sorted(B.LOWER_LEAGUES),
                              "roll": [B.ROLL_MIN, B.ROLL_MAX, B.ROLL_EDGE]},
                 "sources": {"books": {k: {"t_ms": v["t_ms"], "games": len(v["rows"])} for k, v in self.books.items()},
                             "history_games": len(self.history), "sharp_oa": len(self.sharp_oa), "sharp_fd": len(self.sharp_fd),

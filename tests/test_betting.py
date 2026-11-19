@@ -1,6 +1,7 @@
 """The bets suite: names, fair prices, history, stats, the value list, the rollover pick, the paper book, readers."""
 import asyncio
 import random
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -284,3 +285,98 @@ def test_margin_methods_and_the_study():
     every = best["rules"][-1]
     assert every["n"] >= lead["n"]                                           # no edge needed: every price in the range
     assert all(c["season"] for c in S.candidates(hist))
+
+
+def _row(**k):
+    base = {"key": "k", "home": "A", "away": "B", "market": "1", "book": "bet9ja", "league": "E0", "league_name": "Premier League",
+            "odds": 1.40, "edge": 0.025, "p": 0.73, "fair_p": 0.72, "odds_age_h": 0.2, "sharp_age_h": 3, "t_ms": NOW + 5 * H,
+            "agree": True}
+    return {**base, **k}
+
+
+def test_bars_cap_and_lower_leagues():
+    rows = [_row(key="top"), _row(key="low", league="E2"), _row(key="low_ok", league="SC0", edge=0.035),
+            _row(key="intl", league="soccer_uefa_nations_league", intl=True), _row(key="stale", edge=0.14)]
+    assert [x["key"] for x in B.value_bets(rows)] == ["top", "low_ok"]       # 3% in lower leagues; over 10% is not bet
+    assert [x["key"] for x in B.value_bets(rows, edge=0.0)] == ["top", "low", "low_ok", "intl"]
+    roll = [_row(key="low", league="E3", odds=1.25, edge=-0.01, p=0.9), _row(key="top", odds=1.25, edge=-0.01, p=0.8)]
+    assert B.rollover_pick(roll, NOW)["key"] == "top"                          # a lower league needs at least fair
+    roll[0]["edge"] = 0.0
+    assert B.rollover_pick(roll, NOW)["key"] == "low"
+
+
+def test_rollover_misses_say_why():
+    board = [_row(key="a", odds=1.25, edge=-0.04), _row(key="b", odds=1.38, edge=0.01, agree=False),
+             _row(key="c", odds=1.22, edge=-0.01, agree=None, intl=True), _row(key="d", odds=1.25, t_ms=NOW + 40 * H),
+             _row(key="e", odds=1.90), _row(key="f", odds=1.25, edge=-0.005, league="E2")]
+    m = {x["key"]: x["why"] for x in B.rollover_misses(board, NOW, n=6)}
+    assert set(m) == {"a", "b", "c", "f"}                                     # too late and too long a price left out
+    assert m["a"] == ["4.0% under fair, allowed 2%"]
+    assert m["b"] == ["odds 1.38, needs 1.15–1.35", "form not better than the opponent's"]
+    assert m["c"] == ["1.0% under fair; an international needs at least fair"]
+    assert m["f"] == ["0.5% under fair; a lower league needs at least fair"]
+
+
+def test_cups_from_the_list():
+    sports = [{"key": "soccer_uefa_champs_league", "group": "Soccer", "active": True, "has_outrights": False},
+              {"key": "soccer_uefa_europa_conference_league", "group": "Soccer", "active": True, "has_outrights": False},
+              {"key": "soccer_uefa_champs_league_qualification", "group": "Soccer", "active": True, "has_outrights": False},
+              {"key": "soccer_uefa_champs_league_winner", "group": "Soccer", "active": True, "has_outrights": True}]
+    cups = F.club_cups(sports)
+    assert cups["UCL"][1] == "soccer_uefa_champs_league" and cups["UECL"][1] == "soccer_uefa_europa_conference_league"
+    assert cups["UEL"] == F.CUPS["UEL"]                                       # not listed: the built-in key
+
+
+def test_fresh_read_before_kick_off(tmp_path, monkeypatch):
+    rt = SimpleNamespace(mode="live")
+    svc = BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json")
+    monkeypatch.setenv("ANALYTIX_ODDS_API_KEY", "k")
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    board = [_row(key="soon", league="N1", t_ms=now + 2 * H), _row(key="later", league="E0", t_ms=now + 9 * H),
+             _row(key="long", league="SP1", t_ms=now + 2 * H, odds=2.5)]
+    svc._board = (time.time(), svc._gen, board)
+    svc.sharp_oa = [{"league": "N1", "id": "old"}, {"league": "E0", "id": "keep"}]
+    calls = []
+
+    async def odds_api(sports, what="odds", key=None):
+        calls.append(sorted(sports))
+        return {"N1": [{"id": "x", "home_team": "Ajax", "away_team": "PSV", "commence_time": "2026-11-21T15:00:00Z",
+                        "bookmakers": [{"key": "pinnacle", "markets": [{"key": "h2h", "outcomes": [
+                            {"name": "Ajax", "price": 1.9}, {"name": "PSV", "price": 3.8}, {"name": "Draw", "price": 3.9}]}]}]}]}, 420, []
+    svc.fetch_odds_api = odds_api
+    asyncio.run(svc._pre_kickoff(now))
+    assert calls == [["N1"]] and [r["id"] for r in svc.sharp_oa] == ["keep", "oa:x"]   # only the league about to play
+    asyncio.run(svc._pre_kickoff(now + 600_000))
+    assert calls == [["N1"]]                                                  # not again within 2 hours
+    svc.credits, svc._fresh_at = 90, {}
+    asyncio.run(svc._pre_kickoff(now))
+    assert calls == [["N1"]]                                                  # under 100 credits left: saved for the day's read
+
+
+def test_collector_finds_cups_and_reads_sportybet():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    data = {"D": {"PAL": {"1": {"S_DESC": "Soccer", "SG": {
+        "55": {"SG_DESC": "International Clubs", "G": {"1001": {"G_DESC": "UEFA Champions League"}, "1002": {"G_DESC": "UEFA Europa League"},
+                                                       "1003": {"G_DESC": "UEFA Champions League Women"}}},
+        "60": {"SG_DESC": "Netherlands", "G": {"1004": {"G_DESC": "Eredivisie"}}},
+        "61": {"SG_DESC": "Scotland", "G": {"1005": {"G_DESC": "Premiership"}}},
+        "62": {"SG_DESC": "China", "G": {"1006": {"G_DESC": "Super League"}}},
+        "63": {"SG_DESC": "England", "G": {"170880": {"G_DESC": "Premier League"}}}}},
+        "9": {"S_DESC": "Rugby Union", "SG": {"70": {"SG_DESC": "England", "G": {"9001": {"G_DESC": "Premiership"}}}}}}}}
+    assert sorted(N.club_groups(data)) == [1001, 1002, 1004, 1005]
+    assert 1001 not in N.intl_groups(data)                                    # a club cup isn't an international
+    reply = {"bizCode": 10000, "data": [{"id": "sr:tournament:7", "name": "UEFA Champions League", "events": [
+        {"eventId": "sr:match:1", "homeTeamName": "Arsenal", "awayTeamName": "Benfica", "estimateStartTime": 1795636800000,
+         "markets": [{"id": "1", "outcomes": [{"id": "1", "odds": "1.42"}, {"id": "2", "odds": "4.90"}, {"id": "3", "odds": "7.20"}]},
+                     {"id": "10", "outcomes": [{"id": "9", "odds": "1.08", "desc": "Home or Draw"}, {"id": "11", "odds": "2.95", "isActive": 0}]},
+                     {"id": "18", "outcomes": [{"id": "12", "odds": "1.80"}]}]},
+        {"eventId": "sr:match:2", "homeTeamName": "No", "awayTeamName": "Odds", "estimateStartTime": 1795636800000, "markets": []}]}]}
+    rows = N.sporty_rows(reply, "Champions League")
+    assert rows == [{"match": "Arsenal - Benfica", "time": 1795636800.0, "league": "UEFA Champions League", "match_id": "sr:match:1",
+                     "home": 1.42, "draw": 4.9, "away": 7.2, "home_or_draw": 1.08}]
+    by_desc = {"events": [{"homeTeamName": "A", "awayTeamName": "B", "estimateStartTime": 1, "markets": [
+        {"id": "1", "outcomes": [{"desc": "Home", "odds": "1.5"}, {"desc": "Draw", "odds": "4"}, {"desc": "Away", "odds": "6"}]}]}]}
+    assert N.sporty_rows(by_desc)[0]["away"] == 6.0
