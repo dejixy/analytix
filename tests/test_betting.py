@@ -479,7 +479,26 @@ def test_the_combo_search_is_the_best_slip():
     assert {x["match_id"] for x in C.Solver(two + four).find(3.99, tol=0.02)} == {"a", "b"}
     low = [_leg("a", "1", 2.0, 0.5, league="E2"), _leg("b", "1", 2.0, 0.5, league="E3"), _leg("c", "1", 2.0, 0.5), _leg("d", "1", 2.0, 0.5)]
     assert {x["match_id"] for x in C.Solver(low).find(3.99, tol=0.02)} == {"c", "d"}
-    assert C.Solver(two).find(9) is None and abs(C.Solver(two).reach() - 4) < 0.01
+    assert C.Solver(two).find(9) is None and C.Solver(two + four).find(3.99, tol=0.02, max_n=1) is None
+
+
+def test_the_combo_takes_the_safest_games_first():
+    from engine import combos as C
+    safe = [_leg(f"s{k}", "1", 1.16, 0.86) for k in range(20)]                 # 86% games
+    sure = [_leg(f"u{k}", "1X", 1.11, 0.905) for k in range(3)]                # 90%+, but only three of them
+    flips = [_leg(f"f{k}", "2", 2.10, 0.49) for k in range(6)]                 # coin flips, better priced: never used
+    mid = [_leg(f"m{k}", "1", 1.45, 0.70) for k in range(8)]                   # 70% games
+    books = {"bet9ja": C.Builder(safe + sure + flips + mid)}
+    two = C.best_of(books, 2.0)
+    assert min(x["p"] for x in two) >= 0.85 and len(two) == 6               # 85%+ games, not one coin flip
+    assert sum(x["p"] > 0.9 for x in two) == 3                               # the 90% games too: better priced
+    assert all(x["p"] >= 0.90 for x in C.best_of(books, 1.3))                 # reachable with the 90% games alone
+    fifty = C.best_of(books, 50)                                              # 15 games at 1.16 only reach 9.3
+    assert fifty and len(fifty) <= C.MAX_GAMES and min(x["p"] for x in fifty) == 0.70
+    assert all(x["p"] >= 0.6 for x in C.best_of(books, 150) or [])            # coin flips never, even to reach a total
+    assert C.best_of({"bet9ja": C.Builder(safe)}, 50) is None and abs(C.Builder(safe).reach() - 1.16 ** 15) < 1e-9
+    out = C.build(books, 2.0)
+    assert out["slip"]["least"] == 0.86 and out["slip"]["n"] == 6 and out["settings"]["games"] == C.MAX_GAMES
 
 
 def test_combo_bets_follow_the_rules():
@@ -487,7 +506,7 @@ def test_combo_bets_follow_the_rules():
     row = _row(key="k", match_id="m1", odds=1.40, others=[{"book": "bet9ja", "odds": 1.40}, {"book": "betking", "odds": 1.36}])
     board = [row, {**row, "key": "k2", "market": "1X", "others": [{"book": "betking", "odds": 1.12}]},
              {**row, "key": "x", "market": "X", "others": [{"book": "betking", "odds": 2.9}]},              # no draws
-             {**row, "key": "long", "match_id": "m2", "others": [{"book": "betking", "odds": 3.4}]},         # over 3.00
+             {**row, "key": "long", "match_id": "m2", "p": 0.45, "others": [{"book": "betking", "odds": 2.2}]},  # under 60%
              {**row, "key": "stale", "match_id": "m3", "others": [{"book": "betking", "odds": 2.2}]},        # 2.2 × 0.73: 61% over fair
              {**row, "key": "late", "match_id": "m4", "t_ms": NOW + 3 * D, "others": [{"book": "betking", "odds": 1.5}]},
              {**row, "key": "old", "match_id": "m5", "sharp_age_h": 30, "others": [{"book": "betking", "odds": 1.5}]},
@@ -509,19 +528,19 @@ def test_the_combo_service_and_its_past(tmp_path):
     rt = SimpleNamespace(mode="live")
     svc = BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json")
     t = int(time.time() * 1000)
-    sharp = [_sharp(h, a, t + (5 + i) * H, oh, 4.0, 4.0, read=t, sid=f"s{i}") for i, (h, a, oh) in
-             enumerate([("Big City", "Rovers", 1.50), ("Town", "Albion", 1.80), ("United", "Villa", 2.00), ("Athletic", "Wanderers", 2.50)])]
+    sharp = [_sharp(h, a, t + (5 + i) * H, oh, 7.0, 12.0, read=t, sid=f"s{i}") for i, (h, a, oh) in
+             enumerate([("Big City", "Rovers", 1.20), ("Town", "Albion", 1.25), ("United", "Villa", 1.30), ("Athletic", "Wanderers", 1.40)])]
     svc.books = {"bet9ja": {"t_ms": t, "rows": [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"],
                                                  "odds": {"1": round(1 / s["fair"]["1"], 2)}} for s in sharp]}}
     svc._board = (time.time(), svc._gen, B.build(svc.books, sharp, [], {}, t))
-    got = asyncio.run(svc.combo(4.0, 1))
-    assert got["days"] == 1 and got["slip"] and 4.0 <= got["slip"]["odds"] <= 4.4 and got["slip"]["book"] == "bet9ja"
-    assert asyncio.run(svc.combo(4.0, 5))["days"] == 1                                 # only 1, 3 or 7 days
+    got = asyncio.run(svc.combo(2.0, 1))
+    assert got["days"] == 1 and got["slip"] and 2.0 <= got["slip"]["odds"] <= 2.2 and got["slip"]["book"] == "bet9ja"
+    assert asyncio.run(svc.combo(2.0, 5))["days"] == 1                                 # only 1, 3 or 7 days
     hist = _history(n=600)
     for g in hist:
-        g.update(B365H=g["PSH"] * 0.97, B365A=g["PSA"] * 0.97)
+        g.update(PSH=1.30, PSD=5.0, PSA=9.0, B365H=1.27, B365A=8.5)            # a home favourite every game, three a day
     past = C.past(hist)
-    three = past["3"]                                                         # three games a day here
-    assert three["n"] > 50 and 0 <= three["won"] <= three["n"] and three["se"] > 0 and 3 <= three["odds"] <= 3.3
-    assert abs(three["expected"] - three["won"]) < 4 * three["expected"] ** 0.5 + 3
+    two = past["1.5"]
+    assert two["n"] > 50 and 0 <= two["won"] <= two["n"] and two["se"] > 0 and 1.5 <= two["odds"] <= 1.65
+    assert past["200"]["n"] == 0                                              # three games a day can't reach it
     assert set(past) == {str(x) for x in C.LADDER}

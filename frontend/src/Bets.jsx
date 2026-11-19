@@ -198,7 +198,7 @@ const saved = () => {
 const chance = (p) => (p == null ? "-" : pct(p, p < 0.01 ? 2 : 1));
 
 function Combo({ stamp }) {
-  const [target, setTarget] = useState(() => saved().target || "50");
+  const [target, setTarget] = useState(() => saved().target || "10");
   const [days, setDays] = useState(() => saved().days || "1");
   const [c, setC] = useState(null);
   const t = Number(target);
@@ -226,7 +226,7 @@ function Combo({ stamp }) {
   const past = (r) => r.past && r.past.n ? r.past : null;
   return (
     <section className="panel term-wide">
-      <Top title="Combo builder" facts={c ? [`${c.bets} bets`, `odds ${odd(g.legs[0])}–${odd(g.legs[1])} a game`, "one book a slip"] : []}>
+      <Top title="Combo builder" facts={c ? [`${c.bets} bets`, `every game ${pct(g.floors[g.floors.length - 1])}+`, `up to ${g.games} games`, "one book a slip"] : []}>
         <label className="bt-target">
           <span className="muted">Total odds</span>
           <input type="number" inputMode="decimal" min="1.1" max="200" step="any" value={target} aria-invalid={!ok}
@@ -241,6 +241,7 @@ function Combo({ stamp }) {
             <div><span className="muted">Total odds</span><b className="num">{odd(s.odds)}</b></div>
             <div><span className="muted">Bookmaker</span><b>{BOOK[s.book] || s.book}</b></div>
             <div><span className="muted">Games</span><b className="num">{s.n}</b></div>
+            <div><span className="muted">Least likely game</span><b className="num">{pct(s.least, 1)}</b></div>
             <div><span className="muted">Chance of winning</span><b className="num">{chance(s.p)}</b></div>
             <div><span className="muted">Edge at this price</span><b className={`num ${tone(s.edge)}`}>{sgn(s.edge)}</b></div>
             <div><span className="muted">Last kick-off</span><b className="num">{kick(s.last_ms)}</b></div>
@@ -264,13 +265,13 @@ function Combo({ stamp }) {
       ) : (
         <p className="az-note">
           {!c.bets ? "No fresh odds from the books for games in this window right now."
-            : c.target > c.reach ? `The ${c.bets} bets in this window reach ${odd(c.reach)} at most.`
-            : `No slip lands between ${odd(c.target)} and ${odd(c.target * (1 + g.tol))} in this window.`}
+            : c.target > c.reach ? `With up to ${g.games} games, the bets in this window reach ${odd(c.reach)} at most.`
+            : `No slip of ${pct(g.floors[g.floors.length - 1])}+ games lands between ${odd(c.target)} and ${odd(c.target * (1 + g.tol))} in this window.`}
         </p>
       )}
       {c && c.bets > 0 && (
         <div className="az-scroll"><table className="az-table bt-t az-click">
-          <thead><tr><th>Target</th><th className="r">Slip</th><th className="r">Games</th><th>Book</th><th className="r">Chance of winning</th><th className="r">Edge</th>
+          <thead><tr><th>Target</th><th className="r">Slip</th><th className="r">Games</th><th className="r">Least likely game</th><th>Book</th><th className="r">Chance of winning</th><th className="r">Edge</th>
             <th className="r" title="One slip a day on three seasons of past games, at Bet365's prices">Past slips won</th>
             <th className="r" title="One slip a day on three seasons of past games, at Bet365's prices">Past return</th></tr></thead>
           <tbody>
@@ -282,6 +283,7 @@ function Combo({ stamp }) {
                   <td className="num">{r.target}</td>
                   <td className="r num">{r.n ? odd(r.odds) : "-"}</td>
                   <td className="r num">{r.n || "-"}</td>
+                  <td className="r num">{r.n ? pct(r.least, 1) : "-"}</td>
                   <td>{r.n ? BOOK[r.book] || r.book : "-"}</td>
                   <td className="r num">{r.n ? chance(r.p) : "-"}</td>
                   <td className={`r num ${r.n ? tone(r.edge) : ""}`}>{r.n ? sgn(r.edge) : "-"}</td>
