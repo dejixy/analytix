@@ -238,7 +238,7 @@ async def bets_combo_code(request: Request, target: float = 10, days: int = 1, l
 async def bets_code_jobs(request: Request):
     """For the laptop collector: SportyBet slips waiting for a booking code."""
     try:
-        return _rt(request).bets.code_jobs(request.headers.get("x-bets-token", ""))
+        return _rt(request).bets.code_jobs(request.headers.get("x-bets-token", ""), bool(request.scope.get("analytix_public")))
     except PermissionError as exc:
         raise HTTPException(403, str(exc))
 
@@ -251,20 +251,23 @@ async def bets_code_done(request: Request):
     except ValueError:
         raise HTTPException(400, "send JSON")
     try:
-        return _rt(request).bets.code_done(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""))
+        return _rt(request).bets.code_done(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""),
+                                           bool(request.scope.get("analytix_public")))
     except PermissionError as exc:
         raise HTTPException(403, str(exc))
 
 
 @router.post("/bets/odds")
 async def bets_odds(request: Request):
-    """Nigerian bookmakers' odds, pushed from a laptop in Nigeria by scripts/naijaOdds.py."""
+    """Nigerian bookmakers' odds, pushed from a laptop in Nigeria by scripts/naijaOdds.py (through the SSH tunnel, or
+    through the public link when ANALYTIX_BETS_TOKEN is set)."""
     try:
         payload = await request.json()
     except ValueError:
         raise HTTPException(400, "send JSON")
     try:
-        return await _rt(request).bets.push(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""))
+        return await _rt(request).bets.push(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""),
+                                            bool(request.scope.get("analytix_public")))
     except PermissionError as exc:
         raise HTTPException(403, str(exc))
     except ValueError as exc:

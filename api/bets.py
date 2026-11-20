@@ -28,6 +28,7 @@ seconds (GET /api/bets/code-jobs), books the slip on SportyBet and sends the cod
 code is kept for its slip until SportyBet's deadline; at most CODES_AN_HOUR new ones are asked for an hour.
 """
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -256,13 +257,17 @@ class BetsService:
 
     # ── odds from the laptop ──────────────────────────────────────────────
     @staticmethod
-    def _check(token: str) -> None:
+    def _check(token: str, public: bool = False) -> None:
+        """The collector's token. Through the public link the server must have one set: without it the push and the
+        code queue only answer through the SSH tunnel."""
         want = os.getenv("ANALYTIX_BETS_TOKEN", "")
-        if want and token != want:
+        if public and not want:
+            raise PermissionError("set ANALYTIX_BETS_TOKEN on the server (bash scripts/run.sh token) to send through the link")
+        if want and not hmac.compare_digest(str(token or "").encode(), want.encode()):
             raise PermissionError("wrong or missing X-Bets-Token")
 
-    async def push(self, payload: dict, token: str = "") -> dict:
-        self._check(token)
+    async def push(self, payload: dict, token: str = "", public: bool = False) -> dict:
+        self._check(token, public)
         book, rows = F.parse_push(payload)
         if not book:
             raise ValueError("no book named")
@@ -445,15 +450,15 @@ class BetsService:
     def _job_view(j: dict) -> dict:
         return {k: j.get(k) for k in ("status", "code", "url", "deadline_ms", "missing", "games", "odds", "why")}
 
-    def code_jobs(self, token: str = "") -> list[dict]:
+    def code_jobs(self, token: str = "", public: bool = False) -> list[dict]:
         """For the collector: the slips waiting for a code."""
-        self._check(token)
+        self._check(token, public)
         self._expire_codes(time.time())
         return [{"id": j["id"], "selections": j["selections"]} for j in self.codes.values() if j["status"] == "waiting"]
 
-    def code_done(self, payload: dict, token: str = "") -> dict:
+    def code_done(self, payload: dict, token: str = "", public: bool = False) -> dict:
         """From the collector: SportyBet's answer for a slip ({id, code, url, deadline_ms, missing} or {id, error})."""
-        self._check(token)
+        self._check(token, public)
         j = self.codes.get(str(payload.get("id") or ""))
         if not j:
             return {"ok": False}
