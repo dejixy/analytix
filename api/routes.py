@@ -231,7 +231,7 @@ async def bets_combo(request: Request, target: float = 10, days: int = 1, least:
 @router.get("/bets/combo/code")
 async def bets_combo_code(request: Request, target: float = 10, days: int = 1, least: float = 0):
     """A SportyBet booking code for the combo builder's SportyBet slip at these settings (made on the laptop)."""
-    return await _rt(request).bets.combo_code(target, days, least or None)
+    return await _rt(request).bets.combo_code(target, days, least or None, bool(request.scope.get("analytix_public")))
 
 
 @router.get("/bets/code-jobs")
