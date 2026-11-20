@@ -144,7 +144,7 @@ BOARD = [
      "next": "Test whether sharp yen moves lead crypto over the next hours, on Hyperliquid's own yen history."},
     {"key": "holders", "name": "HYPE holder map", "markets": "HYPE",
      "idea": "Who holds HYPE and how each group behaves. The 7-day unstaking queue is the warning a holder may sell.",
-     "next": "Unstaking waves failed as a warning. Name the five wallets holding 128M HYPE (run.sh top); keep the "
+     "next": "Unstaking waves failed as a warning. Name the five wallets holding 128M HYPE; keep the "
              "unlock calendar as context, not a signal."},
     {"key": "btc_est", "name": "BTC estimate", "markets": "BTC",
      "idea": "ETF flows, treasury-company buying, Strategy's premium and the order book in one equation for BTC's "
