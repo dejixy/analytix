@@ -133,6 +133,10 @@ export default function Header({ snap, conn, onCoin, onPlan, onAlerts, onPositio
         <button className="alerts-open" onClick={onHold} title="Very high leverage: how long a position like yours survives, measured on the real best bid and ask">
           Hold clock
         </button>
+        <a className="alerts-open term-link" href={`/sentiment?coin=${snap?.coin || "BTC"}`}
+          title="Sentiment check: when the market looked like it does now, what price did next, over five years">
+          Sentiment
+        </a>
         <button className="alerts-open" onClick={onPositions} title="Paste a wallet to see its open positions with live liquidation odds">
           Positions
         </button>

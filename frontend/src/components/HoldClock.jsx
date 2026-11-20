@@ -68,12 +68,15 @@ export default function HoldClock({ coins, defaultCoin, onClose }) {
   const curveAll = d?.survival || [];
   const enough = curveAll.some((c) => c.survive != null);
   const r = d?.race;
+  const years = d?.years?.some((y) => y.survive != null) ? d.years : null;
+  const leanRow = years?.find((y) => y.p_up != null);
 
   return (
     <div className="planner-scrim" onClick={onClose}>
       <aside className="planner" role="dialog" aria-label="Hold clock" onClick={(e) => e.stopPropagation()}>
         <div className="panel-head">
           <h2 className="panel-title">Hold clock</h2>
+          <a className="plan-link" href={`/sentiment?coin=${coin}`}>Sentiment check ›</a>
           <button className="plan-close" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
@@ -130,6 +133,14 @@ export default function HoldClock({ coins, defaultCoin, onClose }) {
               </div>
             </div>
 
+            {leanRow && (
+              <p className="plan-note">
+                Over the years, like now, {d.coin} finished the next {hLabel(leanRow.horizon)} higher{" "}
+                <b className={leanRow.p_up > leanRow.base_p_up ? "up" : "down"}>{chance(leanRow.p_up)}</b> of the time (usually {chance(leanRow.base_p_up)}),
+                a lean that held up on later years.
+              </p>
+            )}
+
             {position(d, side)}
 
             <section className="plan-sec">
@@ -138,15 +149,18 @@ export default function HoldClock({ coins, defaultCoin, onClose }) {
                 <p className="plan-note">Still learning: it needs a few minutes of the live book to start, and gets steadier as it builds up 24 hours.</p>
               ) : (
                 <table className="plan-table">
-                  <thead><tr><th>Hold</th><th title="Only starts whose last 5 minutes moved about as much as the last 5 minutes have">Like now</th><th>Last {Math.max(1, Math.round(d.history_s / 3600))}h</th></tr></thead>
+                  <thead><tr><th>Hold</th><th title="Only starts whose last 5 minutes moved about as much as the last 5 minutes have">Like now</th><th>Last {Math.max(1, Math.round(d.history_s / 3600))}h</th>
+                    {years && <th title="Sentiment Check: the years of Binance candles when the market looked like now (volatility, news, the move so far, volume, session, flow). Trade prices, so a little kinder than the best bid">Years, like now</th>}</tr></thead>
                   <tbody>
                     {curveAll.map((c, i) => {
                       const n = curveNow[i];
+                      const y = years?.find((r) => r.horizon === c.horizon);
                       return (
                         <tr key={c.horizon}>
                           <td>{hLabel(c.horizon)}</td>
                           <td className={band(n?.survive)}><b>{n?.survive == null ? "-" : chance(n.survive)}</b></td>
                           <td className={band(c.survive)}>{c.survive == null ? "-" : chance(c.survive)}</td>
+                          {years && <td className={band(y?.survive)} title={y?.n ? `${y.n.toLocaleString()} past cases; usually ${chance(y.base)}` : ""}>{y?.survive == null ? "-" : chance(y.survive)}</td>}
                         </tr>
                       );
                     })}

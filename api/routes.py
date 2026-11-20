@@ -397,6 +397,21 @@ async def hold(request: Request, coin: str | None = None, side: str = "long",
     return await rt.hold.read(coin, 1 if side == "long" else -1, leverage, target_pct, entry, bust, buffer_bps)
 
 
+# ── sentiment check (five years of "when it looked like this") ───────────────
+@router.get("/sentiment")
+async def sentiment(request: Request, coin: str = "BTC"):
+    """What price did next, from 10 seconds to 24 hours, when the market looked like it does now: cases, how many
+    finished higher, the move's spread, dips and rises, which conditions were matched and whether the lean held up on
+    later years."""
+    coin = coin.upper()
+    if not coin.isalnum() or len(coin) > 12:
+        raise HTTPException(400, "coin: letters and digits only")
+    try:
+        return await _rt(request).sentiment.read(coin)
+    except Exception as exc:                                           # noqa: BLE001 - Binance and Bybit both down
+        raise HTTPException(503, f"Couldn't read the market right now ({type(exc).__name__}).") from exc
+
+
 # ── the bot: baskets of strategies ─────────────────────────────────────────
 def _bot_call(fn, *args):
     from api.bot import BotError

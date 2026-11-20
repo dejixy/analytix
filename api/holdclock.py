@@ -176,6 +176,8 @@ class HoldClock:
         g = self.grid(coin)
         out = await asyncio.to_thread(self._compute, g, side, leverage, target_pct, entry, bust, buffer_bps, live, coin)
         out["live"] = live
+        sc = getattr(self.rt, "sentiment", None)
+        out["years"] = await sc.hold(coin, side, out["dist_bps"]) if sc is not None else None
         out["coin"], out["side"], out["leverage"] = coin, side, leverage
         self._cache[key] = (time.time(), out)
         if len(self._cache) > 200:

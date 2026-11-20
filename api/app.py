@@ -60,6 +60,11 @@ def create_app(mode: str = MODE, replay_file: Path = REPLAY_FILE, speed: float =
             """The Analyzer: the same build again."""
             return FileResponse(FRONTEND_DIST / "index.html")
 
+        @app.get("/sentiment", include_in_schema=False)
+        async def sentiment_page():
+            """Sentiment Check: the same build."""
+            return FileResponse(FRONTEND_DIST / "index.html")
+
         app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
     return app
 
