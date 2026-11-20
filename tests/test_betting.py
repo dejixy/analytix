@@ -529,7 +529,8 @@ def test_combo_bets_follow_the_rules():
     out = C.build(sv, 1.38)
     assert out["slip"]["book"] == "bet9ja" and out["slip"]["n"] == 1 and out["slip"]["odds"] == 1.40   # the better price
     assert out["bets"] == 3 and out["books"] == ["bet9ja", "betking"] and len(out["ladder"]) == len(C.LADDER)
-    assert C.build(sv, 500)["target"] == C.T_MAX and C.build(sv, 0)["target"] == C.T_MIN
+    assert C.build(sv, 5000)["target"] == C.T_MAX == 1000 and C.build(sv, 0)["target"] == C.T_MIN
+    assert C.build(sv, 500)["settings"]["games"] == 20 and C.build(sv, 50)["settings"]["games"] == 15
 
 
 def test_the_combo_service_and_its_past(tmp_path):
@@ -838,3 +839,15 @@ def test_the_collector_reads_the_combo_markets():
                     "S_OUCORNERS@20.5_U": "1.01", "S_1X2_1": "1.3"})
     assert b9 == {"DNB1": 1.09, "O15": 1.14, "HO05": 1.05, "AU15": 1.25, "GG": 1.9, "1|O15": 1.04, "2|O25": 1.4, "CU95": 2.0}
     assert all(B.kind(k) for k in [*b9, *row["more"]])                       # the server knows every code it's sent
+
+
+def test_a_thousand_odds_slip():
+    from engine import combos as C
+    bets = [_leg(f"a{k}", "1", 1.50, 0.67) for k in range(25)] + [_leg(f"b{k}", "1", 1.41, 0.72) for k in range(25)]
+    books = {"sportybet": C.Builder(bets)}
+    big = C.best_of(books, 1000)
+    total = math.prod(x["odds"] for x in big)
+    assert 1000 <= total <= 1100 and 15 < len(big) <= 20                       # over 200: up to 20 games
+    assert books["sportybet"].reach(15) < 1000 < books["sportybet"].reach(20)
+    out = C.build(books, 1000)
+    assert out["slip"]["n"] == len(big) and [r["target"] for r in out["ladder"]][-2:] == [500, 1000]

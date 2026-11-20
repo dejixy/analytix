@@ -223,7 +223,7 @@ async def bets(request: Request):
 
 @router.get("/bets/combo")
 async def bets_combo(request: Request, target: float = 10, days: int = 1, least: float = 0, book: str = "", markets: str = ""):
-    """The combo builder: the best accumulator for a total-odds target (1.1 to 200) over the next 1, 3 or 7 days, safest
+    """The combo builder: the best accumulator for a total-odds target (1.1 to 1,000) over the next 1, 3 or 7 days, safest
     games first (least=0) or with every game at least `least` likely (0.60 to 0.90)."""
     return await _rt(request).bets.combo(target, days, least or None, book.strip().lower()[:20] or None, _kinds(markets))
 

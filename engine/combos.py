@@ -1,7 +1,7 @@
 """
-The combo builder (/bets "Combo builder", GET /api/bets/combo): the best accumulator for a total-odds target, 1.1 to 200.
+The combo builder (/bets "Combo builder", GET /api/bets/combo): the best accumulator for a total-odds target, 1.1 to 1,000.
 
-A slip goes on one bookmaker, with at most one bet a game and at most 15 games, and its total lands from the target to
+A slip goes on one bookmaker, with at most one bet a game and at most 15 games (20 for a target over 200), and its total lands from the target to
 10% above it. The chances are Pinnacle's, as everywhere on the page.
 
 Safest games first (the default): the builder asks for every game on the slip to be 90% likely, and if no slip reaches
@@ -36,12 +36,16 @@ from engine import betstudy as S
 
 STEP = 0.001
 TOL = 0.10                                   # a slip may come out up to 10% above the target
-T_MIN, T_MAX = 1.1, 200.0
+T_MIN, T_MAX = 1.1, 1000.0
 LEG_MIN = 1.10
 FLOORS = (0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60)   # every game on the slip at least this likely, safest first
-MAX_GAMES = 15
+MAX_GAMES, MAX_GAMES_BIG, BIG = 15, 20, 200      # a target over BIG may use up to 20 games
+
+
+def games_cap(target: float) -> int:
+    return MAX_GAMES_BIG if target > BIG else MAX_GAMES
 HAIRCUT, HAIRCUT_LOW, HAIRCUT_CORNERS = 0.01, 0.02, 0.04
-LADDER = (1.5, 2, 3, 5, 10, 20, 50, 100, 200)
+LADDER = (1.5, 2, 3, 5, 10, 20, 50, 100, 200, 500, 1000)
 DAYS = (1, 3, 7)
 
 
@@ -151,14 +155,14 @@ class Builder:
     def find(self, target: float, floor: float) -> list[dict] | None:
         if floor not in self._at:
             self._at[floor] = Solver([x for x in self.bets if chance(x) >= floor], self.top)
-        return self._at[floor].find(target, max_n=MAX_GAMES)
+        return self._at[floor].find(target, max_n=games_cap(target))
 
-    def reach(self) -> float:
-        """The biggest total of at most MAX_GAMES games: the longest price of each game, the longest of those."""
+    def reach(self, cap: int = MAX_GAMES) -> float:
+        """The biggest total of at most `cap` games: the longest price of each game, the longest of those."""
         top: dict = {}
         for x in self.bets:
             top[x["match_id"]] = max(top.get(x["match_id"], 1.0), x["odds"])
-        return math.prod(sorted(top.values(), reverse=True)[:MAX_GAMES]) if top else 1.0
+        return math.prod(sorted(top.values(), reverse=True)[:cap]) if top else 1.0
 
 
 def value(s: list[dict]) -> float:
@@ -215,9 +219,9 @@ def build(solvers: dict[str, Builder], target: float, past: dict | None = None, 
     top = max(done, key=lambda r: r["edge"]) if done else None
     return {"target": target, "least": least, "slip": slip(s) if s else None, "ladder": ladder,
             "best_target": top["target"] if top else None,
-            "reach": max((sv.reach() for sv in solvers.values()), default=1.0),
+            "reach": max((sv.reach(games_cap(target)) for sv in solvers.values()), default=1.0),
             "bets": sum(sv.n for sv in solvers.values()), "books": every, "book": book or None,
-            "settings": {"leg_min": LEG_MIN, "floors": list(FLOORS), "games": MAX_GAMES, "tol": TOL, "range": [T_MIN, T_MAX],
+            "settings": {"leg_min": LEG_MIN, "floors": list(FLOORS), "games": games_cap(target), "tol": TOL, "range": [T_MIN, T_MAX],
                          "haircut": [HAIRCUT, HAIRCUT_LOW]}}
 
 
