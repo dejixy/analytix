@@ -99,7 +99,7 @@ export default function Sentiment() {
         {d?.history?.long && <span className="muted">5-minute to 24-hour reads from {day(d.history.long.from)}; 10-second to 2-minute from {day(d.history.short?.from)}</span>}
       </div>
       {!d && <div className="term-boot" role="status"><div>&gt; {error || "reading the market"}<span className="cursor" aria-hidden="true" /></div></div>}
-      {d?.missing && <p className="az-note">No tables for {coin} yet. Build them on the server: bash ~/analytix/scripts/run.sh sentiment</p>}
+      {d?.missing && <p className="az-note">{coin}'s history is still being read. Its numbers appear here when it's done.</p>}
       {d?.offline && <p className="az-note">Sentiment Check reads the live market, so it runs in live mode only.</p>}
       {hs.length > 0 && (
         <div className="term-grid">
