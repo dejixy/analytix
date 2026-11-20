@@ -289,7 +289,7 @@ function Combo({ stamp, pub }) {
   const flip = (k) => setKinds((ks) => (ks.includes(k) ? (ks.length > 1 ? ks.filter((x) => x !== k) : ks) : ALL_KINDS.filter((x) => x === k || ks.includes(x))));
   const [c, setC] = useState(null);
   const t = Number(target);
-  const ok = t >= 1.1 && t <= 200;
+  const ok = t >= 1.1 && t <= 1000;
   useEffect(() => {
     try {
       localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds }));
@@ -317,9 +317,9 @@ function Combo({ stamp, pub }) {
       <Top title="Combo builder" facts={c ? [`${c.bets} bets`, c.least ? `every game ${pct(c.least)}+` : "safest games first", `up to ${g.games} games`, "one book a slip"] : []}>
         <label className="bt-target">
           <span className="muted">Total odds</span>
-          <input type="number" inputMode="decimal" min="1.1" max="200" step="any" value={target} aria-invalid={!ok}
+          <input type="number" inputMode="decimal" min="1.1" max="1000" step="any" value={target} aria-invalid={!ok}
             onChange={(e) => setTarget(e.target.value)}
-            onBlur={() => setTarget(String(Math.min(200, Math.max(1.1, Number(target) || 1.1))))} />
+            onBlur={() => setTarget(String(Math.min(1000, Math.max(1.1, Number(target) || 1.1))))} />
         </label>
         <label className="bt-target">
           <span className="muted">Each game</span>
