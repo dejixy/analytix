@@ -29,3 +29,4 @@ data/vaults/
 data/*_live.json
 data/bot_degen.json
 scripts/naijaOdds.json
+data/longhist/
