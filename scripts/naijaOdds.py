@@ -12,6 +12,10 @@ Standalone: it needs only Python 3.10+ and one package, not the rest of Analytix
 Options: --every 20 (minutes), --server http://localhost:8000, --books bet9ja,betking,nairabet,sportybet.
 If ANALYTIX_BETS_TOKEN is set on the server, set the same value here (or pass --token).
 
+Without the tunnel: send to the public link instead. On the server, `bash scripts/run.sh token` makes the token and
+prints the command; run it once with --save (it remembers the link and token in naijaOdds.json beside this script) and
+from then on `python naijaOdds.py --loop` is enough, on the laptop or on a phone that stays on (Termux on Android).
+
 More competitions: NaijaBet_Api only knows ten club leagues, so for Bet9ja this also finds, in Bet9ja's own list of
 competitions, the Champions League, Europa League and Conference League, the Eredivisie, Portugal's, Scotland's,
 Belgium's, Turkey's and Greece's top leagues, and the international competitions (Nations League, qualifiers,
@@ -469,17 +473,34 @@ def once(args) -> None:
         except urllib.error.HTTPError as exc:
             print(f"  {book}: {len(rows)} games read, but the server refused them (HTTP {exc.code}: {exc.read().decode()[:120]})")
         except OSError as exc:                                    # refused, timed out, tunnel down
-            print(f"  {book}: {len(rows)} games read, but the server didn't answer ({type(exc).__name__}: {exc})."
-                  " Is the tunnel (ssh -N analytix) open? Restart it if the laptop slept or changed network")
+            print(f"  {book}: {len(rows)} games read, but the server didn't answer ({type(exc).__name__}: {exc})." + (
+                  " Is the link address still right? It changes when the link restarts: on the server,"
+                  " bash ~/analytix/scripts/run.sh token prints the current one; run that command here again"
+                  if args.server.startswith("https://") else
+                  " Is the tunnel (ssh -N analytix) open? Restart it if the laptop slept or changed network"))
+
+
+SAVED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naijaOdds.json")
+
+
+def saved() -> dict:
+    try:
+        with open(SAVED, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
 
 
 def main() -> None:
+    keep = saved()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--every", type=float, default=20)
-    ap.add_argument("--server", default="http://localhost:8000")
+    ap.add_argument("--server", default=keep.get("server") or "http://localhost:8000",
+                    help="the public link (https://….trycloudflare.com) or the tunnel (http://localhost:8001)")
     ap.add_argument("--books", default="bet9ja,betking,nairabet,sportybet")
-    ap.add_argument("--token", default=os.getenv("ANALYTIX_BETS_TOKEN", ""))
+    ap.add_argument("--token", default=keep.get("token") or os.getenv("ANALYTIX_BETS_TOKEN", ""))
+    ap.add_argument("--save", action="store_true", help="remember --server and --token in naijaOdds.json beside this script")
     ap.add_argument("--no-intl", action="store_true", help="leave out Bet9ja's international competitions")
     ap.add_argument("--no-extra", action="store_true", help="only NaijaBet_Api's ten leagues: no cups, extra leagues or internationals")
     ap.add_argument("--bet9ja-groups", default="", help="Bet9ja competition ids (or their addresses), comma-separated")
@@ -488,6 +509,14 @@ def main() -> None:
     args = ap.parse_args()
     if args.try_code:
         return try_code()
+    args.server = args.server.rstrip("/")
+    if args.server.endswith("/bets"):                             # the page's address pasted as is
+        args.server = args.server[:-len("/bets")]
+    if args.save:
+        with open(SAVED, "w", encoding="utf-8") as fh:
+            json.dump({"server": args.server, "token": args.token}, fh)
+        print(f"saved: from now on just run  python naijaOdds.py --loop  (sending to {args.server})")
+    print(f"sending to {args.server}" + (" with a token" if args.token else ""))
     args.bet9ja_groups = [int(re.findall(r"\d+", g)[-1]) for g in args.bet9ja_groups.split(",") if re.findall(r"\d+", g)]
     if args.find and "--books" not in sys.argv:
         args.books = "bet9ja"
