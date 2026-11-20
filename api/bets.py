@@ -10,6 +10,8 @@ The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live m
                    Over/under 2.5 goals comes only from football-data's fixtures (Pinnacle's, else the market average),
                    added to the same game when The Odds API has its win prices: free, but read a day or two before
                    kick-off, so goals bets need the higher 3% edge
+    models         with the history read: the goals model's Dixon-Coles correction and how it and the corners model
+                   did on past games (engine/goals.py, engine/corners.py), and the corners model as it stands
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
     paper book     every ten minutes: new flat value bets are booked at a flat stake, today's rollover pick is made once
@@ -506,7 +508,8 @@ class BetsService:
                         pats.append({"kind": kind, "market": m, "name": B.MARKET_NAME[m], "odds": [round(1 / hi, 2), round(1 / lo, 2)],
                                      "n": c[0], "rate": c[1] / c[0], "implied": c[2] / c[0]})
         return {"now_ms": now, "enabled": self.rt.mode == "live",
-                "value": [{**x, "rule": B.rule_of(x)} for x in B.value_bets(board)[:60]], "board_n": len(board),
+                "value": [{**x, "rule": B.rule_of(x)} for x in B.value_bets(board)[:60]],
+                "board_n": sum(1 for x in board if x["market"] in B.CORE),
                 "book_days": B.BOOK_DAYS, "show_days": B.SHOW_DAYS,
                 "matched": {k: self._matched(k) for k in self.books},
                 "next_kick": min((x["t_ms"] for x in board), default=None),
