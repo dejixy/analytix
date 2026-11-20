@@ -32,6 +32,11 @@ SportyBet booking codes: SportyBet only answers Nigerian addresses, so the combo
 or stake: the same "book bet" its website has) and sends the code back. --try-code makes one code for a single bet and
 prints SportyBet's answer, to check it works.
 
+The combo builder's other markets (draw no bet, over/under 0.5 to 4.5, each team's goals, both teams to score, a
+result or over x, total corners) are read from SportyBet (markets 11, 18, 19, 20, 29 and 166) and from whatever of them
+Bet9ja's competition lists carry (S_DNB, S_OU, S_HAOU, S_GGNG, S_CHANCEMIXOU, S_CHANCEMIXGGOU, S_OUCORNERS), and sent
+under the server's own codes; each read says how many games had them.
+
 Over/under 2.5 goals: read from Bet9ja (its feed carries it beside the win prices; NaijaBet_Api drops it, so it's taken
 from the same replies) and SportyBet. Each read says how many games had it; --find also saves one Bet9ja competition's
 reply to bet9ja_group_sample.json.
@@ -130,6 +135,41 @@ class Group:
 B9_ODDS = {"home": "S_1X2_1", "draw": "S_1X2_X", "away": "S_1X2_2", "home_or_draw": "S_DC_1X", "home_or_away": "S_DC_12",
            "draw_or_away": "S_DC_X2", "over_2_5": "S_OU@2.5_O", "under_2_5": "S_OU@2.5_U"}
 GOAL_KEYS = ("over_2_5", "under_2_5")
+# The combo builder's other markets, sent under the server's own codes (engine/goals.py, engine/corners.py)
+MORE = re.compile(r"^(DNB[12]|[OU][0-4]5|[HA][OU][0-2]5|GG|NG|[12X]\|O[12]5|C[OU](?:[5-9]|1[0-4])5)$")
+
+
+def b9_more(o: dict) -> dict:
+    """Bet9ja's keys for the combo builder's other markets, as the server's codes: draw no bet (S_DNB), over/under
+    0.5-4.5 (S_OU), each team's goals (S_HAOU), both score (S_GGNG), a result or over x (S_CHANCEMIXOU at 1.5,
+    S_CHANCEMIXGGOU at 2.5) and total corners (S_OUCORNERS)."""
+    out = {}
+    for k, v in o.items():
+        m = re.match(r"^S_([A-Z]+)(?:@([0-9.]+))?_(\w+)$", str(k))
+        if not m:
+            continue
+        name, line, res = m.group(1), m.group(2), m.group(3)
+        half = re.fullmatch(r"(\d+)\.5", line or "")
+        n = half.group(1) if half else None
+        code = None
+        if name == "DNB" and res in ("1", "2"):
+            code = f"DNB{res}"
+        elif name == "OU" and n and int(n) <= 4 and res in ("O", "U") and n != "2":
+            code = f"{res}{n}5"
+        elif name == "HAOU" and n and int(n) <= 2 and res in ("OH", "UH", "OA", "UA"):
+            code = f"{res[1]}{res[0]}{n}5"
+        elif name == "GGNG" and res in ("Y", "N"):
+            code = "GG" if res == "Y" else "NG"
+        elif name in ("CHANCEMIXOU", "CHANCEMIXGGOU") and n in ("1", "2") and res in ("1orOv", "2orOv", "XorOv"):
+            code = f"{res[0]}|O{n}5" if (name == "CHANCEMIXOU") == (n == "1") else None
+        elif name == "OUCORNERS" and n and 5 <= int(n) <= 14 and res in ("O", "U"):
+            code = f"C{res}{n}5"
+        try:
+            if code and MORE.match(code) and float(v) > 1:
+                out[code] = float(v)
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 def bet9ja_rows(data: dict) -> list[dict]:
@@ -150,7 +190,8 @@ def bet9ja_rows(data: dict) -> list[dict]:
             except (TypeError, ValueError):
                 pass
         if e.get("DS") and odds:
-            out.append({"match": e["DS"], "league": e.get("GN") or "", "time": int(t.timestamp()), "match_id": e.get("ID"), **odds})
+            out.append({"match": e["DS"], "league": e.get("GN") or "", "time": int(t.timestamp()), "match_id": e.get("ID"),
+                        "more": b9_more(o), **odds})
     return out
 
 
@@ -204,43 +245,61 @@ SPORTY = {"Premier League": 17, "Championship": 18, "League One": 24, "League Tw
           "Bundesliga": 35, "Ligue 1": 34, "Eredivisie": 37, "Liga Portugal": 238, "Premiership": 36, "Pro League": 38,
           "Super Lig": 52, "Super League 1": 185, "Champions League": 7, "Europa League": 679, "Conference League": 34480}
 SPORTY_EVENTS = "https://www.sportybet.com/api/ng/factsCenter/pcEvents"
-SPORTY_UPCOMING = ("https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents?sportId=sr%3Asport%3A1&marketId=1%2C10%2C18"
+SPORTY_UPCOMING = ("https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents?sportId=sr%3Asport%3A1&marketId=1%2C10%2C11%2C18%2C19%2C20%2C29%2C166"
                    "&pageSize=100&pageNum={page}&option=1")
 SPORTY_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
                   "Accept": "application/json", "Content-Type": "application/json", "Referer": "https://www.sportybet.com/ng/",
                   "clientid": "web", "platform": "web"}
 SPORTY_SHARE = "https://www.sportybet.com/api/ng/orders/share"
-SPORTY_IDS = {"1": {"1": "home", "2": "draw", "3": "away"}, "10": {"9": "home_or_draw", "10": "home_or_away", "11": "draw_or_away"},
-              "18": {"12": "over_2_5", "13": "under_2_5"}}                # over/under, only its total=2.5 line
+SPORTY_IDS = {"1": {"1": "home", "2": "draw", "3": "away"}, "10": {"9": "home_or_draw", "10": "home_or_away", "11": "draw_or_away"}}
+SPORTY_MARKETS = "1,10,11,18,19,20,29,166"      # 1X2, double chance, draw no bet, over/under, home/away goals, GG/NG, corners
+
+
+def sporty_more(mid: str, spec: str, oid: str, desc: str) -> str | None:
+    """A SportyBet outcome as a key the server knows: over_2_5 / under_2_5, or one of the combo builder's codes."""
+    spec, d = spec.replace(" ", ""), desc.strip().lower()
+    half = re.fullmatch(r"total=(\d+)\.5", spec)
+    n = half.group(1) if half else None
+    side = "O" if oid == "12" or d.startswith("over") else "U" if oid == "13" or d.startswith("under") else None
+    if mid == "18" and n and side and int(n) <= 4:
+        return ("over_2_5" if side == "O" else "under_2_5") if n == "2" else f"{side}{n}5"
+    if mid in ("19", "20") and n and side and int(n) <= 2:
+        return f"{'H' if mid == '19' else 'A'}{side}{n}5"
+    if mid == "11":
+        return "DNB1" if oid == "4" or d in ("home", "1") else "DNB2" if oid == "5" or d in ("away", "2") else None
+    if mid == "29":
+        return "GG" if oid == "74" or d == "yes" else "NG" if oid == "76" or d == "no" else None
+    if mid == "166" and n and side and 5 <= int(n) <= 14:
+        return f"C{side}{n}5"
+    return None
 SPORTY_DESC = {"home": "home", "1": "home", "draw": "draw", "x": "draw", "away": "away", "2": "away",
                "home or draw": "home_or_draw", "1x": "home_or_draw", "1/x": "home_or_draw",
                "home or away": "home_or_away", "12": "home_or_away", "1/2": "home_or_away",
-               "draw or away": "draw_or_away", "x2": "draw_or_away", "x/2": "draw_or_away",
-               "over 2.5": "over_2_5", "under 2.5": "under_2_5"}
+               "draw or away": "draw_or_away", "x2": "draw_or_away", "x/2": "draw_or_away"}
 
 
 def sporty_rows(data, league: str = "") -> list[dict]:
     """Every match in a SportyBet reply, whatever its nesting: a node with homeTeamName and awayTeamName is a match, its
-    markets "1" (1X2), "10" (double chance) and "18" at total=2.5 (over/under 2.5 goals) give the odds."""
+    markets "1" (1X2) and "10" (double chance) give the win prices, and the rest of SPORTY_MARKETS the combo builder's."""
     out = []
 
     def walk(x, lg):
         if isinstance(x, dict):
             lg = x.get("name") if isinstance(x.get("name"), str) and isinstance(x.get("events"), list) else lg
             if x.get("homeTeamName") and x.get("awayTeamName"):
-                odds, sel = {}, {}
+                odds, sel, more = {}, {}, {}
                 for m in x.get("markets") or []:
-                    if str(m.get("id")) == "18" and str(m.get("specifier") or "").replace(" ", "") != "total=2.5":
-                        continue
-                    ids = SPORTY_IDS.get(str(m.get("id")), {})
+                    mid = str(m.get("id"))
+                    ids = SPORTY_IDS.get(mid, {})
                     for o in m.get("outcomes") or []:
                         if o.get("isActive") == 0:
                             continue
                         k = ids.get(str(o.get("id"))) or (SPORTY_DESC.get(str(o.get("desc", "")).strip().lower())
-                                                          if str(m.get("id")) in SPORTY_IDS else None)
+                                                          if mid in SPORTY_IDS else None)
+                        k = k or sporty_more(mid, str(m.get("specifier") or ""), str(o.get("id")), str(o.get("desc") or ""))
                         try:
                             if k and float(o.get("odds")) > 1:
-                                odds[k] = float(o["odds"])
+                                (more if MORE.match(k) else odds)[k] = float(o["odds"])
                                 sel[k] = {"event": x.get("eventId"), "market": str(m.get("id")),
                                           "specifier": str(m.get("specifier") or ""), "outcome": str(o.get("id"))}
                         except (TypeError, ValueError):
@@ -248,7 +307,7 @@ def sporty_rows(data, league: str = "") -> list[dict]:
                 t = x.get("estimateStartTime")
                 if odds and t:
                     out.append({"match": f"{x['homeTeamName']} - {x['awayTeamName']}", "time": int(t) / 1000,
-                                "league": lg or "", "match_id": x.get("eventId"), "sporty_ids": sel, **odds})
+                                "league": lg or "", "match_id": x.get("eventId"), "sporty_ids": sel, "more": more, **odds})
                 return
             for v in x.values():
                 walk(v, lg)
@@ -266,7 +325,7 @@ def read_sportybet(find: bool = False) -> list[dict]:
     s.headers.update(SPORTY_HEADERS)
     rows, failed, sample = [], [], None
     for name, tid in SPORTY.items():
-        body = [{"sportId": "sr:sport:1", "marketId": "1,10,18", "tournamentId": [[f"sr:tournament:{tid}"]]}]
+        body = [{"sportId": "sr:sport:1", "marketId": SPORTY_MARKETS, "tournamentId": [[f"sr:tournament:{tid}"]]}]
         try:
             r = s.post(SPORTY_EVENTS, json=body, timeout=30)
             r.raise_for_status()
@@ -413,6 +472,7 @@ def read_book(name: str, intl: bool = True, extra: list[int] | None = None, find
         if not teams or not r.get("time"):
             continue
         odds = {k: r.get(k) for k in KEYS if r.get(k)}
+        odds.update({k: v for k, v in (r.get("more") or {}).items() if MORE.match(k)})
         if odds:
             row = {"home": teams[0], "away": teams[1], "t_ms": int(float(r["time"]) * 1000),
                    "league": str(r.get("league") or ""), "odds": odds}
@@ -431,6 +491,8 @@ def keep_goals(bk, into: dict, find: bool = False) -> None:
     def normalizer(data):
         for r in bet9ja_rows(data):
             got = {k: r[k] for k in GOAL_KEYS if r.get(k)}
+            if r.get("more"):
+                got["more"] = r["more"]
             if got:
                 into[r.get("match_id")] = got
         if find and not os.path.exists("bet9ja_group_sample.json"):
@@ -443,7 +505,9 @@ def keep_goals(bk, into: dict, find: bool = False) -> None:
 
 def goals_line(book: str, rows: list[dict]) -> str:
     n = sum(1 for r in rows if r["odds"].get("over_2_5") and r["odds"].get("under_2_5"))
-    return f"  {book}: over/under 2.5 on {n} of {len(rows)} games"
+    more = sum(1 for r in rows if any(MORE.match(k) for k in r["odds"]))
+    corners = sum(1 for r in rows if any(k.startswith("C") for k in r["odds"]))
+    return f"  {book}: over/under 2.5 on {n} of {len(rows)} games; other markets on {more}, corners on {corners}"
 
 
 def push(server: str, token: str, book: str, rows: list[dict]) -> str:

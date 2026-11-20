@@ -1,5 +1,6 @@
 """The bets suite: names, fair prices, history, stats, the value list, the rollover pick, the paper book, readers."""
 import asyncio
+import math
 import random
 import time
 from datetime import datetime, timezone
@@ -254,7 +255,7 @@ def test_internationals():
                         "O": {"S_1X2_1": "1.30", "S_1X2_X": "6.1", "S_1X2_2": "11", "S_DC_1X": "1.03", "S_DC_12": None}},
                        {"DS": "no odds - here", "STARTDATE": "2026-11-17 20:45:00", "ID": 10, "O": {}}]}}
     rows = N.bet9ja_rows(raw)
-    assert rows == [{"match": "Spain - Georgia", "league": "UEFA Nations League", "time": 1794944700, "match_id": 9,
+    assert rows == [{"match": "Spain - Georgia", "league": "UEFA Nations League", "time": 1794944700, "match_id": 9, "more": {},
                      "home": 1.3, "draw": 6.1, "away": 11.0, "home_or_draw": 1.03}]      # 20:45 in Lagos, names untouched
 
 
@@ -396,7 +397,7 @@ def test_collector_finds_cups_and_reads_sportybet():
                      {"id": "18", "outcomes": [{"id": "12", "odds": "1.80"}]}]},
         {"eventId": "sr:match:2", "homeTeamName": "No", "awayTeamName": "Odds", "estimateStartTime": 1795636800000, "markets": []}]}]}
     rows = N.sporty_rows(reply, "Champions League")
-    assert [{k: v for k, v in r.items() if k != "sporty_ids"} for r in rows] == [
+    assert [{k: v for k, v in r.items() if k not in ("sporty_ids", "more")} for r in rows] == [
         {"match": "Arsenal - Benfica", "time": 1795636800.0, "league": "UEFA Champions League", "match_id": "sr:match:1",
          "home": 1.42, "draw": 4.9, "away": 7.2, "home_or_draw": 1.08}]
     assert rows[0]["sporty_ids"]["home_or_draw"] == {"event": "sr:match:1", "market": "10", "specifier": "", "outcome": "9"}
@@ -630,7 +631,7 @@ def test_the_collector_reads_over_under():
             return self.normalizer(raw)
     lib = Lib()
     N.keep_goals(lib, goals)
-    assert lib.get_all()[0]["home"] == 1.36 and goals == {7: {"over_2_5": 1.70, "under_2_5": 2.10}}
+    assert lib.get_all()[0]["home"] == 1.36 and goals == {7: {"over_2_5": 1.70, "under_2_5": 2.10, "more": {"O35": 2.9}}}
     sporty = {"data": [{"name": "Premier League", "events": [{"homeTeamName": "Arsenal", "awayTeamName": "Fulham",
                "estimateStartTime": 1795000000000, "eventId": "sr:match:1", "markets": [
                    {"id": "1", "outcomes": [{"id": "1", "odds": "1.37"}, {"id": "2", "odds": "5.0"}, {"id": "3", "odds": "8.1"}]},
@@ -638,7 +639,8 @@ def test_the_collector_reads_over_under():
                    {"id": "18", "specifier": "total=2.5", "outcomes": [{"id": "12", "odds": "1.72"}, {"id": "13", "odds": "2.08"}]}]}]}]}
     row = N.sporty_rows(sporty)[0]
     assert row["over_2_5"] == 1.72 and row["under_2_5"] == 2.08 and row["home"] == 1.37
-    assert N.goals_line("x", [{"odds": {"over_2_5": 1.7, "under_2_5": 2.1}}, {"odds": {"home": 1.2}}]) == "  x: over/under 2.5 on 1 of 2 games"
+    assert N.goals_line("x", [{"odds": {"over_2_5": 1.7, "under_2_5": 2.1, "O15": 1.2, "CO95": 1.8}}, {"odds": {"home": 1.2}}]) == \
+        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1"
 
 
 def test_value_bets_by_either_rule():
@@ -748,3 +750,91 @@ def test_the_collector_says_why_it_cant_look_for_codes(monkeypatch, capsys):
     N.serve_codes(args, None)                                                 # the same trouble again: said once
     out = capsys.readouterr().out
     assert out.count("couldn't look for SportyBet code requests: HTTP 404") == 1 and "older version" in out
+
+
+def test_the_goals_and_corners_models():
+    from engine import corners as K
+    from engine import goals as G
+    m = G.grid(1.7, 1.0)
+    p1, px, p2, po = (float(m[G.MASKS[k]].sum()) for k in ("1", "X", "2", "O25"))
+    lh, la = G.fit(p1, px, p2, po)
+    assert abs(lh - 1.7) < 0.01 and abs(la - 1.0) < 0.01
+    mk = G.markets(G.grid(lh, la))
+    assert abs(mk["O15"] + mk["U15"] - 1) < 1e-9 and mk["O05"] > mk["O15"] > mk["O25"] > mk["O35"]
+    assert mk["HO05"] > mk["AO05"] and mk["1|O15"] >= max(mk["O15"], p1 - 1e-6) and abs(mk["DNB1"][0] - p1) < 1e-6 and abs(mk["DNB1"][1] - px) < 1e-6
+    for code, score, won in [("O15", (1, 1), True), ("U15", (1, 0), True), ("HO15", (2, 0), True), ("AO05", (2, 0), False),
+                             ("GG", (1, 1), True), ("NG", (2, 0), True), ("1|O25", (1, 0), True), ("1|O25", (0, 3), True),
+                             ("2|O15", (1, 0), False), ("DNB1", (1, 1), None), ("DNB2", (0, 2), True)]:
+        assert B.wins(code, *score) == won, code
+    assert [B.kind(k) for k in ("1", "DNB2", "O35", "HO15", "GG", "1|O15", "CO95", "ZZ")] == \
+        ["win", "dnb", "goals", "team", "btts", "mix", "corners", None]
+    rnd = random.Random(4)
+    hist = []
+    for k in range(900):
+        h, a = rnd.sample(["Manchester City", "Burnley", "Arsenal", "Fulham", "Everton", "Wolves"], 2)
+        hist.append({"league": "E0", "home": h, "away": a, "t_ms": NOW - (900 - k) * H, "hc": 9 if h == "Manchester City" else 4,
+                     "ac": 2 + rnd.randint(0, 3)})
+    model, spreads = K.build(hist)
+    assert model.find("Man City") == "Manchester City" and model.find("Real Madrid") is None
+    mh, ma = model.expect("Manchester City", "Burnley", "E0")
+    assert mh > ma and abs(sum(K.total(mh, ma, 8.0)) - 1) < 1e-9 and K.wins("CO95", 6, 4) and not K.wins("CU95", 6, 4)
+
+
+def test_the_combo_builder_mixes_markets():
+    from engine import combos as C
+    from engine import corners as K
+    t = NOW
+    sharp = [_sharp("Manchester City", "Burnley", t + 5 * H, 1.30, 5.8, 10.0, read=t, sid="s1"),
+             _sharp("Arsenal", "Fulham", t + 6 * H, 1.55, 4.2, 6.0, read=t, sid="s2")]
+    hist = [{"league": "E0", "home": h, "away": a, "t_ms": t - k * H, "hc": 7, "ac": 4}
+            for k, (h, a) in enumerate([("Manchester City", "Burnley"), ("Arsenal", "Fulham"), ("Burnley", "Arsenal"), ("Fulham", "Manchester City")] * 6)]
+    corners = K.build(hist)
+    odds = {"1": 1.28, "DNB1": 1.10, "O15": 1.22, "HO05": 1.08, "GG": 2.10, "1|O15": 1.10, "CO85": 1.60}
+    books = {"sportybet": {"t_ms": t, "rows": [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"], "odds": dict(odds)} for s in sharp]}}
+    board = B.build(books, sharp, [], {}, t, corners=corners)
+    by = {(x["home"], x["market"]): x for x in board}
+    dnb = by[("Manchester City", "DNB1")]
+    assert dnb["p_void"] > 0 and abs(dnb["edge"] - (1.10 * dnb["p"] + dnb["p_void"] - 1)) < 1e-12 and dnb["model"] is None
+    assert by[("Manchester City", "O15")]["model"] == "goals" and by[("Manchester City", "CO85")]["model"] == "corners"
+    assert {x["market"] for x in B.value_bets(board, edge=-1)} <= set(B.CORE)              # the new markets: combos only
+    all_kinds = C.solvers(board, books, t, 1)
+    goals_only = C.solvers(board, books, t, 1, ("goals",))
+    assert {x["market"] for x in goals_only["sportybet"].bets} == {"O15"}
+    mixed = C.best_of(all_kinds, 1.15)
+    assert mixed and all(C.chance(x) >= 0.6 for x in mixed) and len({x["match_id"] for x in mixed}) == len(mixed)
+    s = C.slip([x for x in all_kinds["sportybet"].bets if x["market"] == "DNB1"])
+    assert abs(s["p"] - math.prod(x["p"] + x["p_void"] for x in all_kinds["sportybet"].bets if x["market"] == "DNB1")) < 1e-12
+    assert C.build(all_kinds, 1.15, {"safest": {"1.5": {"n": 9}}}, kinds=("win", "goals", "corners"))["ladder"][0]["past"] is None
+    _, rows = F.parse_push({"book": "sportybet", "rows": [{"home": "A", "away": "B", "t_ms": t, "odds": {"O15": 1.2, "CO95": 1.8, "nonsense": 2}}]})
+    assert rows[0]["odds"] == {"O15": 1.2, "CO95": 1.8}
+
+
+def test_the_collector_reads_the_combo_markets():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    o = lambda i, d, v: {"id": i, "desc": d, "odds": v}
+    reply = {"data": [{"name": "Premier League", "events": [{"homeTeamName": "Man City", "awayTeamName": "Fulham",
+             "estimateStartTime": 1795264200000, "eventId": "sr:match:72221406", "markets": [
+                 {"id": "1", "outcomes": [o("1", "Home", "1.30"), o("2", "Draw", "6.0"), o("3", "Away", "9.5")]},
+                 {"id": "11", "outcomes": [o("4", "Home", "1.08"), o("5", "Away", "7.5")]},
+                 {"id": "18", "specifier": "total=1.5", "outcomes": [o("12", "Over 1.5", "1.15"), o("13", "Under 1.5", "5.2")]},
+                 {"id": "18", "specifier": "total=2", "outcomes": [o("12", "Over 2", "1.30"), o("13", "Under 2", "3.4")]},
+                 {"id": "18", "specifier": "total=2.5", "outcomes": [o("12", "Over 2.5", "1.50"), o("13", "Under 2.5", "2.55")]},
+                 {"id": "19", "specifier": "total=0.5", "outcomes": [o("12", "Over 0.5", "1.06"), o("13", "Under 0.5", "8.0")]},
+                 {"id": "20", "specifier": "total=1.5", "outcomes": [o("12", "Over 1.5", "3.9"), o("13", "Under 1.5", "1.22")]},
+                 {"id": "29", "outcomes": [o("74", "Yes", "1.95"), o("76", "No", "1.80")]},
+                 {"id": "166", "specifier": "total=9.5", "outcomes": [o("12", "Over 9.5", "1.70"), o("13", "Under 9.5", "2.05")]},
+                 {"id": "45", "outcomes": [o("x", "0:0", "15")]}]}]}]}
+    row = N.sporty_rows(reply)[0]
+    assert row["home"] == 1.30 and row["over_2_5"] == 1.50 and "U15" not in row
+    assert row["more"] == {"DNB1": 1.08, "DNB2": 7.5, "O15": 1.15, "U15": 5.2, "HO05": 1.06, "HU05": 8.0, "AO15": 3.9,
+                           "AU15": 1.22, "GG": 1.95, "NG": 1.80, "CO95": 1.70, "CU95": 2.05}       # the 2.0 line skipped
+    assert row["sporty_ids"]["CO95"] == {"event": "sr:match:72221406", "market": "166", "specifier": "total=9.5", "outcome": "12"}
+    b9 = N.b9_more({"S_DNB_1": "1.09", "S_OU@1.5_O": "1.14", "S_OU@2.5_O": "1.5", "S_HAOU@0.5_OH": "1.05",
+                    "S_HAOU@1.5_UA": "1.25", "S_GGNG_Y": "1.9", "S_CHANCEMIXOU@1.5_1orOv": "1.04",
+                    "S_CHANCEMIXOU@3.5_1orOv": "1.2", "S_CHANCEMIXGGOU@2.5_2orOv": "1.4", "S_OUCORNERS@9.5_U": "2.0",
+                    "S_OUCORNERS@20.5_U": "1.01", "S_1X2_1": "1.3"})
+    assert b9 == {"DNB1": 1.09, "O15": 1.14, "HO05": 1.05, "AU15": 1.25, "GG": 1.9, "1|O15": 1.04, "2|O25": 1.4, "CU95": 2.0}
+    assert all(B.kind(k) for k in [*b9, *row["more"]])                       # the server knows every code it's sent

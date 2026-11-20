@@ -10,6 +10,8 @@ The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live m
                    Over/under 2.5 goals comes only from football-data's fixtures (Pinnacle's, else the market average),
                    added to the same game when The Odds API has its win prices: free, but read a day or two before
                    kick-off, so goals bets need the higher 3% edge
+    models         with the history read: the goals model's Dixon-Coles correction and how it and the corners model
+                   did on past games (engine/goals.py, engine/corners.py), and the corners model as it stands
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
     paper book     every ten minutes: new flat value bets are booked at a flat stake, today's rollover pick is made once
@@ -41,6 +43,8 @@ from api.public import scrub
 from engine import betting as B
 from engine import betstudy as S
 from engine import combos as C
+from engine import corners as K
+from engine import goals as G
 from ingestion import football as F
 
 log = logging.getLogger("analytix.bets")
@@ -69,6 +73,8 @@ class BetsService:
         self.methods: dict = {}                               # each margin method's fit to three seasons of results
         self.study: dict = {}                                 # the rules replayed on three seasons (engine/betstudy.py)
         self.combo_past: dict = {}                            # the combo builder replayed on them (engine/combos.py)
+        self.corners = None                                   # (corners model, each league's spread): engine/corners.py
+        self.models: dict = {}                                # the goals and corners models on past games
         self._combos: tuple | None = None                     # (board, {days: {book: Solver}})
         self.sharp_fd: list[dict] = []
         self.sharp_oa: list[dict] = []
@@ -145,8 +151,18 @@ class BetsService:
             except Exception as exc:                      # noqa: BLE001 - the rest of the history still stands
                 log.warning("bets combo replay: %s", exc)
                 past = {}
-            return scores, B.calibration(history), teams, S.study(history, teams), past
-        self.methods, self.cal, self.teams, self.study, self.combo_past = await asyncio.to_thread(crunch)
+            models, corners = {}, None
+            try:                                          # the goals and corners models, and how they did on past games
+                models["goals"] = G.check(history, B.devig)
+                if models["goals"].get("rho") is not None:
+                    G.set_rho(models["goals"]["rho"])
+                models["corners"] = K.check(history)
+                corners = K.build(history)
+            except Exception as exc:                      # noqa: BLE001
+                log.warning("bets models: %s", exc)
+            return scores, B.calibration(history), teams, S.study(history, teams), past, models, corners
+        (self.methods, self.cal, self.teams, self.study, self.combo_past, self.models,
+         self.corners) = await asyncio.to_thread(crunch)
         self.history = history
         self._changed()
         if errors:
@@ -195,7 +211,7 @@ class BetsService:
         want = {}
         for x in board:
             if (now + FRESH_FROM_H * B.HOUR <= x["t_ms"] <= now + FRESH_TO_H * B.HOUR and B.ROLL_MIN <= x["odds"] <= B.FLAT_MAX
-                    and x["edge"] >= B.ROLL_EDGE and x["market"] not in ("X", *B.GOALS)    # a read doesn't refresh goals prices
+                    and x["edge"] >= B.ROLL_EDGE and x["market"] in ("1", "2", "1X", "12", "X2")    # only win prices are re-read
                     and now - self._fresh_at.get(x["league"], 0) > FRESH_EVERY_H * B.HOUR):
                 sport = self._sport(x["league"])
                 if sport:
@@ -357,7 +373,7 @@ class BetsService:
 
     def _rebuild(self, now: int) -> list[dict]:
         gen = self._gen
-        b = B.build(dict(self.books), self.sharp(), self.history, self.cal, now, self.teams)
+        b = B.build(dict(self.books), self.sharp(), self.history, self.cal, now, self.teams, self.corners)
         self._board = (time.time(), gen, b)
         for k in list(self.books):
             self._matched(k)
@@ -395,7 +411,8 @@ class BetsService:
         await asyncio.to_thread(lambda: [self._matched(k) for k in list(self.books)])
         return {**self.public(board), "public": public}
 
-    async def combo(self, target: float, days: int = 1, least: float | None = None, book: str | None = None) -> dict:
+    async def combo(self, target: float, days: int = 1, least: float | None = None, book: str | None = None,
+                    kinds: tuple | None = None) -> dict:
         """The best slip for a total-odds target over the next `days` (1, 3 or 7), and the ladder of sizes: safest games
         first, or with every game at least `least` likely (0.60 to 0.90)."""
         days = days if days in C.DAYS else 1
@@ -404,20 +421,22 @@ class BetsService:
         if not self._combos or self._combos[0] is not board:
             self._combos = (board, {})
         kept = self._combos[1]
-        if days not in kept:
-            kept[days] = await asyncio.to_thread(C.solvers, board, dict(self.books), now, days)
-        out = await asyncio.to_thread(C.build, kept[days], target, self.combo_past, least, book)
-        return {**out, "days": days, "now_ms": now}
+        kinds = tuple(k for k in B.KINDS if k in kinds) if kinds else B.KINDS
+        if (days, kinds) not in kept:
+            kept[(days, kinds)] = await asyncio.to_thread(C.solvers, board, dict(self.books), now, days, kinds)
+        out = await asyncio.to_thread(C.build, kept[(days, kinds)], target, self.combo_past, least, book, kinds)
+        return {**out, "days": days, "kinds": list(kinds), "models": self.models, "now_ms": now}
 
     # ── SportyBet booking codes, made on the laptop ───────────────────────
-    async def combo_code(self, target: float, days: int = 1, least: float | None = None, public: bool = False) -> dict:
+    async def combo_code(self, target: float, days: int = 1, least: float | None = None, public: bool = False,
+                         kinds: tuple | None = None) -> dict:
         """The booking code for the SportyBet slip at these settings: ready, being made, or why there's none (through the
         public link, without the laptop's side of it)."""
-        out = await self._combo_code(target, days, least)
+        out = await self._combo_code(target, days, least, kinds)
         return out if not public else {**out, "why": PUBLIC_WHY if out.get("why") else None}
 
-    async def _combo_code(self, target: float, days: int, least: float | None) -> dict:
-        out = await self.combo(target, days, least, "sportybet")
+    async def _combo_code(self, target: float, days: int, least: float | None, kinds: tuple | None = None) -> dict:
+        out = await self.combo(target, days, least, "sportybet", kinds)
         s = out["slip"]
         if not s:
             return {"status": "none", "why": "no SportyBet slip at these settings"}
@@ -489,11 +508,13 @@ class BetsService:
                         pats.append({"kind": kind, "market": m, "name": B.MARKET_NAME[m], "odds": [round(1 / hi, 2), round(1 / lo, 2)],
                                      "n": c[0], "rate": c[1] / c[0], "implied": c[2] / c[0]})
         return {"now_ms": now, "enabled": self.rt.mode == "live",
-                "value": [{**x, "rule": B.rule_of(x)} for x in B.value_bets(board)[:60]], "board_n": len(board),
+                "value": [{**x, "rule": B.rule_of(x)} for x in B.value_bets(board)[:60]],
+                "board_n": sum(1 for x in board if x["market"] in B.CORE),
                 "book_days": B.BOOK_DAYS, "show_days": B.SHOW_DAYS,
                 "matched": {k: self._matched(k) for k in self.books},
                 "next_kick": min((x["t_ms"] for x in board), default=None),
-                "near": [{**x, "rule": B.rule_of(x)} for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"][:40],
+                "near": [{**x, "rule": B.rule_of(x)} for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"
+                         and x["market"] in B.CORE][:40],
                 "rollover": {"today": today, "candidate": candidate, "chain": chain, "target": B.ROLL_TARGET,
                              "misses": B.rollover_misses(board, now) if not (today or candidate) else [],
                              "refills_max": B.ROLL_REFILLS, "start": B.ROLL_START,

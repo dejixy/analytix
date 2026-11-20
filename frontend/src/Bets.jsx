@@ -20,9 +20,28 @@ const ago = (ms) => {
 const MARKET = { 1: "Home win", X: "Draw", 2: "Away win", "1X": "Home or draw", 12: "Either team wins", X2: "Away or draw",
   O25: "Over 2.5 goals", U25: "Under 2.5 goals" };
 const GOALS = ["O25", "U25"];
+// The combo builder's other markets, in words (codes as in engine/goals.py and engine/corners.py)
+const more = (x) => {
+  const m = x.market;
+  if (m === "DNB1" || m === "DNB2") return `${m === "DNB1" ? x.home : x.away} (draw no bet)`;
+  if (m === "GG") return "Both teams score";
+  if (m === "NG") return "Not both teams score";
+  let r = m.match(/^([OU])(\d)5$/);
+  if (r) return `${r[1] === "O" ? "Over" : "Under"} ${r[2]}.5 goals`;
+  r = m.match(/^([HA])([OU])(\d)5$/);
+  if (r) {
+    const team = r[1] === "H" ? x.home : x.away, k = Number(r[3]);
+    return r[2] === "O" ? (k === 0 ? `${team} to score` : `${team} ${k + 1}+ goals`) : (k === 0 ? `${team} not to score` : `${team} under ${k}.5 goals`);
+  }
+  r = m.match(/^([12X])\|O(\d)5$/);
+  if (r) return `${r[1] === "1" ? `${x.home} win` : r[1] === "2" ? `${x.away} win` : "Draw"} or over ${r[2]}.5 goals`;
+  r = m.match(/^C([OU])(\d+)5$/);
+  if (r) return `${r[1] === "O" ? "Over" : "Under"} ${r[2]}.5 corners`;
+  return null;
+};
 const pick = (x) => (x.market === "1" ? x.home : x.market === "2" ? x.away : x.market === "1X" ? `${x.home} or draw`
   : x.market === "X2" ? `${x.away} or draw` : x.market === "X" ? "Draw" : GOALS.includes(x.market) ? MARKET[x.market]
-  : `No draw: ${x.home} or ${x.away}`);
+  : x.market === "12" ? `No draw: ${x.home} or ${x.away}` : more(x) || x.market);
 const BOOK = { bet9ja: "Bet9ja", betking: "BetKing", nairabet: "Nairabet", sportybet: "SportyBet" };
 
 const Top = ({ title, facts = [], children }) => (
@@ -199,6 +218,9 @@ function Value({ d }) {
 
 const WINDOWS = [["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
+const KINDS = [["win", "Wins"], ["dnb", "Draw no bet"], ["goals", "Goals"], ["team", "Team goals"], ["btts", "Both score"],
+  ["mix", "Win or goals"], ["corners", "Corners"]];
+const ALL_KINDS = KINDS.map(([k]) => k);
 const SAVED = "analytix.bets.combo";
 const saved = () => {
   try {
@@ -263,18 +285,20 @@ function Combo({ stamp, pub }) {
   const [days, setDays] = useState(() => saved().days || "1");
   const [least, setLeast] = useState(() => saved().least || "");
   const [book, setBook] = useState(() => saved().book || "");
+  const [kinds, setKinds] = useState(() => (Array.isArray(saved().kinds) && saved().kinds.length ? saved().kinds : ALL_KINDS));
+  const flip = (k) => setKinds((ks) => (ks.includes(k) ? (ks.length > 1 ? ks.filter((x) => x !== k) : ks) : ALL_KINDS.filter((x) => x === k || ks.includes(x))));
   const [c, setC] = useState(null);
   const t = Number(target);
   const ok = t >= 1.1 && t <= 200;
   useEffect(() => {
     try {
-      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book }));
+      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds }));
     } catch { /* private window: not kept */ }
     if (!ok) return undefined;
     let live = true;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}`);
+        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}&markets=${kinds.join(",")}`);
         const j = await r.json();
         if (live && r.ok) setC(j);
       } catch { /* the header shows when the server is down */ }
@@ -283,7 +307,7 @@ function Combo({ stamp, pub }) {
       live = false;
       clearTimeout(h);
     };
-  }, [t, ok, target, days, least, book, stamp]);
+  }, [t, ok, target, days, least, book, kinds, stamp]);
   const s = c?.slip;
   const g = c?.settings;
   const past = (r) => r.past && r.past.n ? r.past : null;
@@ -312,6 +336,12 @@ function Combo({ stamp, pub }) {
         </label>
         <Seg value={days} set={setDays} opts={WINDOWS} />
       </Top>
+      <div className="bt-kinds">
+        <span className="muted">Markets</span>
+        <span className="az-seg" role="group">
+          {KINDS.map(([k, label]) => <button key={k} className={kinds.includes(k) ? "on" : ""} aria-pressed={kinds.includes(k)} onClick={() => flip(k)}>{label}</button>)}
+        </span>
+      </div>
       {!c ? <p className="az-note">Finding the best slip…</p> : s ? (
         <>
           <div className="az-kpis">
@@ -323,7 +353,7 @@ function Combo({ stamp, pub }) {
             <div><span className="muted">Edge at this price</span><b className={`num ${tone(s.edge)}`}>{sgn(s.edge)}</b></div>
             <div><span className="muted">Last kick-off</span><b className="num">{kick(s.last_ms)}</b></div>
           </div>
-          {s.book === "sportybet" ? (s.coded ? <SportyCode q={`target=${t}&days=${days}&least=${least || 0}`} slip={s.legs.map((x) => x.key).join()} pub={pub} />
+          {s.book === "sportybet" ? (s.coded ? <SportyCode q={`target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}`} slip={s.legs.map((x) => x.key).join()} pub={pub} />
             : !pub && <div className="bt-code"><span className="muted">A SportyBet code needs the updated collector on your laptop.</span></div>)
             : (c.books || []).includes("sportybet") && <div className="bt-code"><button className="az-go" onClick={() => setBook("sportybet")}>Build it on SportyBet for a booking code</button></div>}
           <div className="az-scroll"><table className="az-table bt-t">
@@ -332,11 +362,12 @@ function Combo({ stamp, pub }) {
               {s.legs.map((x) => (
                 <tr key={x.key}>
                   <td className="muted num">{kick(x.t_ms)}</td>
-                  <td className="bt-name"><b>{pick(x)}</b><span className="muted az-cat">{x.home} v {x.away} · {x.league_name || x.league}</span></td>
+                  <td className="bt-name"><b>{pick(x)}</b>{x.model && <span className="az-flag muted" title={x.sharp_src}>{x.model === "corners" ? "corners model" : "goals model"}</span>}
+                    <span className="muted az-cat">{x.home} v {x.away} · {x.league_name || x.league}</span></td>
                   <td className="r num">{odd(x.odds)}</td>
-                  <td className="r num muted">{odd(1 / x.p)}</td>
+                  <td className="r num muted">{odd((1 - (x.p_void || 0)) / x.p)}</td>
                   <td className={`r num ${tone(x.edge)}`}>{sgn(x.edge)}</td>
-                  <td className="r num">{pct(x.p, 1)}</td>
+                  <td className="r num" title={x.p_void ? `wins ${pct(x.p, 1)}, refunded ${pct(x.p_void, 1)}` : ""}>{pct(x.p + (x.p_void || 0), 1)}</td>
                 </tr>
               ))}
             </tbody>
@@ -377,7 +408,34 @@ function Combo({ stamp, pub }) {
           </tbody>
         </table></div>
       )}
+      {c && <Models m={c.models} kinds={kinds} />}
     </section>
+  );
+}
+
+// How the goals and corners models did on past games: what they said against what happened, and how much better their
+// chances fit the results than each league's plain rate
+function Models({ m, kinds }) {
+  const rows = [];
+  const goals = m?.goals?.markets || {}, corners = m?.corners?.markets || {};
+  const want = { goals: ["O15", "O35", "U15", "U35"], team: ["HO05", "HO15", "AO05", "AO15"], btts: ["GG", "NG"], mix: ["1|O15", "2|O15", "1|O25", "2|O25"] };
+  for (const [k, codes] of Object.entries(want)) if (kinds.includes(k)) codes.forEach((code) => goals[code]?.n && rows.push([code, goals[code]]));
+  if (kinds.includes("corners")) Object.entries(corners).forEach(([code, v]) => v.n && rows.push([code, v]));
+  if (!rows.length) return null;
+  return (
+    <div className="az-scroll"><table className="az-table bt-t">
+      <thead><tr><th>Model on past games</th><th className="r">Games</th><th className="r">Said</th><th className="r">Happened</th>
+        <th className="r" title="How much better the model's chances fit the results than the league's plain rate (log loss)">Better than the league rate</th></tr></thead>
+      <tbody>
+        {rows.map(([code, v]) => (
+          <tr key={code}>
+            <td>{more({ market: code, home: "Home", away: "Away" })}</td><td className="r num muted">{v.n.toLocaleString()}</td>
+            <td className="r num">{pct(v.said, 1)}</td><td className="r num">{pct(v.won / v.n, 1)}</td>
+            <td className={`r num ${v.ll_base > 0.05 ? tone(v.ll_base - v.ll) : ""}`}>{v.ll_base > 0.05 ? sgn((v.ll_base - v.ll) / v.ll_base) : "-"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table></div>
   );
 }
 

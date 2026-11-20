@@ -222,16 +222,24 @@ async def bets(request: Request):
 
 
 @router.get("/bets/combo")
-async def bets_combo(request: Request, target: float = 10, days: int = 1, least: float = 0, book: str = ""):
+async def bets_combo(request: Request, target: float = 10, days: int = 1, least: float = 0, book: str = "", markets: str = ""):
     """The combo builder: the best accumulator for a total-odds target (1.1 to 200) over the next 1, 3 or 7 days, safest
     games first (least=0) or with every game at least `least` likely (0.60 to 0.90)."""
-    return await _rt(request).bets.combo(target, days, least or None, book.strip().lower()[:20] or None)
+    return await _rt(request).bets.combo(target, days, least or None, book.strip().lower()[:20] or None, _kinds(markets))
+
+
+def _kinds(markets: str) -> tuple | None:
+    """The combo builder's market picker: "win,goals,corners" (empty: every kind)."""
+    from engine import betting as B
+    got = tuple(k for k in B.KINDS if k in {m.strip().lower() for m in markets.split(",")})
+    return got or None
 
 
 @router.get("/bets/combo/code")
-async def bets_combo_code(request: Request, target: float = 10, days: int = 1, least: float = 0):
+async def bets_combo_code(request: Request, target: float = 10, days: int = 1, least: float = 0, markets: str = ""):
     """A SportyBet booking code for the combo builder's SportyBet slip at these settings (made on the laptop)."""
-    return await _rt(request).bets.combo_code(target, days, least or None, bool(request.scope.get("analytix_public")))
+    return await _rt(request).bets.combo_code(target, days, least or None, bool(request.scope.get("analytix_public")),
+                                              _kinds(markets))
 
 
 @router.get("/bets/code-jobs")

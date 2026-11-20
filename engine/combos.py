@@ -12,6 +12,11 @@ least that likely: fewer, longer-priced games than safest-first when the minimum
 Each bet's edge counts a point lower there (two in lower leagues and internationals, where Pinnacle's price is less
 sure): the edges that look best are the ones most likely overstated. The chance and return shown are the measured ones.
 
+Markets: wins and double chance, draw no bet (a draw refunds it, so its "chance" is of not losing), total goals, each
+team's goals, both teams to score, a result or over x goals, and total corners; `kinds` picks which may go on a slip.
+Safest first mixes every picked kind. Goals markets other than over/under 2.5 come from the goals model and count two
+points lower; corners come from the corners model alone (no sharp price) and count four points lower.
+
 A bet may go on a slip under the page's reliability rules: its book's odds under 2 hours old and the sharp price under a
 day, no more than 10% above fair (above that it is nearly always a stale price or the wrong game), no draws, and odds of
 1.10 or more.
@@ -35,7 +40,7 @@ T_MIN, T_MAX = 1.1, 200.0
 LEG_MIN = 1.10
 FLOORS = (0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60)   # every game on the slip at least this likely, safest first
 MAX_GAMES = 15
-HAIRCUT, HAIRCUT_LOW = 0.01, 0.02
+HAIRCUT, HAIRCUT_LOW, HAIRCUT_CORNERS = 0.01, 0.02, 0.04
 LADDER = (1.5, 2, 3, 5, 10, 20, 50, 100, 200)
 DAYS = (1, 3, 7)
 
@@ -45,24 +50,40 @@ def bins_for(top: float) -> int:
 
 
 def haircut(x: dict) -> float:
-    return HAIRCUT_LOW if B.lower(x) else HAIRCUT
+    if x.get("model") == "corners":
+        return HAIRCUT_CORNERS
+    return HAIRCUT_LOW if B.lower(x) or x.get("model") else HAIRCUT
 
 
-def legs(board: list[dict], book: str, book_ms: int | None, now_ms: int, until_ms: int) -> list[dict]:
-    """The board's bets on one book that may go on a slip kicking off before until_ms."""
+def chance(x: dict) -> float:
+    """A bet's chance of not losing (a draw-no-bet refund counts)."""
+    return x.get("chance") or x["p"] + x.get("p_void", 0.0)
+
+
+def ev(x: dict) -> float:
+    """What a bet returns on average for each 1 staked (a refund counts as 1 back)."""
+    return x["odds"] * x["p"] + x.get("p_void", 0.0)
+
+
+def legs(board: list[dict], book: str, book_ms: int | None, now_ms: int, until_ms: int,
+         kinds: tuple | None = None) -> list[dict]:
+    """The board's bets on one book that may go on a slip kicking off before until_ms (of these `kinds` of market)."""
     if book_ms is None or (now_ms - book_ms) / B.HOUR > B.ODDS_FRESH_H:
         return []
     out = []
     for x in board:
         if (x["market"] == "X" or not now_ms + 10 * 60_000 <= x["t_ms"] <= until_ms or x["sharp_age_h"] > B.SHARP_FRESH_H
-                or not x.get("p")):
+                or not x.get("p") or (kinds is not None and B.kind(x["market"]) not in kinds)):
             continue
         on = next((b for b in x.get("others") or [] if b["book"] == book), None)
         o = on and on["odds"]
-        if not o or o < LEG_MIN or x["p"] < FLOORS[-1] or o * x["p"] - 1 > B.EDGE_MAX:
+        pv = x.get("p_void") or 0.0
+        if not o or o < LEG_MIN or x["p"] + pv < FLOORS[-1] or o * x["p"] + pv - 1 > B.EDGE_MAX:
             continue
-        out.append({k: x.get(k) for k in ("key", "match_id", "home", "away", "league", "league_name", "t_ms", "market", "intl", "p")}
-                   | {"book": book, "odds": o, "edge": o * x["p"] - 1, "sel": on.get("sel")})
+        out.append({k: x.get(k) for k in ("key", "match_id", "home", "away", "league", "league_name", "t_ms", "market", "intl",
+                                          "p", "model", "sharp_src")}
+                   | {"book": book, "odds": o, "p_void": pv, "chance": x["p"] + pv, "edge": o * x["p"] + pv - 1,
+                      "sel": on.get("sel")})
     return out
 
 
@@ -85,7 +106,7 @@ class Solver:
             for i, (x, w) in enumerate(zip(g, ws)):
                 if not 0 < w < n:
                     continue
-                cand = best[:-w] + (math.log(x["odds"] * x["p"]) - haircut(x))
+                cand = best[:-w] + (math.log(ev(x)) - haircut(x))
                 better = cand > new[w:]
                 new[w:][better] = cand[better]
                 pick[w:][better] = i
@@ -129,7 +150,7 @@ class Builder:
 
     def find(self, target: float, floor: float) -> list[dict] | None:
         if floor not in self._at:
-            self._at[floor] = Solver([x for x in self.bets if x["p"] >= floor], self.top)
+            self._at[floor] = Solver([x for x in self.bets if chance(x) >= floor], self.top)
         return self._at[floor].find(target, max_n=MAX_GAMES)
 
     def reach(self) -> float:
@@ -141,14 +162,15 @@ class Builder:
 
 
 def value(s: list[dict]) -> float:
-    return sum(math.log(x["odds"] * x["p"]) - haircut(x) for x in s)
+    return sum(math.log(ev(x)) - haircut(x) for x in s)
 
 
 def slip(s: list[dict], with_legs: bool = True) -> dict:
     odds = math.prod(x["odds"] for x in s)
-    p = math.prod(x["p"] for x in s)
-    out = {"book": s[0]["book"], "odds": odds, "p": p, "fair_odds": 1 / p, "edge": odds * p - 1, "n": len(s),
-           "least": min(x["p"] for x in s), "last_ms": max(x["t_ms"] for x in s),
+    p = math.prod(chance(x) for x in s)                          # no bet loses (a refunded one lowers the total)
+    out = {"book": s[0]["book"], "odds": odds, "p": p, "fair_odds": 1 / p, "edge": math.prod(ev(x) for x in s) - 1, "n": len(s),
+           "least": min(chance(x) for x in s), "last_ms": max(x["t_ms"] for x in s),
+           "models": sorted({x["model"] for x in s if x.get("model")}),
            "coded": all(x.get("sel") for x in s)}                  # the book's own ids for every bet: a code can be made
     if with_legs:
         out["legs"] = sorted(s, key=lambda x: x["t_ms"])
@@ -175,7 +197,7 @@ def best_of(books: dict[str, Builder], target: float, least: float | None = None
 
 
 def build(solvers: dict[str, Builder], target: float, past: dict | None = None, least: float | None = None,
-          book: str | None = None) -> dict:
+          book: str | None = None, kinds: tuple | None = None) -> dict:
     """The page's data: the slip for the target, and each size on the ladder with its record on past games (safest first,
     or every game at least `least` likely), from every book or only `book`."""
     target = min(max(float(target), T_MIN), T_MAX)
@@ -184,7 +206,8 @@ def build(solvers: dict[str, Builder], target: float, past: dict | None = None, 
         solvers = {k: v for k, v in solvers.items() if k == book}
     least = snap(least)
     s = best_of(solvers, target, least)
-    ladder, done_past = [], (past or {}).get(mode(least)) or {}
+    replayed = kinds is None or set(kinds) <= {"win", "goals"}     # the replay only has wins and over/under 2.5
+    ladder, done_past = [], ((past or {}).get(mode(least)) or {}) if replayed else {}
     for t in LADDER:
         x = best_of(solvers, t, least)
         ladder.append({"target": t, **(slip(x, False) if x else {}), "past": done_past.get(str(t))})
@@ -198,9 +221,9 @@ def build(solvers: dict[str, Builder], target: float, past: dict | None = None, 
                          "haircut": [HAIRCUT, HAIRCUT_LOW]}}
 
 
-def solvers(board: list[dict], books: dict[str, dict], now_ms: int, days: int) -> dict[str, Builder]:
+def solvers(board: list[dict], books: dict[str, dict], now_ms: int, days: int, kinds: tuple | None = None) -> dict[str, Builder]:
     until = now_ms + days * B.DAY
-    return {b: Builder(legs(board, b, got.get("t_ms"), now_ms, until)) for b, got in books.items()}
+    return {b: Builder(legs(board, b, got.get("t_ms"), now_ms, until, kinds)) for b, got in books.items()}
 
 
 # ── on past games ────────────────────────────────────────────────────────────
@@ -226,7 +249,7 @@ def past(history: list[dict], book: str = "bet365", targets: tuple = LADDER) -> 
             if not o or o < LEG_MIN or fair[m] < FLOORS[-1] or o * fair[m] - 1 > B.EDGE_MAX:
                 continue
             days.setdefault((g["t_ms"] + S.WAT) // B.DAY, []).append(
-                {"match_id": (g["t_ms"], g["home"]), "league": g["league"], "market": m, "odds": o, "p": fair[m],
+                {"match_id": (g["t_ms"], g["home"]), "league": g["league"], "market": m, "odds": o, "p": fair[m], "chance": fair[m],
                  "won": B.wins(m, g["hg"], g["ag"]), "t_ms": g["t_ms"], "book": book})
     leasts = (None, *sorted(FLOORS))
     got: dict = {(lst, t): [] for lst in leasts for t in targets}
@@ -236,7 +259,7 @@ def past(history: list[dict], book: str = "bet365", targets: tuple = LADDER) -> 
             for t in targets:
                 s = best_of(day, t, lst)
                 if s:
-                    got[(lst, t)].append((math.prod(x["odds"] for x in s), math.prod(x["p"] for x in s),
+                    got[(lst, t)].append((math.prod(x["odds"] for x in s), math.prod(chance(x) for x in s),
                                           all(x["won"] for x in s)))
     out: dict = {mode(lst): {} for lst in leasts}
     for (lst, t), xs in got.items():
