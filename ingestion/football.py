@@ -99,7 +99,9 @@ def parse_fd(text: str, league: str | None = None) -> list[dict]:
         hg, ag = num(r.get("FTHG") if r.get("FTHG") not in (None, "") else r.get("HG")), num(r.get("FTAG") if r.get("FTAG") not in (None, "") else r.get("AG"))
         g = {"league": league or (r.get("Div") or "").strip(), "home": home, "away": away, "t_ms": t,
              "hg": int(hg) if hg is not None else None, "ag": int(ag) if ag is not None else None,
-             "hst": num(r.get("HST")), "ast": num(r.get("AST"))}
+             "hst": num(r.get("HST")), "ast": num(r.get("AST")),
+             "hc": int(num(r.get("HC"))) if num(r.get("HC")) is not None else None,      # corners
+             "ac": int(num(r.get("AC"))) if num(r.get("AC")) is not None else None}
         for c in ODDS_COLS:
             v = num(r.get(c))
             if v:
@@ -285,12 +287,14 @@ def parse_push(payload: dict) -> tuple[str, list[dict]]:
     rows = []
     for r in payload.get("rows") or []:
         try:
-            odds = {B.BOOK_KEYS[k]: float(v) for k, v in (r.get("odds") or {}).items() if k in B.BOOK_KEYS and v and float(v) > 1}
+            odds = {code: float(v) for k, v in (r.get("odds") or {}).items()
+                    if (code := B.BOOK_KEYS.get(k) or (k if B.kind(k) else None)) and v and float(v) > 1}
             if r.get("home") and r.get("away") and odds:
                 row = {"home": str(r["home"])[:60], "away": str(r["away"])[:60], "t_ms": int(r["t_ms"]),
                        "league": str(r.get("league") or "")[:60], "odds": odds}
-                ids = {B.BOOK_KEYS[k]: {f: str(v.get(f) or "")[:60] for f in ("event", "market", "specifier", "outcome")}
-                       for k, v in (r.get("ids") or {}).items() if k in B.BOOK_KEYS and isinstance(v, dict) and v.get("event")}
+                ids = {(B.BOOK_KEYS.get(k) or k): {f: str(v.get(f) or "")[:60] for f in ("event", "market", "specifier", "outcome")}
+                       for k, v in (r.get("ids") or {}).items()
+                       if (B.BOOK_KEYS.get(k) or B.kind(k)) and isinstance(v, dict) and v.get("event")}
                 if ids:                                           # the book's own ids for each bet (SportyBet)
                     row["ids"] = {m: v for m, v in ids.items() if m in odds}
                 rows.append(row)

@@ -1,5 +1,6 @@
 """The bets suite: names, fair prices, history, stats, the value list, the rollover pick, the paper book, readers."""
 import asyncio
+import math
 import random
 import time
 from datetime import datetime, timezone
@@ -748,3 +749,60 @@ def test_the_collector_says_why_it_cant_look_for_codes(monkeypatch, capsys):
     N.serve_codes(args, None)                                                 # the same trouble again: said once
     out = capsys.readouterr().out
     assert out.count("couldn't look for SportyBet code requests: HTTP 404") == 1 and "older version" in out
+
+
+def test_the_goals_and_corners_models():
+    from engine import corners as K
+    from engine import goals as G
+    m = G.grid(1.7, 1.0)
+    p1, px, p2, po = (float(m[G.MASKS[k]].sum()) for k in ("1", "X", "2", "O25"))
+    lh, la = G.fit(p1, px, p2, po)
+    assert abs(lh - 1.7) < 0.01 and abs(la - 1.0) < 0.01
+    mk = G.markets(G.grid(lh, la))
+    assert abs(mk["O15"] + mk["U15"] - 1) < 1e-9 and mk["O05"] > mk["O15"] > mk["O25"] > mk["O35"]
+    assert mk["HO05"] > mk["AO05"] and mk["1|O15"] >= max(mk["O15"], p1 - 1e-6) and abs(mk["DNB1"][0] - p1) < 1e-6 and abs(mk["DNB1"][1] - px) < 1e-6
+    for code, score, won in [("O15", (1, 1), True), ("U15", (1, 0), True), ("HO15", (2, 0), True), ("AO05", (2, 0), False),
+                             ("GG", (1, 1), True), ("NG", (2, 0), True), ("1|O25", (1, 0), True), ("1|O25", (0, 3), True),
+                             ("2|O15", (1, 0), False), ("DNB1", (1, 1), None), ("DNB2", (0, 2), True)]:
+        assert B.wins(code, *score) == won, code
+    assert [B.kind(k) for k in ("1", "DNB2", "O35", "HO15", "GG", "1|O15", "CO95", "ZZ")] == \
+        ["win", "dnb", "goals", "team", "btts", "mix", "corners", None]
+    rnd = random.Random(4)
+    hist = []
+    for k in range(900):
+        h, a = rnd.sample(["Manchester City", "Burnley", "Arsenal", "Fulham", "Everton", "Wolves"], 2)
+        hist.append({"league": "E0", "home": h, "away": a, "t_ms": NOW - (900 - k) * H, "hc": 9 if h == "Manchester City" else 4,
+                     "ac": 2 + rnd.randint(0, 3)})
+    model, spreads = K.build(hist)
+    assert model.find("Man City") == "Manchester City" and model.find("Real Madrid") is None
+    mh, ma = model.expect("Manchester City", "Burnley", "E0")
+    assert mh > ma and abs(sum(K.total(mh, ma, 8.0)) - 1) < 1e-9 and K.wins("CO95", 6, 4) and not K.wins("CU95", 6, 4)
+
+
+def test_the_combo_builder_mixes_markets():
+    from engine import combos as C
+    from engine import corners as K
+    t = NOW
+    sharp = [_sharp("Manchester City", "Burnley", t + 5 * H, 1.30, 5.8, 10.0, read=t, sid="s1"),
+             _sharp("Arsenal", "Fulham", t + 6 * H, 1.55, 4.2, 6.0, read=t, sid="s2")]
+    hist = [{"league": "E0", "home": h, "away": a, "t_ms": t - k * H, "hc": 7, "ac": 4}
+            for k, (h, a) in enumerate([("Manchester City", "Burnley"), ("Arsenal", "Fulham"), ("Burnley", "Arsenal"), ("Fulham", "Manchester City")] * 6)]
+    corners = K.build(hist)
+    odds = {"1": 1.28, "DNB1": 1.10, "O15": 1.22, "HO05": 1.08, "GG": 2.10, "1|O15": 1.10, "CO85": 1.60}
+    books = {"sportybet": {"t_ms": t, "rows": [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"], "odds": dict(odds)} for s in sharp]}}
+    board = B.build(books, sharp, [], {}, t, corners=corners)
+    by = {(x["home"], x["market"]): x for x in board}
+    dnb = by[("Manchester City", "DNB1")]
+    assert dnb["p_void"] > 0 and abs(dnb["edge"] - (1.10 * dnb["p"] + dnb["p_void"] - 1)) < 1e-12 and dnb["model"] is None
+    assert by[("Manchester City", "O15")]["model"] == "goals" and by[("Manchester City", "CO85")]["model"] == "corners"
+    assert {x["market"] for x in B.value_bets(board, edge=-1)} <= set(B.CORE)              # the new markets: combos only
+    all_kinds = C.solvers(board, books, t, 1)
+    goals_only = C.solvers(board, books, t, 1, ("goals",))
+    assert {x["market"] for x in goals_only["sportybet"].bets} == {"O15"}
+    mixed = C.best_of(all_kinds, 1.15)
+    assert mixed and all(C.chance(x) >= 0.6 for x in mixed) and len({x["match_id"] for x in mixed}) == len(mixed)
+    s = C.slip([x for x in all_kinds["sportybet"].bets if x["market"] == "DNB1"])
+    assert abs(s["p"] - math.prod(x["p"] + x["p_void"] for x in all_kinds["sportybet"].bets if x["market"] == "DNB1")) < 1e-12
+    assert C.build(all_kinds, 1.15, {"safest": {"1.5": {"n": 9}}}, kinds=("win", "goals", "corners"))["ladder"][0]["past"] is None
+    _, rows = F.parse_push({"book": "sportybet", "rows": [{"home": "A", "away": "B", "t_ms": t, "odds": {"O15": 1.2, "CO95": 1.8, "nonsense": 2}}]})
+    assert rows[0]["odds"] == {"O15": 1.2, "CO95": 1.8}

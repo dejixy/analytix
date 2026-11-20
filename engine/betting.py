@@ -35,6 +35,10 @@ HOUR = 3_600_000
 DAY = 24 * HOUR
 MARKETS = ("1", "X", "2", "1X", "12", "X2", "O25", "U25")
 GOALS = ("O25", "U25")               # over / under 2.5 goals: priced from Pinnacle's own over/under (football-data)
+CORE = ("1", "X", "2", "1X", "12", "X2", "O25", "U25")   # value bets and the rollover use these; the combo builder all
+# The combo builder's other markets (engine/goals.py and engine/corners.py hold their codes): draw no bet exactly from
+# Pinnacle's win prices; the goals model's from its win and over/under prices; corners from the corners model
+KINDS = ("win", "dnb", "goals", "team", "btts", "mix", "corners")
 MARKET_NAME = {"1": "Home win", "X": "Draw", "2": "Away win", "1X": "Home or draw", "12": "Either team wins",
                "X2": "Away or draw", "O25": "Over 2.5 goals", "U25": "Under 2.5 goals"}
 BOOK_KEYS = {"home": "1", "draw": "X", "away": "2", "home_or_draw": "1X", "home_or_away": "12", "draw_or_away": "X2",
@@ -215,11 +219,33 @@ def markets_from_1x2(p: dict[str, float]) -> dict[str, float]:
     return {"1": p["1"], "X": p["X"], "2": p["2"], "1X": p["1"] + p["X"], "12": p["1"] + p["2"], "X2": p["X"] + p["2"]}
 
 
-def wins(market: str, hg: int, ag: int) -> bool:
+def kind(market: str) -> str | None:
+    """Which kind of market a code is, for the combo builder's market picker (None: not one we price)."""
+    if market in ("1", "X", "2", "1X", "12", "X2"):
+        return "win"
+    if market in ("DNB1", "DNB2"):
+        return "dnb"
+    if "|" in market:
+        return "mix" if market in ("1|O15", "1|O25", "2|O15", "2|O25", "X|O15", "X|O25") else None
+    if market in ("GG", "NG"):
+        return "btts"
+    if len(market) == 4 and market[:2] in ("HO", "HU", "AO", "AU") and market[2] in "012" and market[3] == "5":
+        return "team"
+    if len(market) == 3 and market[0] in "OU" and market[1] in "01234" and market[2] == "5":
+        return "goals"
+    from engine import corners as K
+    return "corners" if K.parse(market) else None
+
+
+def wins(market: str, hg: int, ag: int) -> bool | None:
+    """Whether a market won on a final score (None: refunded, for draw no bet on a draw). Corners need the corners."""
     if market in GOALS:
         return (hg + ag >= 3) == (market == "O25")
-    r = "1" if hg > ag else "2" if ag > hg else "X"
-    return r in market
+    if market in ("1", "X", "2", "1X", "12", "X2"):
+        r = "1" if hg > ag else "2" if ag > hg else "X"
+        return r in market
+    from engine import goals as G
+    return G.wins(market, hg, ag)
 
 
 # ── history ──────────────────────────────────────────────────────────────────
@@ -402,6 +428,43 @@ def favourite_side(market: str, p: dict[str, float]) -> str | None:
     return None
 
 
+_MODEL_FITS: dict = {}
+
+
+def model_fair(s: dict, fair1x2: dict, need: set, corners=None) -> dict[str, dict]:
+    """The combo builder's other markets for one sharp game, those in `need`: {market: {p, p_void, src, model}}.
+    Draw no bet from Pinnacle's win chances exactly; goals markets from the goals model fitted to Pinnacle's win and
+    over/under chances (kept per game and price); corners from the corners model ((model, spreads) or None)."""
+    from engine import corners as K
+    from engine import goals as G
+    out = {}
+    for m in need & {"DNB1", "DNB2"}:
+        out[m] = {"p": fair1x2["1" if m == "DNB1" else "2"], "p_void": fair1x2["X"], "src": s["src"], "model": None}
+    goal = {m for m in need if kind(m) in ("goals", "team", "btts", "mix")} - set(GOALS)
+    if goal:
+        po = goals_fair(s).get("O25")
+        key = (s["id"], round(fair1x2["1"], 4), round(fair1x2["2"], 4), round(po, 4) if po else None, G.RHO)
+        mk = _MODEL_FITS.get(key)
+        if mk is None:
+            if len(_MODEL_FITS) > 4000:
+                _MODEL_FITS.clear()
+            mk = _MODEL_FITS[key] = G.markets(G.grid(*G.fit(fair1x2["1"], fair1x2["X"], fair1x2["2"], po)))
+        src = "goals model on Pinnacle's prices" + ("" if po else " (win prices only)")
+        for m in goal:
+            if m in mk:
+                out[m] = {"p": mk[m], "p_void": 0.0, "src": src, "model": "goals"}
+    corner = {m for m in need if kind(m) == "corners"}
+    if corner and corners:
+        model, spreads = corners
+        home, away = model.find(s["home"]), model.find(s["away"])
+        if home and away:                                      # both teams have corners on record
+            mk = K.markets(K.total(*model.expect(home, away, s.get("league")), spreads.get(s.get("league"), 8.0)))
+            for m in corner:
+                if m in mk:
+                    out[m] = {"p": mk[m], "p_void": 0.0, "src": "corners model (three seasons of corners)", "model": "corners"}
+    return out
+
+
 def goals_fair(s: dict) -> dict[str, float]:
     """A sharp game's fair over/under 2.5 chances ({"O25", "U25"}), by the margin method in use, or {} without them."""
     o = s.get("ou_odds")
@@ -410,7 +473,7 @@ def goals_fair(s: dict) -> dict[str, float]:
 
 # ── the board ────────────────────────────────────────────────────────────────
 def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: dict, now_ms: int,
-          teams: Teams | None = None) -> list[dict]:
+          teams: Teams | None = None, corners=None) -> list[dict]:
     """Every Nigerian price matched to a sharp game, with the fair chance, the history-adjusted chance, the edge, the
     stats and the patterns. books: {book: {"t_ms", "rows": [{home, away, t_ms, league, odds: {market: price}}]}}."""
     out = []
@@ -425,7 +488,21 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
             fair1x2 = (devig(s["odds"]) if s.get("odds") else None) or s["fair"]     # the current method, from raw prices
             fair = {**markets_from_1x2(fair1x2), **goals_fair(s)}
             intl = bool(s.get("intl"))
+            more = model_fair(s, fair1x2, set(r["odds"]) - set(fair), corners)
             for m, price in r["odds"].items():
+                if m in more and price and price > 1:            # the combo builder's other markets
+                    x = more[m]
+                    p, pv = x["p"], x["p_void"]
+                    if not 0 < p < 1:
+                        continue
+                    out.append({"key": f"{s['id']}:{m}", "match_id": s["id"], "home": s["home"], "away": s["away"],
+                                "sel": (r.get("ids") or {}).get(m), "league": s.get("league", ""),
+                                "league_name": s.get("league_name", ""), "t_ms": s["t_ms"], "market": m, "book": book,
+                                "odds": price, "odds_age_h": age_h, "fair_p": p, "p": p, "p_void": pv, "p_hist": p,
+                                "fair_odds": (1 - pv) / p, "edge": price * p + pv - 1, "edge_hist": price * p + pv - 1,
+                                "sharp_src": x["src"], "model": x["model"], "fair1x2": fair1x2,
+                                "sharp_age_h": (now_ms - s["read_ms"]) / HOUR, "pattern": None, "intl": intl})
+                    continue
                 if m not in fair or not price or price <= 1:
                     continue
                 goals = m in GOALS
@@ -494,7 +571,7 @@ def value_bets(board: list[dict], lo: float = FLAT_MIN, hi: float = FLAT_MAX, ed
                before_ms: int | None = None, old: bool = True) -> list[dict]:
     """Flat value bets by either rule (rule_of; with old=False, the new rule only), the new rule's first; with
     before_ms, only those kicking off before it."""
-    out = [x for x in board if lo <= x["odds"] <= hi and rule_of(x, edge) in (("new", "old") if old else ("new",))
+    out = [x for x in board if lo <= x["odds"] <= hi and x["market"] in CORE and rule_of(x, edge) in (("new", "old") if old else ("new",))
            and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"
            and (before_ms is None or x["t_ms"] <= before_ms)]
     return sorted(out, key=lambda x: (rule_of(x, edge) != "new", -(x["edge"] if rule_of(x, edge) == "new" else x["edge_hist"])))
@@ -507,7 +584,7 @@ def roll_bar(x: dict) -> float:
 
 def rollover_pick(board: list[dict], now_ms: int) -> dict | None:
     """Today's one rollover bet (see the module note), or None if nothing qualifies."""
-    c = [x for x in board if ROLL_MIN <= x["odds"] <= ROLL_MAX and x["t_ms"] <= now_ms + 30 * HOUR
+    c = [x for x in board if ROLL_MIN <= x["odds"] <= ROLL_MAX and x["t_ms"] <= now_ms + 30 * HOUR and x["market"] in CORE
          and roll_bar(x) <= x["edge"] <= EDGE_MAX
          and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"]
     return max(c, key=lambda x: (x["p"], x["edge"])) if c else None
@@ -518,7 +595,7 @@ def rollover_misses(board: list[dict], now_ms: int, n: int = 3) -> list[dict]:
     it fails in plain words, fewest failures first."""
     out = []
     for x in board:
-        if x["market"] == "X" or x["t_ms"] > now_ms + 30 * HOUR or not 1.10 <= x["odds"] <= 1.45:
+        if x["market"] == "X" or x["market"] not in CORE or x["t_ms"] > now_ms + 30 * HOUR or not 1.10 <= x["odds"] <= 1.45:
             continue
         why = []
         if not ROLL_MIN <= x["odds"] <= ROLL_MAX:
