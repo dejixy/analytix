@@ -851,3 +851,10 @@ def test_a_thousand_odds_slip():
     assert books["sportybet"].reach(15) < 1000 < books["sportybet"].reach(20)
     out = C.build(books, 1000)
     assert out["slip"]["n"] == len(big) and [r["target"] for r in out["ladder"]][-2:] == [500, 1000]
+
+
+def test_the_combo_builder_says_which_books_have_the_markets():
+    from engine import combos as C
+    books = {"bet9ja": C.Builder([{**_leg("a", "1|O25", 1.30, 0.75), "book": "bet9ja"}]), "sportybet": C.Builder([])}
+    out = C.build(books, 1.2, book="sportybet", kinds=("mix",))
+    assert out["bets"] == 0 and out["book"] == "sportybet" and out["books"] == ["bet9ja"] and out["slip"] is None
