@@ -334,6 +334,8 @@ tr.wall td { color: var(--ink); }
 .planner .panel-head { position: sticky; top: 0; background: var(--surface); z-index: 1; }
 .plan-close { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 13px; }
 .plan-close:hover { color: var(--ink); }
+.plan-link { margin-left: auto; margin-right: 12px; font-size: 11px; color: var(--ink-2); text-decoration: none; border-bottom: 1px dotted var(--muted); }
+.plan-link:hover { color: var(--ink); }
 .plan-form { display: grid; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border); }
 .plan-side { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 .plan-seg {
@@ -1631,3 +1633,23 @@ kbd {
 .term .bt-code .az-go { margin: 0; font-size: 12px; text-decoration: none; }
 .term .bt-code-v { font-size: 18px; font-weight: 600; color: var(--t-ink); letter-spacing: 0.06em; }
 .term .bt-code .down { color: var(--t-red); }
+
+/* Sentiment Check (/sentiment) */
+.term .sc-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 2px 0 4px; font-size: 11.5px; }
+.term .sc-price { font-size: 15px; font-weight: 600; color: var(--t-ink); }
+.term .sc-say { margin: 2px 0 10px; font-size: 13px; line-height: 1.6; color: var(--t-ink2); max-width: 92ch; }
+.term .sc-say b { color: var(--t-ink); font-weight: 600; }
+.term .sc-say b.up { color: var(--t-green); }
+.term .sc-say b.down { color: var(--t-red); }
+.term .sc-legend { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--t-ink2); }
+.term .sc-key { display: inline-block; width: 16px; height: 2px; }
+.term .sc-key.now { background: var(--t-green); }
+.term .sc-key.all { background: var(--t-ink2); margin-left: 8px; }
+.term .sc-curve { width: 100%; height: auto; display: block; margin: 6px 0 4px; }
+.term .sc-curve .sc-grid { stroke: var(--t-line); stroke-width: 1; }
+.term .sc-curve .sc-zero { stroke: var(--t-strong); stroke-width: 1; }
+.term .sc-curve .sc-ax { fill: var(--t-mute); font-size: 10.5px; font-family: var(--mono); }
+.term .sc-curve .sc-all { fill: none; stroke: var(--t-ink2); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.term .sc-curve .sc-now { fill: none; stroke: var(--t-green); stroke-width: 2; }
+.term .az-table td.up, .term .az-table b.up { color: var(--t-green); }
+.term .az-table td.down, .term .az-table b.down { color: var(--t-red); }

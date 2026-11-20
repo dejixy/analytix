@@ -15,9 +15,10 @@
 #   bash ~/analytix/scripts/run.sh map       (re)start the HYPE map in the background (keeps what it already read)
 #   bash ~/analytix/scripts/run.sh top       the biggest wallets in the latest HYPE map, to look up and name
 #   bash ~/analytix/scripts/run.sh fresh     (re)start fresh money in the background (store build, then the study)
-#   bash ~/analytix/scripts/run.sh sentiment Sentiment Check's history: downloads or tops up 5 years of Binance candles,
-#                                            open interest and funding (3 years of 1-second candles) in the background,
-#                                            as the app's user, into /opt/analytix/data/longhist (first run: about an hour)
+#   bash ~/analytix/scripts/run.sh sentiment Sentiment Check: downloads or tops up 5 years of Binance candles, open
+#                                            interest and funding (3 years of 1-second candles), then builds the tables
+#                                            the page reads, in the background as the app's user (first run: 1-2 hours).
+#                                            Add --daily for the quick daily top-up (tables rebuilt once a week)
 #   bash ~/analytix/scripts/run.sh show      every finished result
 #   bash ~/analytix/scripts/run.sh update    pull the latest code
 #
@@ -38,7 +39,7 @@ case "${1:-status}" in
   status)
     echo "fresh money:  build $(running buildStore), study $(running freshMoney), result $(ready /tmp/fresh.txt)"
     last /tmp/fresh.log
-    echo "sentiment:    $(running sentimentData), $(sudo du -sh /opt/analytix/data/longhist 2>/dev/null | cut -f1 || echo 0) kept"
+    echo "sentiment:    $(running sentimentData), $(sudo du -sh /opt/analytix/data/longhist 2>/dev/null | cut -f1 || echo 0) kept, tables for: $(ls /opt/analytix/data/sentiment/*.npz 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/.npz//' | tr '\n' ' ')"
     last /tmp/sentiment.txt 3
     echo "HYPE map:     $(running hypeMap), result $(ready /tmp/hype_map.txt)"
     last /tmp/hype_map.log
@@ -120,7 +121,7 @@ case "${1:-status}" in
     sudo pkill -f scripts.sentimentData 2>/dev/null; sleep 2
     sudo -u analytix sh -c "cd /opt/analytix && nohup nice -n 19 /opt/analytix/.venv/bin/python -m scripts.sentimentData ${*:2} \
       > /tmp/sentiment.txt 2> /tmp/sentiment.log < /dev/null &"
-    echo "Sentiment Check's history download started in the background; check with: bash ~/analytix/scripts/run.sh status"
+    echo "Sentiment Check's download and build started in the background; check with: bash ~/analytix/scripts/run.sh status"
     ;;
   fresh)
     pkill -f scripts.freshMoney 2>/dev/null; pkill -f scripts.buildStore 2>/dev/null; sleep 2
