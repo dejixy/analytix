@@ -375,7 +375,10 @@ function Combo({ stamp, pub }) {
         </>
       ) : (
         <p className="az-note">
-          {!c.bets ? "No fresh odds from the books for games in this window right now."
+          {!c.bets ? (c.book && c.books?.length && !c.books.includes(c.book)
+            ? `${BOOK[c.book] || c.book} has none of these markets in this window: ${c.books.map((k) => BOOK[k] || k).join(", ")} ${c.books.length > 1 ? "do" : "does"}.`
+            : kinds.length < ALL_KINDS.length && !c.books?.length ? "None of the books has these markets in this window."
+            : "No fresh odds from the books for games in this window right now.")
             : c.target > c.reach ? `With up to ${g.games} games, the bets in this window reach ${odd(c.reach)} at most.`
             : `No slip of ${pct(floor)}+ games lands between ${odd(c.target)} and ${odd(c.target * (1 + g.tol))} in this window.`}
         </p>
