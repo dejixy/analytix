@@ -641,7 +641,7 @@ def test_the_collector_reads_over_under():
     row = N.sporty_rows(sporty)[0]
     assert row["over_2_5"] == 1.72 and row["under_2_5"] == 2.08 and row["home"] == 1.37
     assert N.goals_line("x", [{"odds": {"over_2_5": 1.7, "under_2_5": 2.1, "O15": 1.2, "CO95": 1.8}}, {"odds": {"home": 1.2}}]) == \
-        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1"
+        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1, handicaps on 0, shots on 0, keeper saves on 0, win or over on 0"
 
 
 def test_value_bets_by_either_rule():
@@ -769,6 +769,7 @@ def test_the_goals_and_corners_models():
         assert B.wins(code, *score) == won, code
     assert [B.kind(k) for k in ("1", "DNB2", "O35", "HO15", "GG", "1|O15", "CO95", "ZZ")] == \
         ["win", "dnb", "goals", "team", "btts", "mix", "corners", None]
+    assert [B.kind(k) for k in ("1X", "12", "X2")] == ["dc", "dc", "dc"]                  # double chance has its own button
     rnd = random.Random(4)
     hist = []
     for k in range(900):
@@ -858,3 +859,84 @@ def test_the_combo_builder_says_which_books_have_the_markets():
     books = {"bet9ja": C.Builder([{**_leg("a", "1|O25", 1.30, 0.75), "book": "bet9ja"}]), "sportybet": C.Builder([])}
     out = C.build(books, 1.2, book="sportybet", kinds=("mix",))
     assert out["bets"] == 0 and out["book"] == "sportybet" and out["books"] == ["bet9ja"] and out["slip"] is None
+
+
+def test_handicaps_shots_and_saves():
+    """Handicaps from the goals model's score grid; shots, shots on target and saves from the count models."""
+    from engine import corners as K
+    from engine import combos as C
+    from engine import goals as G
+    m = G.grid(1.7, 0.9)
+    mk = G.markets(m)
+    p1, px, p2 = (float(m[G.MASKS[k]].sum()) for k in ("1", "X", "2"))
+    assert abs(mk["AH1M05"] - p1) < 1e-9 and abs(mk["AH2P05"] - (px + p2)) < 1e-9      # -0.5 is a win; +0.5 a win or draw
+    win, void = mk["AH1M10"]                                                             # -1: a one-goal win is refunded
+    assert abs(win - mk["AH1M15"]) < 1e-9 and abs(win + void + mk["AH2P05"] - 1) < 1e-9
+    assert abs(mk["EH011"] + mk["EH01X"] + mk["EH012"] - 1) < 1e-9 and abs(mk["EH011"] - mk["AH1M15"]) < 1e-9
+    for code, score, won in [("AH1M15", (2, 0), True), ("AH1M15", (1, 0), False), ("AH1M10", (1, 0), None), ("AH2P15", (2, 1), True),
+                             ("AH2P15", (3, 1), False), ("AH2P10", (1, 0), None), ("EH011", (2, 0), True), ("EH01X", (1, 0), True),
+                             ("EH012", (1, 1), True), ("EH101", (0, 0), True)]:
+        assert G.wins(code, *score) == won and B.wins(code, *score) == won, code
+    assert [B.kind(k) for k in ("AH1M15", "EH01X", "CO95", "CHO45", "SHO245", "STAU35", "SVHO25")] == \
+        ["handicap", "handicap", "corners", "corners", "shots", "shots", "saves"]
+    g = {"hs": 15, "as": 8, "hst": 6, "ast": 3, "hg": 2, "ag": 1, "hc": 7, "ac": 2}
+    assert K.pair("shots", g) == (15, 8) and K.pair("sot", g) == (6, 3) and K.pair("saves", g) == (2, 4)   # home keeper saved 3-1
+    assert K.wins("SVAO35", *K.pair("saves", g)) and not K.wins("SHU225", *K.pair("shots", g)) and K.wins("CHO55", 7, 2)
+    rnd = random.Random(9)
+    hist = []
+    for k in range(1200):
+        h, a = rnd.sample(["Manchester City", "Burnley", "Arsenal", "Fulham", "Everton", "Wolves"], 2)
+        big = h == "Manchester City"
+        hist.append({"league": "E0", "home": h, "away": a, "t_ms": NOW - (1200 - k) * H, "hg": rnd.randint(0, 3), "ag": rnd.randint(0, 2),
+                     "hs": rnd.randint(18, 26) if big else rnd.randint(8, 14), "as": rnd.randint(5, 12),
+                     "hst": rnd.randint(7, 10) if big else rnd.randint(3, 5), "ast": rnd.randint(4, 6)})
+    models = {stat: K.build(hist, stat) for stat in ("shots", "sot", "saves")}
+    shots = K.priced("shots", *models["shots"][0].expect("Manchester City", "Burnley", "E0"), 20.0)
+    assert shots["SHHO125"] > 0.8 and abs(shots["SHO245"] + shots["SHU245"] - 1) < 1e-9
+    chk = K.check(hist, "sot")
+    assert chk["games"] == 1200 and all(v["n"] > 0 for v in chk["markets"].values())
+    sharp = [_sharp("Manchester City", "Burnley", NOW + 5 * H, 1.30, 5.8, 10.0, read=NOW, sid="s1")]
+    odds = {"1": 1.28, "AH1M10": 1.40, "AH1M15": 1.85, "SHHO125": 1.30, "SVAO15": 1.50}
+    books = {"sportybet": {"t_ms": NOW, "rows": [{"home": "Manchester City", "away": "Burnley", "t_ms": sharp[0]["t_ms"], "odds": odds}]}}
+    board = {x["market"]: x for x in B.build(books, sharp, [], {}, NOW, corners=models)}
+    assert board["AH1M10"]["p_void"] > 0 and board["AH1M10"]["model"] == "goals" and board["AH1M15"]["p_void"] == 0
+    assert board["SHHO125"]["model"] == "shots" and board["SVAO15"]["model"] == "saves" and "shots model" in board["SHHO125"]["sharp_src"]
+    assert C.haircut(board["SHHO125"]) == C.HAIRCUT_CORNERS and C.haircut(board["AH1M15"]) == C.HAIRCUT_LOW
+    row = books["sportybet"]["rows"][0]
+    row["odds"] = {"1": 1.28, **{f"SHHO{k}5": 1.5 for k in range(12, 21)}}
+    ps = {x["market"]: x["p"] for x in B.build(books, sharp, [], {}, NOW, corners=models) if x["market"] != "1"}
+    line = next(int(m[4:-1]) for m, p in sorted(ps.items()) if 0.65 < p < 0.88)          # a line the builder can use
+    row["odds"] = {"1": 1.28, f"SHHO{line}5": round(1.03 / ps[f"SHHO{line}5"], 2)}         # inside the 10% edge cap
+    board = B.build(books, sharp, [], {}, NOW, corners=models)
+    assert {x["market"] for x in C.solvers(board, books, NOW, 1, ("shots",))["sportybet"].bets} == {f"SHHO{line}5"}
+
+
+def test_the_collector_reads_handicaps_shots_and_saves():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    o = lambda i, d, v: {"id": i, "desc": d, "odds": v}
+    pp = "pre:playerprops:72221406"
+    reply = {"data": [{"name": "Premier League", "events": [{"homeTeamName": "Man City", "awayTeamName": "Fulham",
+             "estimateStartTime": 1795264200000, "eventId": "sr:match:72221406", "markets": [
+                 {"id": "1", "outcomes": [o("1", "Home", "1.40"), o("2", "Draw", "5.79"), o("3", "Away", "7.42")]},
+                 {"id": "16", "specifier": "hcp=-1.5", "outcomes": [o("1714", "Home (-1.5)", "1.96"), o("1715", "Away (+1.5)", "1.85")]},
+                 {"id": "16", "specifier": "hcp=-1", "outcomes": [o("1714", "Home (-1.0)", "1.55"), o("1715", "Away (+1.0)", "2.45")]},
+                 {"id": "14", "specifier": "hcp=0:1", "outcomes": [o("1711", "Home (0:1)", "1.97"), o("1712", "Draw (0:1)", "4.30"),
+                                                                   o("1713", "Away (0:1)", "3.10")]},
+                 {"id": "854", "specifier": "total=2.5", "outcomes": [o("74", "Yes", "1.13"), o("76", "No", "5.30")]},
+                 {"id": "900552", "specifier": "total=16.5", "outcomes": [o("12", "Over 16.5", "1.68"), o("13", "Under 16.5", "2.02")]},
+                 {"id": "900393", "specifier": "total=8.5", "outcomes": [o("12", "Over 8.5", "1.70"), o("13", "Under 8.5", "2.00")]},
+                 {"id": "800297", "outcomes": [o(f"{pp}:128383:2:1", "Rulli (Man City) 2+", "1.36"),
+                                               o(f"{pp}:756514:2:1", "Donnarumma (Man City) 2+", "1.40"),
+                                               o(f"{pp}:103335:3:2", "Leno (Fulham) 3+", "1.21"),
+                                               o(f"{pp}:123207:3:2", "Lecomte (Fulham) 3+", "1.21")]},
+                 {"id": "830297", "specifier": "pair=10406-1565", "outcomes": [o(f"{pp}:103335", "Leno", "1.20"),
+                                                                               o(f"{pp}:756514", "Donnarumma", "4.85")]}]}]}]}
+    row = N.sporty_rows(reply)[0]
+    assert row["more"] == {"AH1M15": 1.96, "AH2P15": 1.85, "AH1M10": 1.55, "AH2P10": 2.45, "EH011": 1.97, "EH01X": 4.30,
+                           "EH012": 3.10, "1|O25": 1.13, "SHHO165": 1.68, "SHHU165": 2.02, "STO85": 1.70, "STU85": 2.00,
+                           "SVHO15": 1.40, "SVAO25": 1.21}                                 # the starting keepers' lines only
+    assert row["sporty_ids"]["SVHO15"]["outcome"] == f"{pp}:756514:2:1" and row["sporty_ids"]["AH1M15"]["specifier"] == "hcp=-1.5"
+    assert all(B.kind(k) for k in row["more"])                                             # the server takes every one

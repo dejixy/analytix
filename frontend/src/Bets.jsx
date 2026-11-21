@@ -24,8 +24,8 @@ const GOALS = ["O25", "U25"];
 const more = (x) => {
   const m = x.market;
   if (m === "DNB1" || m === "DNB2") return `${m === "DNB1" ? x.home : x.away} (draw no bet)`;
-  if (m === "GG") return "Both teams score";
-  if (m === "NG") return "Not both teams score";
+  if (m === "GG") return "Both teams to score: yes";
+  if (m === "NG") return "Both teams to score: no";
   let r = m.match(/^([OU])(\d)5$/);
   if (r) return `${r[1] === "O" ? "Over" : "Under"} ${r[2]}.5 goals`;
   r = m.match(/^([HA])([OU])(\d)5$/);
@@ -34,14 +34,31 @@ const more = (x) => {
     return r[2] === "O" ? (k === 0 ? `${team} to score` : `${team} ${k + 1}+ goals`) : (k === 0 ? `${team} not to score` : `${team} under ${k}.5 goals`);
   }
   r = m.match(/^([12X])\|O(\d)5$/);
-  if (r) return `${r[1] === "1" ? `${x.home} win` : r[1] === "2" ? `${x.away} win` : "Draw"} or over ${r[2]}.5 goals`;
-  r = m.match(/^C([OU])(\d+)5$/);
-  if (r) return `${r[1] === "O" ? "Over" : "Under"} ${r[2]}.5 corners`;
+  if (r) return `${r[1] === "1" ? x.home : r[1] === "2" ? x.away : "Draw"} or over ${r[2]}.5 goals`;
+  r = m.match(/^AH([12])([MP])(\d)(\d)$/);
+  if (r) {
+    const line = Number(r[3]) + Number(r[4]) / 10;
+    return `${r[1] === "1" ? x.home : x.away} ${r[2] === "M" ? "−" : "+"}${Number.isInteger(line) ? line : line.toFixed(1)} (Asian handicap)`;
+  }
+  r = m.match(/^EH(\d)(\d)([12X])$/);
+  if (r) {
+    const start = `${r[1]}:${r[2]}`;
+    return r[3] === "X" ? `Draw with ${start} handicap` : `${r[3] === "1" ? x.home : x.away} with ${start} handicap`;
+  }
+  r = m.match(/^(C|SH|ST|SV)([HA]?)([OU])(\d+)5$/);
+  if (r) {
+    const what = { C: "corners", SH: "shots", ST: "shots on target", SV: "saves" }[r[1]];
+    const side = `${r[3] === "O" ? "over" : "under"} ${r[4]}.5 ${what}`;
+    if (r[1] === "SV") return r[2] ? `${r[2] === "H" ? x.home : x.away} keeper ${side}` : `Keepers ${side}`;
+    return r[2] ? `${r[2] === "H" ? x.home : x.away} ${side}` : `${side[0].toUpperCase()}${side.slice(1)}`;
+  }
   return null;
 };
-const pick = (x) => (x.market === "1" ? x.home : x.market === "2" ? x.away : x.market === "1X" ? `${x.home} or draw`
-  : x.market === "X2" ? `${x.away} or draw` : x.market === "X" ? "Draw" : GOALS.includes(x.market) ? MARKET[x.market]
-  : x.market === "12" ? `No draw: ${x.home} or ${x.away}` : more(x) || x.market);
+// The model behind a combo leg that isn't priced from Pinnacle directly
+const MODEL = { goals: "goals model", corners: "corners model", shots: "shots model", sot: "shots model", saves: "saves model" };
+const pick = (x) => (x.market === "1" ? x.home : x.market === "2" ? x.away : x.market === "1X" ? `${x.home} or draw (double chance)`
+  : x.market === "X2" ? `${x.away} or draw (double chance)` : x.market === "X" ? "Draw" : GOALS.includes(x.market) ? MARKET[x.market]
+  : x.market === "12" ? `${x.home} or ${x.away} (double chance)` : more(x) || x.market);
 const BOOK = { bet9ja: "Bet9ja", betking: "BetKing", nairabet: "Nairabet", sportybet: "SportyBet" };
 
 const Top = ({ title, facts = [], children }) => (
@@ -218,9 +235,11 @@ function Value({ d }) {
 
 const WINDOWS = [["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
-const KINDS = [["win", "Wins"], ["dnb", "Draw no bet"], ["goals", "Goals"], ["team", "Team goals"], ["btts", "Both score"],
-  ["mix", "Win or goals"], ["corners", "Corners"]];
+const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
+  ["btts", "Both teams to score"], ["mix", "Home/away or over"], ["handicap", "Handicap"], ["corners", "Corners"], ["shots", "Team shots"],
+  ["saves", "Goalkeeper saves"]];
 const ALL_KINDS = KINDS.map(([k]) => k);
+const OLD_ALL = ["win", "dnb", "goals", "team", "btts", "mix", "corners"];       // "all" before double chance had its own button
 const SAVED = "analytix.bets.combo";
 const saved = () => {
   try {
@@ -285,7 +304,11 @@ function Combo({ stamp, pub }) {
   const [days, setDays] = useState(() => saved().days || "1");
   const [least, setLeast] = useState(() => saved().least || "");
   const [book, setBook] = useState(() => saved().book || "");
-  const [kinds, setKinds] = useState(() => (Array.isArray(saved().kinds) && saved().kinds.length ? saved().kinds : ALL_KINDS));
+  const [kinds, setKinds] = useState(() => {
+    const k = saved().kinds;
+    if (!Array.isArray(k) || !k.length || OLD_ALL.every((x) => k.includes(x))) return ALL_KINDS;    // everything stays everything
+    return ALL_KINDS.filter((x) => k.includes(x) || (x === "dc" && k.includes("win")));             // wins used to carry double chance
+  });
   const flip = (k) => setKinds((ks) => (ks.includes(k) ? (ks.length > 1 ? ks.filter((x) => x !== k) : ks) : ALL_KINDS.filter((x) => x === k || ks.includes(x))));
   const [c, setC] = useState(null);
   const t = Number(target);
@@ -362,7 +385,7 @@ function Combo({ stamp, pub }) {
               {s.legs.map((x) => (
                 <tr key={x.key}>
                   <td className="muted num">{kick(x.t_ms)}</td>
-                  <td className="bt-name"><b>{pick(x)}</b>{x.model && <span className="az-flag muted" title={x.sharp_src}>{x.model === "corners" ? "corners model" : "goals model"}</span>}
+                  <td className="bt-name"><b>{pick(x)}</b>{x.model && <span className="az-flag muted" title={x.sharp_src}>{MODEL[x.model] || `${x.model} model`}</span>}
                     <span className="muted az-cat">{x.home} v {x.away} · {x.league_name || x.league}</span></td>
                   <td className="r num">{odd(x.odds)}</td>
                   <td className="r num muted">{odd((1 - (x.p_void || 0)) / x.p)}</td>
@@ -420,10 +443,13 @@ function Combo({ stamp, pub }) {
 // chances fit the results than each league's plain rate
 function Models({ m, kinds }) {
   const rows = [];
-  const goals = m?.goals?.markets || {}, corners = m?.corners?.markets || {};
-  const want = { goals: ["O15", "O35", "U15", "U35"], team: ["HO05", "HO15", "AO05", "AO15"], btts: ["GG", "NG"], mix: ["1|O15", "2|O15", "1|O25", "2|O25"] };
+  const goals = m?.goals?.markets || {};
+  const want = { goals: ["O15", "O35", "U15", "U35"], team: ["HO05", "HO15", "AO05", "AO15"], btts: ["GG", "NG"], mix: ["1|O15", "2|O15", "1|O25", "2|O25"],
+    handicap: ["AH1M15", "AH2M15", "AH1P15", "AH2P15", "EH011", "EH101"] };
   for (const [k, codes] of Object.entries(want)) if (kinds.includes(k)) codes.forEach((code) => goals[code]?.n && rows.push([code, goals[code]]));
-  if (kinds.includes("corners")) Object.entries(corners).forEach(([code, v]) => v.n && rows.push([code, v]));
+  for (const [k, stats] of [["corners", ["corners"]], ["shots", ["shots", "sot"]], ["saves", ["saves"]]]) {
+    if (kinds.includes(k)) stats.forEach((st) => Object.entries(m?.[st]?.markets || {}).forEach(([code, v]) => v.n && rows.push([code, v])));
+  }
   if (!rows.length) return null;
   return (
     <div className="az-scroll"><table className="az-table bt-t">

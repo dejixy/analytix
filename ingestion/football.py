@@ -99,7 +99,7 @@ def parse_fd(text: str, league: str | None = None) -> list[dict]:
         hg, ag = num(r.get("FTHG") if r.get("FTHG") not in (None, "") else r.get("HG")), num(r.get("FTAG") if r.get("FTAG") not in (None, "") else r.get("AG"))
         g = {"league": league or (r.get("Div") or "").strip(), "home": home, "away": away, "t_ms": t,
              "hg": int(hg) if hg is not None else None, "ag": int(ag) if ag is not None else None,
-             "hst": num(r.get("HST")), "ast": num(r.get("AST")),
+             "hst": num(r.get("HST")), "ast": num(r.get("AST")), "hs": num(r.get("HS")), "as": num(r.get("AS")),
              "hc": int(num(r.get("HC"))) if num(r.get("HC")) is not None else None,      # corners
              "ac": int(num(r.get("AC"))) if num(r.get("AC")) is not None else None}
         for c in ODDS_COLS:

@@ -38,7 +38,8 @@ GOALS = ("O25", "U25")               # over / under 2.5 goals: priced from Pinna
 CORE = ("1", "X", "2", "1X", "12", "X2", "O25", "U25")   # value bets and the rollover use these; the combo builder all
 # The combo builder's other markets (engine/goals.py and engine/corners.py hold their codes): draw no bet exactly from
 # Pinnacle's win prices; the goals model's from its win and over/under prices; corners from the corners model
-KINDS = ("win", "dnb", "goals", "team", "btts", "mix", "corners")
+KINDS = ("win", "dc", "dnb", "goals", "team", "btts", "mix", "handicap", "corners", "shots", "saves")
+COUNT_MODELS = ("corners", "shots", "sot", "saves")      # priced by engine/corners.py's count models (no sharp price)
 MARKET_NAME = {"1": "Home win", "X": "Draw", "2": "Away win", "1X": "Home or draw", "12": "Either team wins",
                "X2": "Away or draw", "O25": "Over 2.5 goals", "U25": "Under 2.5 goals"}
 BOOK_KEYS = {"home": "1", "draw": "X", "away": "2", "home_or_draw": "1X", "home_or_away": "12", "draw_or_away": "X2",
@@ -221,8 +222,10 @@ def markets_from_1x2(p: dict[str, float]) -> dict[str, float]:
 
 def kind(market: str) -> str | None:
     """Which kind of market a code is, for the combo builder's market picker (None: not one we price)."""
-    if market in ("1", "X", "2", "1X", "12", "X2"):
+    if market in ("1", "X", "2"):
         return "win"
+    if market in ("1X", "12", "X2"):
+        return "dc"
     if market in ("DNB1", "DNB2"):
         return "dnb"
     if "|" in market:
@@ -234,11 +237,16 @@ def kind(market: str) -> str | None:
     if len(market) == 3 and market[0] in "OU" and market[1] in "01234" and market[2] == "5":
         return "goals"
     from engine import corners as K
-    return "corners" if K.parse(market) else None
+    from engine import goals as G
+    if G.handicap(market):
+        return "handicap"
+    c = K.parse(market)
+    return K.KIND[c[0]] if c else None
 
 
 def wins(market: str, hg: int, ag: int) -> bool | None:
-    """Whether a market won on a final score (None: refunded, for draw no bet on a draw). Corners need the corners."""
+    """Whether a market won on a final score (None: refunded: draw no bet on a draw, a whole handicap line level).
+    Corners, shots and saves need the match stats (engine/corners.py's wins)."""
     if market in GOALS:
         return (hg + ag >= 3) == (market == "O25")
     if market in ("1", "X", "2", "1X", "12", "X2"):
@@ -433,14 +441,15 @@ _MODEL_FITS: dict = {}
 
 def model_fair(s: dict, fair1x2: dict, need: set, corners=None) -> dict[str, dict]:
     """The combo builder's other markets for one sharp game, those in `need`: {market: {p, p_void, src, model}}.
-    Draw no bet from Pinnacle's win chances exactly; goals markets from the goals model fitted to Pinnacle's win and
-    over/under chances (kept per game and price); corners from the corners model ((model, spreads) or None)."""
+    Draw no bet from Pinnacle's win chances exactly; goals markets and handicaps from the goals model fitted to
+    Pinnacle's win and over/under chances (kept per game and price); corners, shots and saves from the count models
+    ({stat: (model, spreads)}; a bare (model, spreads) is the corners model)."""
     from engine import corners as K
     from engine import goals as G
     out = {}
     for m in need & {"DNB1", "DNB2"}:
         out[m] = {"p": fair1x2["1" if m == "DNB1" else "2"], "p_void": fair1x2["X"], "src": s["src"], "model": None}
-    goal = {m for m in need if kind(m) in ("goals", "team", "btts", "mix")} - set(GOALS)
+    goal = {m for m in need if kind(m) in ("goals", "team", "btts", "mix", "handicap")} - set(GOALS)
     if goal:
         po = goals_fair(s).get("O25")
         key = (s["id"], round(fair1x2["1"], 4), round(fair1x2["2"], 4), round(po, 4) if po else None, G.RHO)
@@ -452,16 +461,26 @@ def model_fair(s: dict, fair1x2: dict, need: set, corners=None) -> dict[str, dic
         src = "goals model on Pinnacle's prices" + ("" if po else " (win prices only)")
         for m in goal:
             if m in mk:
-                out[m] = {"p": mk[m], "p_void": 0.0, "src": src, "model": "goals"}
-    corner = {m for m in need if kind(m) == "corners"}
-    if corner and corners:
-        model, spreads = corners
+                p, void = mk[m] if isinstance(mk[m], tuple) else (mk[m], 0.0)     # a whole handicap line refunds a level result
+                out[m] = {"p": p, "p_void": void, "src": src, "model": "goals"}
+    counts = corners if isinstance(corners, dict) else {"corners": corners} if corners else {}
+    by_stat: dict = {}
+    for m in need:
+        c = K.parse(m)
+        if c:
+            by_stat.setdefault(c[0], set()).add(m)
+    for stat, ms in by_stat.items():
+        if not counts.get(stat):
+            continue
+        model, spreads = counts[stat]
         home, away = model.find(s["home"]), model.find(s["away"])
-        if home and away:                                      # both teams have corners on record
-            mk = K.markets(K.total(*model.expect(home, away, s.get("league")), spreads.get(s.get("league"), 8.0)))
-            for m in corner:
-                if m in mk:
-                    out[m] = {"p": mk[m], "p_void": 0.0, "src": "corners model (three seasons of corners)", "model": "corners"}
+        if not (home and away):                                # both teams need this stat on record
+            continue
+        mk = K.priced(stat, *model.expect(home, away, s.get("league")), spreads.get(s.get("league"), 8.0))
+        name = K.STATS[stat].name
+        for m in ms:
+            if m in mk:
+                out[m] = {"p": mk[m], "p_void": 0.0, "src": f"{name} model (three seasons of {name})", "model": stat}
     return out
 
 
