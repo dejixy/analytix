@@ -68,7 +68,9 @@ def test_history_adjusts_the_chance_but_only_a_little():
     two = B.calibration([{**g, "AvgH": 1.30, "AvgD": 5.0, "AvgA": 8.0} for g in hist])
     assert ("sharp", "*", "1", B.bucket_of(p)) in two and ("avg", "*", "1", B.bucket_of(B.devig({"1": 1.3, "X": 5, "2": 8})["1"])) in two
     rec = B.team_as_favourite(hist, "Big City")
-    assert rec["n"] > 50 and rec["won"] / rec["n"] > 0.7
+    assert rec["n"] > 50 and rec["won"] / rec["n"] > 0.7 and rec["won"] + rec["drew"] <= rec["n"]
+    games = [(g, side) for g, side in B.team_games(hist, "Big City") if B.hist_fair(g)[side] >= 0.65]
+    assert rec["drew"] == sum(g["hg"] == g["ag"] for g, _ in games)
     f = B.form(hist, "Big City", NOW)
     teams = B.Teams(hist)
     assert B.form(hist, "Big City", NOW, teams=teams) == f and B.team_as_favourite(hist, "Big City", teams=teams) == rec
