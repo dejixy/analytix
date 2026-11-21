@@ -5,7 +5,7 @@ Pinnacle's win prices (home, draw, away) and its over/under 2.5 price pin down h
 score. fit() finds the two scoring rates (λ home, λ away) whose score grid matches those chances best: each side's goals
 a Poisson count, with Dixon and Coles' small correction for 0-0, 1-0, 0-1 and 1-1 (RHO, chosen on past games). Without
 an over/under price the three win chances alone fix both rates. From the grid, markets() prices the rest: over/under
-0.5 to 4.5, each team's goals, both teams to score, draw no bet, and win-or-over.
+0.5 to 4.5, each team's goals, both teams to score, draw no bet, win-or-over and handicaps.
 
 check() replays it on past games (fitted on Pinnacle's prices before kick-off, compared with the final score), so the
 page can show, market by market, what the model said against what happened.
@@ -17,6 +17,10 @@ Market codes (shared with engine/betting.py, the collector and the page):
     GG NG                   both teams score / not
     DNB1 DNB2               draw no bet: a draw is refunded
     1|O15 1|O25 2|O15 2|O25 X|O25   home (away, draw) wins OR over x.5 goals
+    AH1M15 AH2P05 AH1M10 ...  Asian handicap: side 1 (home) or 2 (away), M minus or P plus, the line in tenths (0.5 to
+                            3.5); on a whole line a level result is refunded
+    EH011 EH01X EH012 ...   three-way handicap h:a (here 0:1, the away side starting a goal up): home, draw or away
+                            after the head start
 """
 from __future__ import annotations
 
@@ -97,8 +101,31 @@ def fit(p1: float, px: float, p2: float, po: float | None = None, rho: float | N
     return float(lh), float(la)
 
 
+AH_LINES = (5, 10, 15, 20, 25, 30, 35)             # Asian handicap lines, in tenths of a goal
+EH_STARTS = tuple((0, k) for k in range(1, 6)) + tuple((k, 0) for k in range(1, 6))   # 3-way head starts (home:away)
+
+
+def ah_code(side: str, minus: bool, tenths: int) -> str:
+    return f"AH{side}{'M' if minus else 'P'}{tenths:02d}"
+
+
+def handicap(market: str) -> tuple | None:
+    """("AH", side, signed tenths) or ("EH", home start, away start, result), or None."""
+    if len(market) == 6 and market[:2] == "AH" and market[2] in "12" and market[3] in "MP" and market[4:].isdigit():
+        t = int(market[4:])
+        return "AH", market[2], -t if market[3] == "M" else t
+    if len(market) == 5 and market[:2] == "EH" and market[2:4].isdigit() and market[4] in "1X2":
+        return "EH", int(market[2]), int(market[3]), market[4]
+    return None
+
+
+def _ah_margin(side: str, diff, tenths: int):
+    """Ten times the handicapped margin for the backed side (positive: won, zero: refunded)."""
+    return (diff if side == "1" else -diff) * 10 + tenths
+
+
 def markets(m: np.ndarray) -> dict[str, float | tuple[float, float]]:
-    """Every goals market's chance from a score grid. Draw no bet gives (win, refund) chances."""
+    """Every goals market's chance from a score grid. Draw no bet and whole-line handicaps give (win, refund)."""
     p1, px, p2 = float(m[_H > 0].sum()), float(m[_H == 0].sum()), float(m[_H < 0].sum())
     out: dict = {}
     for k in range(5):                                            # total goals over/under k + 0.5
@@ -115,6 +142,16 @@ def markets(m: np.ndarray) -> dict[str, float | tuple[float, float]]:
         out[f"1|O{k}5"] = float(m[(_H > 0) | over].sum())
         out[f"2|O{k}5"] = float(m[(_H < 0) | over].sum())
         out[f"X|O{k}5"] = float(m[(_H == 0) | over].sum())
+    for side in "12":                                             # Asian handicap
+        for t in AH_LINES:
+            for minus in (True, False):
+                adj = _ah_margin(side, _H, -t if minus else t)
+                win = float(m[adj > 0].sum())
+                out[ah_code(side, minus, t)] = (win, float(m[adj == 0].sum())) if t % 10 == 0 else win
+    for h, a in EH_STARTS:                                        # three-way handicap
+        adj = _H + h - a
+        out[f"EH{h}{a}1"], out[f"EH{h}{a}X"], out[f"EH{h}{a}2"] = (float(m[adj > 0].sum()), float(m[adj == 0].sum()),
+                                                                   float(m[adj < 0].sum()))
     return out
 
 
@@ -129,6 +166,13 @@ def wins(market: str, hg: int, ag: int) -> bool | None:
         res, over = market.split("|")
         r = "1" if hg > ag else "2" if ag > hg else "X"
         return r == res or t >= int(over[1]) + 1
+    hc = handicap(market)
+    if hc and hc[0] == "AH":
+        adj = _ah_margin(hc[1], hg - ag, hc[2])
+        return None if adj == 0 else adj > 0
+    if hc:
+        adj = hg - ag + hc[1] - hc[2]
+        return {"1": adj > 0, "X": adj == 0, "2": adj < 0}[hc[3]]
     if market[:2] in ("HO", "HU", "AO", "AU"):
         g = hg if market[0] == "H" else ag
         return (g >= int(market[2]) + 1) == (market[1] == "O")
@@ -138,7 +182,8 @@ def wins(market: str, hg: int, ag: int) -> bool | None:
 
 
 # ── on past games ────────────────────────────────────────────────────────────
-CHECK = ("O15", "O35", "U15", "U35", "HO05", "HO15", "AO05", "AO15", "GG", "NG", "1|O15", "2|O15", "1|O25", "2|O25")
+CHECK = ("O15", "O35", "U15", "U35", "HO05", "HO15", "AO05", "AO15", "GG", "NG", "1|O15", "2|O15", "1|O25", "2|O25",
+         "AH1M15", "AH2M15", "AH1P15", "AH2P15", "EH011", "EH101")
 
 
 def check(history: list[dict], devig, rhos=(-0.12, -0.08, -0.04, 0.0), sample: int = 1000, last_n: int = 4000) -> dict:

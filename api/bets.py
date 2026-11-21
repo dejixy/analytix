@@ -10,8 +10,9 @@ The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live m
                    Over/under 2.5 goals comes only from football-data's fixtures (Pinnacle's, else the market average),
                    added to the same game when The Odds API has its win prices: free, but read a day or two before
                    kick-off, so goals bets need the higher 3% edge
-    models         with the history read: the goals model's Dixon-Coles correction and how it and the corners model
-                   did on past games (engine/goals.py, engine/corners.py), and the corners model as it stands
+    models         with the history read: the goals model's Dixon-Coles correction and how it and the count models
+                   (corners, shots, shots on target, saves) did on past games (engine/goals.py, engine/corners.py), and
+                   the count models as they stand
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
     paper book     every ten minutes: new flat value bets are booked at a flat stake, today's rollover pick is made once
@@ -73,7 +74,7 @@ class BetsService:
         self.methods: dict = {}                               # each margin method's fit to three seasons of results
         self.study: dict = {}                                 # the rules replayed on three seasons (engine/betstudy.py)
         self.combo_past: dict = {}                            # the combo builder replayed on them (engine/combos.py)
-        self.corners = None                                   # (corners model, each league's spread): engine/corners.py
+        self.corners = None                                   # {stat: (count model, each league's spread)}: engine/corners.py
         self.models: dict = {}                                # the goals and corners models on past games
         self._combos: tuple | None = None                     # (board, {days: {book: Solver}})
         self.sharp_fd: list[dict] = []
@@ -156,8 +157,9 @@ class BetsService:
                 models["goals"] = G.check(history, B.devig)
                 if models["goals"].get("rho") is not None:
                     G.set_rho(models["goals"]["rho"])
-                models["corners"] = K.check(history)
-                corners = K.build(history)
+                for stat in K.STATS:
+                    models[stat] = K.check(history, stat)
+                corners = {stat: K.build(history, stat) for stat in K.STATS}
             except Exception as exc:                      # noqa: BLE001
                 log.warning("bets models: %s", exc)
             return scores, B.calibration(history), teams, S.study(history, teams), past, models, corners
