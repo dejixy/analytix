@@ -38,7 +38,7 @@ GOALS = ("O25", "U25")               # over / under 2.5 goals: priced from Pinna
 CORE = ("1", "X", "2", "1X", "12", "X2", "O25", "U25")   # value bets and the rollover use these; the combo builder all
 # The combo builder's other markets (engine/goals.py and engine/corners.py hold their codes): draw no bet exactly from
 # Pinnacle's win prices; the goals model's from its win and over/under prices; corners from the corners model
-KINDS = ("win", "dc", "dnb", "goals", "team", "btts", "mix", "handicap", "corners", "shots", "saves")
+KINDS = ("win", "dc", "dnb", "goals", "team", "btts", "mix", "handicap", "corners", "shots", "saves", "scorers")
 COUNT_MODELS = ("corners", "shots", "sot", "saves")      # priced by engine/corners.py's count models (no sharp price)
 MARKET_NAME = {"1": "Home win", "X": "Draw", "2": "Away win", "1X": "Home or draw", "12": "Either team wins",
                "X2": "Away or draw", "O25": "Over 2.5 goals", "U25": "Under 2.5 goals"}
@@ -240,6 +240,8 @@ def kind(market: str) -> str | None:
     from engine import goals as G
     if G.handicap(market):
         return "handicap"
+    if market.startswith("PS") and market[2:].isdigit() and len(market) <= 14:   # a player to score (SportyBet's player id)
+        return "scorers"
     c = K.parse(market)
     return K.KIND[c[0]] if c else None
 

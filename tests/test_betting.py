@@ -399,7 +399,7 @@ def test_collector_finds_cups_and_reads_sportybet():
                      {"id": "18", "outcomes": [{"id": "12", "odds": "1.80"}]}]},
         {"eventId": "sr:match:2", "homeTeamName": "No", "awayTeamName": "Odds", "estimateStartTime": 1795636800000, "markets": []}]}]}
     rows = N.sporty_rows(reply, "Champions League")
-    assert [{k: v for k, v in r.items() if k not in ("sporty_ids", "more")} for r in rows] == [
+    assert [{k: v for k, v in r.items() if k not in ("sporty_ids", "more", "players")} for r in rows] == [
         {"match": "Arsenal - Benfica", "time": 1795636800.0, "league": "UEFA Champions League", "match_id": "sr:match:1",
          "home": 1.42, "draw": 4.9, "away": 7.2, "home_or_draw": 1.08}]
     assert rows[0]["sporty_ids"]["home_or_draw"] == {"event": "sr:match:1", "market": "10", "specifier": "", "outcome": "9"}
@@ -643,7 +643,7 @@ def test_the_collector_reads_over_under():
     row = N.sporty_rows(sporty)[0]
     assert row["over_2_5"] == 1.72 and row["under_2_5"] == 2.08 and row["home"] == 1.37
     assert N.goals_line("x", [{"odds": {"over_2_5": 1.7, "under_2_5": 2.1, "O15": 1.2, "CO95": 1.8}}, {"odds": {"home": 1.2}}]) == \
-        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1, handicaps on 0, shots on 0, keeper saves on 0, win or over on 0"
+        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1, handicaps on 0, shots on 0, keeper saves on 0, win or over on 0, players to score on 0"
 
 
 def test_value_bets_by_either_rule():
@@ -942,3 +942,44 @@ def test_the_collector_reads_handicaps_shots_and_saves():
                            "SVHO15": 1.40, "SVAO25": 1.21}                                 # the starting keepers' lines only
     assert row["sporty_ids"]["SVHO15"]["outcome"] == f"{pp}:756514:2:1" and row["sporty_ids"]["AH1M15"]["specifier"] == "hcp=-1.5"
     assert all(B.kind(k) for k in row["more"])                                             # the server takes every one
+
+
+def test_players_to_score_get_their_own_slip():
+    import importlib.util
+    from engine import combos as C
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    o = lambda i, d, v: {"id": i, "desc": d, "odds": v}
+    scorers = [o("1716", "No Goal", "0.00")] + [o(f"sr:player:{100 + k}", f"Player {k} (Man City)", f"{2.5 + k * 0.7:.2f}") for k in range(12)]
+    reply = {"data": [{"name": "Premier League", "events": [{"homeTeamName": "Man City", "awayTeamName": "Fulham",
+             "estimateStartTime": 1795264200000, "eventId": "sr:match:1", "markets": [
+                 {"id": "1", "outcomes": [o("1", "Home", "1.40"), o("2", "Draw", "5.79"), o("3", "Away", "7.42")]},
+                 {"id": "40", "specifier": "type=prematch", "outcomes": scorers}]}]}]}
+    row = N.sporty_rows(reply)[0]
+    ps = {k: v for k, v in row["more"].items() if k.startswith("PS")}
+    assert len(ps) == N.SCORERS_KEPT and min(ps.values()) == 2.5 and ps["PS100"] == 2.5 and row["players"]["PS100"] == "Player 0 (Man City)"
+    assert row["sporty_ids"]["PS100"] == {"event": "sr:match:1", "market": "40", "specifier": "type=prematch", "outcome": "sr:player:100"}
+    _, rows = F.parse_push({"book": "sportybet", "rows": [{"home": "A", "away": "B", "t_ms": NOW, "odds": {"PS100": 2.5, "home": 1.4},
+                                                            "players": {"PS100": "Player 0 (A)", "PS999": "x"}}]})
+    assert rows[0]["odds"] == {"PS100": 2.5, "1": 1.4} and rows[0]["players"] == {"PS100": "Player 0 (A)"} and B.kind("PS100") == "scorers"
+    games = []
+    for g in range(6):
+        prices = {f"PS{g}{k}": round(2.2 + g * 0.3 + k * 0.5, 2) for k in range(5)}
+        games.append({"home": f"H{g}", "away": f"A{g}", "t_ms": NOW + (3 + g) * H, "league": "Premier League", "odds": {"1": 1.5, **prices},
+                      "players": {k: f"Striker {k}" for k in prices},
+                      "ids": {k: {"event": f"e{g}", "market": "40", "specifier": "type=prematch", "outcome": k} for k in prices}})
+    books = {"sportybet": {"t_ms": NOW, "rows": games}}
+    legs = C.scorer_legs(books, NOW, NOW + B.DAY)
+    assert len(legs) == 30 and all(x["model"] == "scorer" for x in legs)
+    got = C.scorers(books, NOW, 1, 10)
+    s = got["slip"]
+    assert s and 10 <= s["odds"] <= 11 and s["p"] is None and s["edge"] is None and s["coded"] and got["games"] == 6
+    assert len({x["match_id"] for x in s["legs"]}) == s["n"] and all(x["p"] is None for x in s["legs"])
+    longest = max(x["odds"] for x in s["legs"])
+    for a in legs:                                                     # no slip in range has a shorter longest price
+        for b in legs:
+            if a["match_id"] < b["match_id"] and 10 <= a["odds"] * b["odds"] <= 11:
+                assert max(a["odds"], b["odds"]) >= longest - 1e-9
+    assert C.scorers(books, NOW, 1, 1.5)["slip"] is None                # no single scorer is that short
+    assert C.scorers({"sportybet": {"t_ms": NOW - 3 * H, "rows": games}}, NOW, 1, 10)["slip"] is None   # stale odds

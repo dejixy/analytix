@@ -236,10 +236,12 @@ def _kinds(markets: str) -> tuple | None:
 
 
 @router.get("/bets/combo/code")
-async def bets_combo_code(request: Request, target: float = 10, days: int = 1, least: float = 0, markets: str = ""):
-    """A SportyBet booking code for the combo builder's SportyBet slip at these settings (made on the laptop)."""
+async def bets_combo_code(request: Request, target: float = 10, days: int = 1, least: float = 0, markets: str = "",
+                          which: str = "slip"):
+    """A SportyBet booking code for the combo builder's SportyBet slip at these settings, or its players-to-score
+    slip (which=scorers), made on the laptop."""
     return await _rt(request).bets.combo_code(target, days, least or None, bool(request.scope.get("analytix_public")),
-                                              _kinds(markets))
+                                              _kinds(markets), "scorers" if which == "scorers" else "slip")
 
 
 @router.get("/bets/code-jobs")
