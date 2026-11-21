@@ -369,8 +369,9 @@ def team_games(history: list[dict], team: str, teams: Teams | None = None) -> li
 
 
 def team_as_favourite(history: list[dict], team: str, least: float = 0.65, teams: Teams | None = None) -> dict | None:
-    """How a team did when the market made it a clear favourite (fair chance of winning >= `least`)."""
-    n = w = 0
+    """How a team did when the market made it a clear favourite (fair chance of winning >= `least`): games, wins and
+    draws (a win-or-draw bet is shown both counts, wins alone being the stricter test)."""
+    n = w = d = 0
     for g, side in team_games(history, team, teams):
         p = hist_fair(g)
         if not p or g.get("hg") is None:
@@ -378,7 +379,8 @@ def team_as_favourite(history: list[dict], team: str, least: float = 0.65, teams
         if p[side] >= least:
             n += 1
             w += wins(side, g["hg"], g["ag"])
-    return {"n": n, "won": w} if n else None
+            d += g["hg"] == g["ag"]
+    return {"n": n, "won": w, "drew": d} if n else None
 
 
 def form(history: list[dict], team: str, before_ms: int, n: int = FORM_N, teams: Teams | None = None) -> dict | None:
