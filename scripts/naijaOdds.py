@@ -137,7 +137,7 @@ B9_ODDS = {"home": "S_1X2_1", "draw": "S_1X2_X", "away": "S_1X2_2", "home_or_dra
 GOAL_KEYS = ("over_2_5", "under_2_5")
 # The combo builder's other markets, sent under the server's own codes (engine/goals.py, engine/corners.py)
 MORE = re.compile(r"^(DNB[12]|[OU][0-4]5|[HA][OU][0-2]5|GG|NG|[12X]\|O[12]5|C[HA]?[OU]\d{1,2}5|S[HTV][HA]?[OU]\d{1,2}5"
-                  r"|AH[12][MP]\d\d|EH\d\d[1X2]|PS\d{1,12})$")
+                  r"|AH[12][MP]\d\d|EH\d\d[1X2]|PS\d{1,12}|SUB[YN])$")
 
 
 def b9_more(o: dict) -> dict:
@@ -247,8 +247,10 @@ SPORTY = {"Premier League": 17, "Championship": 18, "League One": 24, "League Tw
           "Super Lig": 52, "Super League 1": 185, "Champions League": 7, "Europa League": 679, "Conference League": 34480}
 SPORTY_EVENTS = "https://www.sportybet.com/api/ng/factsCenter/pcEvents"
 # 1X2, double chance, draw no bet, 3-way and Asian handicap, over/under, home/away goals, GG/NG, anytime goalscorer,
-# corners, home/draw/away or over, goalkeeper saves (and who starts in goal), shots and shots on target (match, home, away)
-SPORTY_MARKETS = ("1,10,11,14,16,18,19,20,29,40,166,854,856,858,800297,830297,900393,900394,900546,900547,900552,900553")
+# corners, home/draw/away or over, goalkeeper saves (and who starts in goal), shots and shots on target (match, home, away),
+# a goal scored by a substitute
+SPORTY_MARKETS = ("1,10,11,14,16,18,19,20,29,40,166,854,856,858,800297,830297,900393,900394,900546,900547,900552,900553,"
+                  "900606")
 SCORERS_KEPT = 8                 # each game's shortest-priced anytime goalscorers sent
 SPORTY_UPCOMING = ("https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents?sportId=sr%3Asport%3A1&marketId="
                    + SPORTY_MARKETS.replace(",", "%2C") + "&pageSize=100&pageNum={page}&option=1")
@@ -290,6 +292,8 @@ def sporty_more(mid: str, spec: str, oid: str, desc: str) -> str | None:
         h = re.fullmatch(r"hcp=(\d):(\d)", spec)
         if h:
             return f"EH{h.group(1)}{h.group(2)}{'1X2'[int(oid) - 1711]}"
+    if mid == "900606":                                            # a goal scored by a substitute: yes / no
+        return "SUBY" if oid == "74" or d == "yes" else "SUBN" if oid == "76" or d == "no" else None
     if mid == "40" and oid.startswith("sr:player:") and oid[10:].isdigit():   # anytime goalscorer
         return f"PS{oid[10:]}"
     if mid == "800297":                                            # a goalkeeper's saves, k or more
@@ -568,7 +572,8 @@ def goals_line(book: str, rows: list[dict]) -> str:
     return (f"  {book}: over/under 2.5 on {n} of {len(rows)} games; other markets on {more}, corners on "
             f"{has(lambda k: k.startswith('C'))}, handicaps on {has(lambda k: k[:2] in ('AH', 'EH'))}, shots on "
             f"{has(lambda k: k[:2] in ('SH', 'ST'))}, keeper saves on {has(lambda k: k.startswith('SV'))}, "
-            f"win or over on {has(lambda k: '|' in k)}, players to score on {has(lambda k: k.startswith('PS'))}")
+            f"win or over on {has(lambda k: '|' in k)}, players to score on {has(lambda k: k.startswith('PS'))}, "
+            f"substitute scores on {has(lambda k: k.startswith('SUB'))}")
 
 
 def push(server: str, token: str, book: str, rows: list[dict]) -> str:

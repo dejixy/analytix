@@ -28,6 +28,8 @@ const more = (x) => {
     const n = (x.player || "").match(/^([^,(]+),\s*([^(]+?)\s*(\(.+\))?$/);          // "Foden, Phil (Man City)"
     return `${n ? `${n[2]} ${n[1]}${n[3] ? ` ${n[3]}` : ""}` : x.player || "A player"} to score`;
   }
+  if (m === "SUBN") return "Substitution not to score";
+  if (m === "SUBY") return "Substitution to score";
   if (m === "GG") return "Both teams to score: yes";
   if (m === "NG") return "Both teams to score: no";
   let r = m.match(/^([OU])(\d)5$/);
@@ -59,7 +61,8 @@ const more = (x) => {
   return null;
 };
 // The model behind a combo leg that isn't priced from Pinnacle directly
-const MODEL = { goals: "goals model", corners: "corners model", shots: "shots model", sot: "shots model", saves: "saves model" };
+const MODEL = { goals: "goals model", corners: "corners model", shots: "shots model", sot: "shots model", saves: "saves model",
+  subs: "substitutes model" };
 const pick = (x) => (x.market === "1" ? x.home : x.market === "2" ? x.away : x.market === "1X" ? `${x.home} or draw (double chance)`
   : x.market === "X2" ? `${x.away} or draw (double chance)` : x.market === "X" ? "Draw" : GOALS.includes(x.market) ? MARKET[x.market]
   : x.market === "12" ? `${x.home} or ${x.away} (double chance)` : more(x) || x.market);
@@ -246,7 +249,7 @@ const WINDOWS = [["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
 const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
   ["btts", "Both teams to score"], ["mix", "Home/away or over"], ["handicap", "Handicap"], ["corners", "Corners"], ["shots", "Team shots"],
-  ["saves", "Goalkeeper saves"], ["scorers", "Players to score"]];
+  ["saves", "Goalkeeper saves"], ["subs", "Substitution to score"], ["scorers", "Players to score"]];
 const ALL_KINDS = KINDS.map(([k]) => k);
 const OLD_ALL = ["win", "dnb", "goals", "team", "btts", "mix", "corners"];       // "all" before double chance had its own button
 const SAVED = "analytix.bets.combo";

@@ -26,6 +26,7 @@ import json
 import math
 import os
 import re
+import statistics
 import unicodedata
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -38,7 +39,12 @@ GOALS = ("O25", "U25")               # over / under 2.5 goals: priced from Pinna
 CORE = ("1", "X", "2", "1X", "12", "X2", "O25", "U25")   # value bets and the rollover use these; the combo builder all
 # The combo builder's other markets (engine/goals.py and engine/corners.py hold their codes): draw no bet exactly from
 # Pinnacle's win prices; the goals model's from its win and over/under prices; corners from the corners model
-KINDS = ("win", "dc", "dnb", "goals", "team", "btts", "mix", "handicap", "corners", "shots", "saves", "scorers")
+KINDS = ("win", "dc", "dnb", "goals", "team", "btts", "mix", "handicap", "corners", "shots", "saves", "subs", "scorers")
+# A substitute scoring: every goal in a game is the goals model's expected total, and a share of goals is scored by
+# substitutes. No feed says which goals subs scored, so that share is read from SportyBet's own yes/no prices across
+# every game it prices (the median, needing SUB_MIN games), and only each game's expected goals is ours:
+#   chance no substitute scores = e^(-expected goals x share)
+SUB_SHARE, SUB_MIN = 0.16, 20
 COUNT_MODELS = ("corners", "shots", "sot", "saves")      # priced by engine/corners.py's count models (no sharp price)
 MARKET_NAME = {"1": "Home win", "X": "Draw", "2": "Away win", "1X": "Home or draw", "12": "Either team wins",
                "X2": "Away or draw", "O25": "Over 2.5 goals", "U25": "Under 2.5 goals"}
@@ -242,6 +248,8 @@ def kind(market: str) -> str | None:
         return "handicap"
     if market.startswith("PS") and market[2:].isdigit() and len(market) <= 14:   # a player to score (SportyBet's player id)
         return "scorers"
+    if market in ("SUBY", "SUBN"):                                 # a goal scored by a substitute: yes / no
+        return "subs"
     c = K.parse(market)
     return K.KIND[c[0]] if c else None
 
@@ -453,7 +461,7 @@ def model_fair(s: dict, fair1x2: dict, need: set, corners=None) -> dict[str, dic
     out = {}
     for m in need & {"DNB1", "DNB2"}:
         out[m] = {"p": fair1x2["1" if m == "DNB1" else "2"], "p_void": fair1x2["X"], "src": s["src"], "model": None}
-    goal = {m for m in need if kind(m) in ("goals", "team", "btts", "mix", "handicap")} - set(GOALS)
+    goal = {m for m in need if kind(m) in ("goals", "team", "btts", "mix", "handicap", "subs")} - set(GOALS)
     if goal:
         po = goals_fair(s).get("O25")
         key = (s["id"], round(fair1x2["1"], 4), round(fair1x2["2"], 4), round(po, 4) if po else None, G.RHO)
@@ -461,8 +469,14 @@ def model_fair(s: dict, fair1x2: dict, need: set, corners=None) -> dict[str, dic
         if mk is None:
             if len(_MODEL_FITS) > 4000:
                 _MODEL_FITS.clear()
-            mk = _MODEL_FITS[key] = G.markets(G.grid(*G.fit(fair1x2["1"], fair1x2["X"], fair1x2["2"], po)))
+            lh, la = G.fit(fair1x2["1"], fair1x2["X"], fair1x2["2"], po)
+            mk = _MODEL_FITS[key] = {**G.markets(G.grid(lh, la)), "_lam": lh + la}
         src = "goals model on Pinnacle's prices" + ("" if po else " (win prices only)")
+        for m in goal & {"SUBN", "SUBY"}:                       # set again from the substitutes' share in build()
+            lam = mk["_lam"]
+            no = math.exp(-lam * SUB_SHARE)
+            out[m] = {"p": no if m == "SUBN" else 1 - no, "p_void": 0.0, "model": "subs", "lam": lam,
+                      "src": "goals model on Pinnacle's prices, with the share of goals substitutes score from SportyBet's prices"}
         for m in goal:
             if m in mk:
                 p, void = mk[m] if isinstance(mk[m], tuple) else (mk[m], 0.0)     # a whole handicap line refunds a level result
@@ -524,7 +538,8 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
                                 "odds": price, "odds_age_h": age_h, "fair_p": p, "p": p, "p_void": pv, "p_hist": p,
                                 "fair_odds": (1 - pv) / p, "edge": price * p + pv - 1, "edge_hist": price * p + pv - 1,
                                 "sharp_src": x["src"], "model": x["model"], "fair1x2": fair1x2,
-                                "sharp_age_h": (now_ms - s["read_ms"]) / HOUR, "pattern": None, "intl": intl})
+                                "sharp_age_h": (now_ms - s["read_ms"]) / HOUR, "pattern": None, "intl": intl,
+                                **({"lam": x["lam"], "pair": r["odds"]} if "lam" in x else {})})
                     continue
                 if m not in fair or not price or price <= 1:
                     continue
@@ -539,6 +554,7 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
                             "p_hist": p_adj, "fair_odds": 1 / fair[m], "edge": price * fair[m] - 1, "edge_hist": price * p_adj - 1,
                             "sharp_src": src, "fair1x2": fair1x2,
                             "sharp_age_h": (now_ms - read_ms) / HOUR, "pattern": pat, "intl": intl})
+    sub_goals(out)
     groups: dict[str, list[dict]] = {}
     for x in out:
         groups.setdefault(x["key"], []).append(x)
@@ -566,6 +582,32 @@ def build(books: dict[str, dict], sharp: list[dict], history: list[dict], cal: d
             stats_cache[("rec", fav)] = team_as_favourite(history, fav, teams=teams)
         x["fav_record"] = stats_cache[("rec", fav)]
     return sorted(rows, key=lambda x: -x["edge"])
+
+
+def sub_share(rows: list[dict]) -> float | None:
+    """The share of goals substitutes score, as the books price it: for each game with both prices, their yes/no
+    chance (margin taken off in proportion) against the goals model's expected goals; the median."""
+    got = []
+    for x in rows:
+        o = x.get("pair") or {}
+        if x["market"] == "SUBN" and o.get("SUBY") and o.get("SUBN") and x.get("lam"):
+            no = (1 / o["SUBN"]) / (1 / o["SUBN"] + 1 / o["SUBY"])
+            got.append(-math.log(no) / x["lam"])
+    return float(statistics.median(got)) if len(got) >= SUB_MIN else None
+
+
+def sub_goals(out: list[dict]) -> None:
+    """Set the substitute markets' chances from the share the books price (SUB_SHARE until enough games have both)."""
+    subs = [x for x in out if x.get("model") == "subs"]
+    if not subs:
+        return
+    share = sub_share(subs) or SUB_SHARE
+    for x in subs:
+        no = math.exp(-x.pop("lam") * share)
+        x.pop("pair", None)
+        p = no if x["market"] == "SUBN" else 1 - no
+        x.update(fair_p=p, p=p, p_hist=p, fair_odds=1 / p, edge=x["odds"] * p - 1, edge_hist=x["odds"] * p - 1,
+                 sub_share=share)
 
 
 def lower(x: dict) -> bool:
