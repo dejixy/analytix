@@ -54,7 +54,7 @@ def bins_for(top: float) -> int:
 
 
 def haircut(x: dict) -> float:
-    if x.get("model") in B.COUNT_MODELS:                  # corners, shots, saves: no sharp price at all
+    if x.get("model") in B.COUNT_MODELS or x.get("model") == "subs":   # no sharp price at all (subs: half the book's)
         return HAIRCUT_CORNERS
     return HAIRCUT_LOW if B.lower(x) or x.get("model") else HAIRCUT
 

@@ -643,7 +643,7 @@ def test_the_collector_reads_over_under():
     row = N.sporty_rows(sporty)[0]
     assert row["over_2_5"] == 1.72 and row["under_2_5"] == 2.08 and row["home"] == 1.37
     assert N.goals_line("x", [{"odds": {"over_2_5": 1.7, "under_2_5": 2.1, "O15": 1.2, "CO95": 1.8}}, {"odds": {"home": 1.2}}]) == \
-        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1, handicaps on 0, shots on 0, keeper saves on 0, win or over on 0, players to score on 0"
+        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1, handicaps on 0, shots on 0, keeper saves on 0, win or over on 0, players to score on 0, substitute scores on 0"
 
 
 def test_value_bets_by_either_rule():
@@ -983,3 +983,34 @@ def test_players_to_score_get_their_own_slip():
                 assert max(a["odds"], b["odds"]) >= longest - 1e-9
     assert C.scorers(books, NOW, 1, 1.5)["slip"] is None                # no single scorer is that short
     assert C.scorers({"sportybet": {"t_ms": NOW - 3 * H, "rows": games}}, NOW, 1, 10)["slip"] is None   # stale odds
+
+
+def test_substitution_to_score():
+    """No substitute scores = e^(-expected goals x share); the share read from the books' own yes/no prices."""
+    import importlib.util
+    from engine import combos as C
+    from engine import goals as G
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    assert N.sporty_more("900606", "", "76", "No") == "SUBN" and N.sporty_more("900606", "", "74", "Yes") == "SUBY"
+    assert N.MORE.match("SUBN") and B.kind("SUBN") == "subs" and B.kind("SUBY") == "subs"
+    t = NOW
+    sharp, rows = [], []
+    for k in range(B.SUB_MIN + 5):
+        s = _sharp(f"Home {k}", f"Away {k}", t + (3 + k) * H, 1.6 + k * 0.05, 4.0, 5.5, read=t, sid=f"s{k}")
+        sharp.append(s)
+        fair = B.devig(s["odds"]) if s.get("odds") else s["fair"]
+        lam = sum(G.fit(fair["1"], fair["X"], fair["2"]))
+        no = math.exp(-lam * 0.18)                                   # the books price a share of 0.18
+        rows.append({"home": s["home"], "away": s["away"], "t_ms": s["t_ms"],
+                     "odds": {"1": 1.5, "SUBN": round(1 / no * 0.95, 3), "SUBY": round(1 / (1 - no) * 0.95, 3)}})
+    board = B.build({"sportybet": {"t_ms": t, "rows": rows}}, sharp, [], {}, t)
+    subs = [x for x in board if x["market"] in ("SUBN", "SUBY")]
+    assert len(subs) == 2 * len(rows) and all(abs(x["sub_share"] - 0.18) < 0.01 for x in subs)
+    assert all(x["model"] == "subs" and "lam" not in x and "pair" not in x for x in subs)
+    no = next(x for x in subs if x["market"] == "SUBN")
+    assert abs(no["edge"] - (no["odds"] * no["p"] - 1)) < 1e-12 and -0.08 < no["edge"] < 0      # the books' margin, about
+    assert C.haircut(no) == C.HAIRCUT_CORNERS
+    few = B.build({"sportybet": {"t_ms": t, "rows": rows[:3]}}, sharp, [], {}, t)          # too few games: the default share
+    assert {round(x["sub_share"], 4) for x in few if x["market"] == "SUBN"} == {B.SUB_SHARE}
