@@ -230,6 +230,61 @@ def solvers(board: list[dict], books: dict[str, dict], now_ms: int, days: int, k
     return {b: Builder(legs(board, b, got.get("t_ms"), now_ms, until, kinds)) for b, got in books.items()}
 
 
+# ── players to score: a slip of their own ────────────────────────────────────
+SCORERS_PER_GAME = 8          # each game's shortest-priced goalscorers considered
+
+
+def scorer_legs(books: dict[str, dict], now_ms: int, until_ms: int, book: str = "sportybet") -> list[dict]:
+    """Each game's shortest-priced anytime goalscorers on a book. There's no chance of our own for these (no sharp
+    price, no player data), so a leg's p is only the book's own 1 / odds, used to search, never shown."""
+    got = books.get(book)
+    if not got or got.get("t_ms") is None or (now_ms - got["t_ms"]) / B.HOUR > B.ODDS_FRESH_H:
+        return []
+    out = []
+    for r in got.get("rows") or []:
+        if not now_ms + 10 * 60_000 <= r["t_ms"] <= until_ms:
+            continue
+        names, ids = r.get("players") or {}, r.get("ids") or {}
+        ps = sorted(((m, o) for m, o in r["odds"].items() if B.kind(m) == "scorers" and o >= LEG_MIN), key=lambda t: t[1])
+        for m, o in ps[:SCORERS_PER_GAME]:
+            out.append({"key": f"{book}:{r['home']}:{r['away']}:{m}", "match_id": f"{r['home']}|{r['away']}|{r['t_ms']}",
+                        "home": r["home"], "away": r["away"], "league": r.get("league", ""), "league_name": r.get("league", ""),
+                        "t_ms": r["t_ms"], "market": m, "player": names.get(m) or "", "book": book, "odds": o, "p": 1 / o,
+                        "p_void": 0.0, "model": "scorer", "sel": ids.get(m)})
+    return out
+
+
+def scorer_slip(bets: list[dict], target: float) -> list[dict] | None:
+    """Goalscorers only, one a game: the slip whose longest-priced player is as short as possible (the book's own
+    favourites), then the fewest players."""
+    if not bets:
+        return None
+    prices = sorted({x["odds"] for x in bets})
+    lo, hi, best = 0, len(prices) - 1, None
+    while lo <= hi:                                        # more players to choose from only ever reaches more totals
+        mid = (lo + hi) // 2
+        got = Solver([x for x in bets if x["odds"] <= prices[mid]], top=target).find(target, max_n=games_cap(target))
+        if got:
+            best, hi = got, mid - 1
+        else:
+            lo = mid + 1
+    return best
+
+
+def scorers(books: dict[str, dict], now_ms: int, days: int, target: float) -> dict:
+    """The players-to-score slip for a total-odds target: no chance, edge or fair odds (we have none to give)."""
+    target = min(max(float(target), T_MIN), T_MAX)
+    legs = scorer_legs(books, now_ms, now_ms + days * B.DAY)
+    out = {"games": len({x["match_id"] for x in legs}), "players": len(legs), "slip": None}
+    s = scorer_slip(legs, target)
+    if s:
+        s = sorted(s, key=lambda x: x["t_ms"])
+        out["slip"] = {"book": s[0]["book"], "odds": math.prod(x["odds"] for x in s), "n": len(s), "p": None, "edge": None,
+                       "least": None, "last_ms": max(x["t_ms"] for x in s), "coded": all(x.get("sel") for x in s),
+                       "legs": [{**x, "p": None} for x in s]}
+    return out
+
+
 # ── on past games ────────────────────────────────────────────────────────────
 def past(history: list[dict], book: str = "bet365", targets: tuple = LADDER) -> dict:
     """One slip a day (Lagos days) for each target, built the same way from that day's home wins, away wins and over/under

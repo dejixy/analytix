@@ -24,6 +24,10 @@ const GOALS = ["O25", "U25"];
 const more = (x) => {
   const m = x.market;
   if (m === "DNB1" || m === "DNB2") return `${m === "DNB1" ? x.home : x.away} (draw no bet)`;
+  if (/^PS\d+$/.test(m)) {
+    const n = (x.player || "").match(/^([^,(]+),\s*([^(]+?)\s*(\(.+\))?$/);          // "Foden, Phil (Man City)"
+    return `${n ? `${n[2]} ${n[1]}${n[3] ? ` ${n[3]}` : ""}` : x.player || "A player"} to score`;
+  }
   if (m === "GG") return "Both teams to score: yes";
   if (m === "NG") return "Both teams to score: no";
   let r = m.match(/^([OU])(\d)5$/);
@@ -242,7 +246,7 @@ const WINDOWS = [["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
 const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
   ["btts", "Both teams to score"], ["mix", "Home/away or over"], ["handicap", "Handicap"], ["corners", "Corners"], ["shots", "Team shots"],
-  ["saves", "Goalkeeper saves"]];
+  ["saves", "Goalkeeper saves"], ["scorers", "Players to score"]];
 const ALL_KINDS = KINDS.map(([k]) => k);
 const OLD_ALL = ["win", "dnb", "goals", "team", "btts", "mix", "corners"];       // "all" before double chance had its own button
 const SAVED = "analytix.bets.combo";
@@ -256,6 +260,48 @@ const saved = () => {
 const chance = (p) => (p == null ? "-" : pct(p, p < 0.01 ? 2 : 1));
 
 // A SportyBet booking code for the slip, made on the laptop (SportyBet turns the server away): asked for, then followed
+// Players to score: a slip of their own, from SportyBet's shortest-priced scorers. No chance, edge or fair odds of ours.
+function Scorers({ sc, q, target, pub }) {
+  const s = sc.slip;
+  return (
+    <>
+      <div className="bt-kinds"><b>Players to score</b></div>
+      {!s ? (
+        <p className="az-note">{sc.players ? `No set of goalscorers lands between ${odd(target)} and ${odd(target * 1.1)} in this window.`
+          : "No SportyBet goalscorer odds for games in this window right now."}</p>
+      ) : (
+        <>
+          <div className="az-kpis">
+            <div><span className="muted">Total odds</span><b className="num">{odd(s.odds)}</b></div>
+            <div><span className="muted">Bookmaker</span><b>{BOOK[s.book] || s.book}</b></div>
+            <div><span className="muted">Players</span><b className="num">{s.n}</b></div>
+            <div><span className="muted">Chance of winning</span><b className="num">--</b></div>
+            <div><span className="muted">Edge at this price</span><b className="num">--</b></div>
+            <div><span className="muted">Last kick-off</span><b className="num">{kick(s.last_ms)}</b></div>
+          </div>
+          {s.coded ? <SportyCode q={`${q}&which=scorers`} slip={s.legs.map((x) => x.key).join()} pub={pub} />
+            : !pub && <div className="bt-code"><span className="muted">A SportyBet code needs the updated collector on your laptop.</span></div>}
+          <div className="az-scroll"><table className="az-table bt-t">
+            <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Fair odds</th><th className="r">Edge</th><th className="r">Chance</th></tr></thead>
+            <tbody>
+              {s.legs.map((x) => (
+                <tr key={x.key}>
+                  <td className="muted num">{kick(x.t_ms)}</td>
+                  <td className="bt-name"><b>{pick(x)}</b><span className="muted az-cat">{x.home} v {x.away}{x.league_name || x.league ? ` · ${x.league_name || x.league}` : ""}</span></td>
+                  <td className="r num">{odd(x.odds)}</td>
+                  <td className="r num muted">--</td>
+                  <td className="r num muted">--</td>
+                  <td className="r num muted">--</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </>
+      )}
+    </>
+  );
+}
+
 function SportyCode({ q, slip, pub }) {
   const [job, setJob] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -338,11 +384,14 @@ function Combo({ stamp, pub }) {
   }, [t, ok, target, days, least, book, kinds, stamp]);
   const s = c?.slip;
   const g = c?.settings;
+  const onlyScorers = kinds.length === 1 && kinds[0] === "scorers";
+  const q = `target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}`;
   const past = (r) => r.past && r.past.n ? r.past : null;
   const floor = c && (c.least || g.floors[g.floors.length - 1]);
   return (
     <section className="panel term-wide">
-      <Top title="Combo builder" facts={c ? [`${c.bets} bets`, c.least ? `every game ${pct(c.least)}+` : "safest games first", `up to ${g.games} games`, "one book a slip"] : []}>
+      <Top title="Combo builder" facts={!c ? [] : onlyScorers ? [`${c.scorers?.players || 0} goalscorers`, "shortest odds first", "one a game"]
+        : [`${c.bets} bets`, c.least ? `every game ${pct(c.least)}+` : "safest games first", `up to ${g.games} games`, "one book a slip"]}>
         <label className="bt-target">
           <span className="muted">Total odds</span>
           <input type="number" inputMode="decimal" min="1.1" max="1000" step="any" value={target} aria-invalid={!ok}
@@ -370,7 +419,7 @@ function Combo({ stamp, pub }) {
           {KINDS.map(([k, label]) => <button key={k} className={kinds.includes(k) ? "on" : ""} aria-pressed={kinds.includes(k)} onClick={() => flip(k)}>{label}</button>)}
         </span>
       </div>
-      {!c ? <p className="az-note">Finding the best slip…</p> : s ? (
+      {!c ? <p className="az-note">Finding the best slip…</p> : onlyScorers ? null : s ? (
         <>
           <div className="az-kpis">
             <div><span className="muted">Total odds</span><b className="num">{odd(s.odds)}</b></div>
@@ -381,7 +430,7 @@ function Combo({ stamp, pub }) {
             <div><span className="muted">Edge at this price</span><b className={`num ${tone(s.edge)}`}>{sgn(s.edge)}</b></div>
             <div><span className="muted">Last kick-off</span><b className="num">{kick(s.last_ms)}</b></div>
           </div>
-          {s.book === "sportybet" ? (s.coded ? <SportyCode q={`target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}`} slip={s.legs.map((x) => x.key).join()} pub={pub} />
+          {s.book === "sportybet" ? (s.coded ? <SportyCode q={q} slip={s.legs.map((x) => x.key).join()} pub={pub} />
             : !pub && <div className="bt-code"><span className="muted">A SportyBet code needs the updated collector on your laptop.</span></div>)
             : (c.books || []).includes("sportybet") && <div className="bt-code"><button className="az-go" onClick={() => setBook("sportybet")}>Build it on SportyBet for a booking code</button></div>}
           <div className="az-scroll"><table className="az-table bt-t">
@@ -411,7 +460,7 @@ function Combo({ stamp, pub }) {
             : `No slip of ${pct(floor)}+ games lands between ${odd(c.target)} and ${odd(c.target * (1 + g.tol))} in this window.`}
         </p>
       )}
-      {c && c.bets > 0 && (
+      {c && c.bets > 0 && !onlyScorers && (
         <div className="az-scroll"><table className="az-table bt-t az-click">
           <thead><tr><th>Target</th><th className="r">Slip</th><th className="r">Games</th><th className="r">Least likely game</th><th>Book</th><th className="r">Chance of winning</th><th className="r">Edge</th>
             <th className="r" title="One slip a day on three seasons of past games, at Bet365's prices">Past slips won</th>
@@ -439,6 +488,7 @@ function Combo({ stamp, pub }) {
           </tbody>
         </table></div>
       )}
+      {c?.scorers && <Scorers sc={c.scorers} q={q} target={t} pub={pub} />}
       {c && <Models m={c.models} kinds={kinds} />}
     </section>
   );

@@ -427,19 +427,28 @@ class BetsService:
         if (days, kinds) not in kept:
             kept[(days, kinds)] = await asyncio.to_thread(C.solvers, board, dict(self.books), now, days, kinds)
         out = await asyncio.to_thread(C.build, kept[(days, kinds)], target, self.combo_past, least, book, kinds)
+        if "scorers" in kinds:                                # players to score: a slip of their own
+            sb = self.books.get("sportybet") or {}
+            key = (sb.get("t_ms"), days, round(float(target), 4))
+            if key not in kept:
+                kept[key] = await asyncio.to_thread(C.scorers, dict(self.books), now, days, target)
+            out["scorers"] = kept[key]
         return {**out, "days": days, "kinds": list(kinds), "models": self.models, "now_ms": now}
 
     # ── SportyBet booking codes, made on the laptop ───────────────────────
     async def combo_code(self, target: float, days: int = 1, least: float | None = None, public: bool = False,
-                         kinds: tuple | None = None) -> dict:
-        """The booking code for the SportyBet slip at these settings: ready, being made, or why there's none (through the
-        public link, without the laptop's side of it)."""
-        out = await self._combo_code(target, days, least, kinds)
+                         kinds: tuple | None = None, which: str = "slip") -> dict:
+        """The booking code for the SportyBet slip at these settings (or its players-to-score slip): ready, being made,
+        or why there's none (through the public link, without the laptop's side of it)."""
+        out = await self._combo_code(target, days, least, kinds, which)
         return out if not public else {**out, "why": PUBLIC_WHY if out.get("why") else None}
 
-    async def _combo_code(self, target: float, days: int, least: float | None, kinds: tuple | None = None) -> dict:
+    async def _combo_code(self, target: float, days: int, least: float | None, kinds: tuple | None = None,
+                          which: str = "slip") -> dict:
+        if which == "scorers":
+            kinds = tuple(dict.fromkeys((*(kinds or ()), "scorers")))
         out = await self.combo(target, days, least, "sportybet", kinds)
-        s = out["slip"]
+        s = (out.get("scorers") or {}).get("slip") if which == "scorers" else out["slip"]
         if not s:
             return {"status": "none", "why": "no SportyBet slip at these settings"}
         if not s["coded"]:

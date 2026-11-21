@@ -297,6 +297,9 @@ def parse_push(payload: dict) -> tuple[str, list[dict]]:
                        if (B.BOOK_KEYS.get(k) or B.kind(k)) and isinstance(v, dict) and v.get("event")}
                 if ids:                                           # the book's own ids for each bet (SportyBet)
                     row["ids"] = {m: v for m, v in ids.items() if m in odds}
+                players = {m: str(v)[:60] for m, v in (r.get("players") or {}).items() if m in odds and B.kind(m) == "scorers"}
+                if players:                                       # players to score: their names
+                    row["players"] = players
                 rows.append(row)
         except (TypeError, ValueError, KeyError):
             continue
