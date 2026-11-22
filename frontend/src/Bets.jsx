@@ -128,13 +128,14 @@ function Why({ x, s }) {
   );
 }
 
-function Rollover({ r, pub, s }) {
+function Rollover({ r, pub, s, title = "Today's rollover pick" }) {
   const c = r.chain;
   const x = r.today || r.candidate;
   const used = c.refills >= r.refills_max + 1;
+  const rng = r.range || s?.roll || [1.2, 1.5];
   return (
     <section className="panel">
-      <Top title="Today's rollover pick" facts={[r.today_legs ? `${r.today_won} won today` : null,
+      <Top title={title} facts={[r.today_legs ? `${r.today_won} won today` : null,
         ...(pub ? [] : [`chain ${c.n}`, `win ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`])]} />
       {x ? (
         <div className="bt-pick">
@@ -163,7 +164,7 @@ function Rollover({ r, pub, s }) {
         </div>
       ) : (
         <>
-          <p className="az-note">Nothing qualifies right now: odds {odd(s?.roll?.[0] ?? 1.2)}–{odd(s?.roll?.[1] ?? 1.5)}, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
+          <p className="az-note">Nothing qualifies right now: odds {odd(rng[0])}–{odd(rng[1])}, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
           {(r.misses || []).length > 0 && (
             <ul className="bt-why">
               {r.misses.map((m) => (
@@ -751,7 +752,10 @@ export default function Bets() {
       {d && (
         <div className="term-grid">
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
-          <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} s={d.settings} /></div>
+          <div className="tw-5 term-col">
+            <Rollover r={d.rollover} pub={d.public} s={d.settings} />
+            {(d.lanes || []).map((l) => <Rollover key={l.key} r={l} pub={d.public} s={d.settings} title={l.name} />)}
+          </div>
           <div className="tw-7"><Value d={d} /></div>
           <Combo stamp={d.now_ms} pub={d.public} />
           {!d.public && <Record rec={d.record} recent={d.flat_recent} pub={d.public} />}

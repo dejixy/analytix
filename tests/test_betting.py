@@ -1124,3 +1124,30 @@ def test_the_combo_builder_takes_a_game_cap():
     assert out["slip"] is None and out["settings"]["games"] == 10 and out["settings"]["cap"] == 10
     assert out["ladder"][5]["target"] == 20 and out["ladder"][5]["past"] is None            # not replayed at 10 games
     assert C.build(books, 20, {"safest": {"20": {"n": 5}}}, cap=15)["ladder"][5]["past"] == {"n": 5}    # 15 is the usual cap
+
+
+def test_george_and_muiz_rollovers():
+    """Friends' rollovers: the same rules and chain, each in its own odds range and its own paper book."""
+    from api.bets import BetsService
+    rt = SimpleNamespace(mode="replay")
+    import tempfile
+    tmp = Path(tempfile.mkdtemp())
+    svc = BetsService(rt, tmp / "bets.json", tmp / "odds.json")
+    assert set(svc.lanes) == {"george", "muiz"} and B.LANES["george"]["range"] == (1.90, 2.30) and B.LANES["muiz"]["range"] == (9.80, 10.40)
+    board = [_row(key="main", odds=1.30, edge=0.0, p=0.77, t_ms=NOW + 3 * H),
+             _row(key="even", odds=2.10, edge=0.01, p=0.48, t_ms=NOW + 4 * H, home="C", away="D"),
+             _row(key="long", odds=10.0, edge=-0.01, p=0.099, t_ms=NOW + 5 * H, home="E", away="F", market="2"),
+             _row(key="too_long", odds=11.0, edge=0.0, p=0.091, t_ms=NOW + 2 * H, home="G", away="H", market="2")]
+    day = "2026-11-18"
+    BetsService._roll(svc.book, (B.ROLL_MIN, B.ROLL_MAX), board, NOW, day)
+    for k, lane in svc.lanes.items():
+        BetsService._roll(lane, B.LANES[k]["range"], board, NOW, day)
+    assert [p["key"] for p in svc.book.picks] == ["main"]
+    assert [p["key"] for p in svc.lanes["george"].picks] == ["even"] and [p["key"] for p in svc.lanes["muiz"].picks] == ["long"]
+    assert svc.lanes["muiz"].picks[0]["stake"] == B.ROLL_START                         # a chain of its own
+    view = BetsService._roll_view(svc.lanes["muiz"], B.LANES["muiz"]["range"], board, NOW, day)
+    assert view["today"]["key"] == "long" and view["range"] == [9.80, 10.40] and view["chain"]["n"] == 1
+    svc.lanes["george"].save()
+    assert (tmp / "bets_george.json").exists() and B.Book(tmp / "bets_george.json").picks[0]["key"] == "even"
+    empty = BetsService._roll_view(B.Book(), B.LANES["muiz"]["range"], board[:2], NOW, day)
+    assert empty["today"] is None and empty["candidate"] is None and isinstance(empty["misses"], list)

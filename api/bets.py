@@ -80,6 +80,7 @@ class BetsService:
         self.rt = runtime
         self.sharp_path = Path(sharp_path) if sharp_path else None
         self.book = B.Book(path)
+        self.lanes = {k: B.Book(Path(path).with_name(f"bets_{k}.json") if path else None) for k in B.LANES}   # friends' rollovers
         self.odds_path = Path(odds_path) if odds_path else None
         self.books: dict[str, dict] = self._load_odds()
         self.history: list[dict] = []
@@ -123,6 +124,8 @@ class BetsService:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self.book.save()
+        for lane in self.lanes.values():
+            lane.save()
 
     def _first_wait(self, key: str, now_s: float | None = None) -> float:
         """Seconds before a part's first read after a start: the sharp read waits until the saved one is a day old."""
@@ -260,16 +263,26 @@ class BetsService:
         for x in B.value_bets(board, before_ms=now + B.BOOK_DAYS * B.DAY):
             self.book.add_flat(x, now)
         await self._settle(now)
-        gone = self.book.replace_open(now, lambda p: B.ROLL_MIN <= p["odds"] <= B.ROLL_MAX)
-        if gone:                                          # the odds range changed after it was booked
-            log.info("bets rollover: %s v %s at %.2f replaced under the new odds range", gone["home"], gone["away"], gone["odds"])
-        day = datetime.fromtimestamp(now / 1000, LAGOS)
-        if not self.book.open_pick():
-            last = self.book.last_pick()
-            pick = B.rollover_pick([x for x in board if not last or x["t_ms"] > last["t_ms"]], now)
-            if pick:
-                self.book.add_pick(pick, day.strftime("%Y-%m-%d"), now)
+        day = datetime.fromtimestamp(now / 1000, LAGOS).strftime("%Y-%m-%d")
+        self._roll(self.book, (B.ROLL_MIN, B.ROLL_MAX), board, now, day)
+        for k, lane in self.lanes.items():
+            self._roll(lane, B.LANES[k]["range"], board, now, day)
+            lane.save()
         self.book.save()
+
+    @staticmethod
+    def _roll(book: B.Book, rng: tuple, board: list[dict], now: int, day: str) -> None:
+        """One rollover's next leg: an open leg booked under another odds range is replaced before kick-off; once the
+        last leg has settled, the next qualifying game later today in this range."""
+        lo, hi = rng
+        gone = book.replace_open(now, lambda p: lo <= p["odds"] <= hi)
+        if gone:
+            log.info("bets rollover: %s v %s at %.2f replaced under the new odds range", gone["home"], gone["away"], gone["odds"])
+        if not book.open_pick():
+            last = book.last_pick()
+            pick = B.rollover_pick([x for x in board if not last or x["t_ms"] > last["t_ms"]], now, lo=lo, hi=hi)
+            if pick:
+                book.add_pick(pick, day, now)
 
     async def _espn(self, open_: list[dict], roll: set, now: int) -> list[dict]:
         """Final scores from ESPN's free scoreboards (no credits) for the open bets' leagues and days: the rollover
@@ -304,8 +317,9 @@ class BetsService:
         # a game is over about 1h55 after kick-off. ESPN's free scoreboards are read first (the rollover leg's league
         # every few minutes, so the next leg isn't kept waiting); The Odds API's scores (two credits a league) only for
         # what ESPN didn't settle: the rollover's league every 15 minutes, any other at most once an hour
-        open_ = [b for b in [*self.book.flat, *self.book.picks] if b["status"] == "open" and b["t_ms"] < now - ROLL_DONE_MS]
-        roll = {b["league"] for b in self.book.picks if b["status"] == "open"}
+        legs = [*self.book.picks, *(p for lane in self.lanes.values() for p in lane.picks)]
+        open_ = [b for b in [*self.book.flat, *legs] if b["status"] == "open" and b["t_ms"] < now - ROLL_DONE_MS]
+        roll = {b["league"] for b in legs if b["status"] == "open"}
         results = [g for g in self.history if g.get("hg") is not None and g["t_ms"] > now - 10 * B.DAY]
         if open_:
             results += await self._espn(open_, roll, now)
@@ -328,6 +342,8 @@ class BetsService:
                     "ou": B.devig({"O25": g.get("PC>2.5") or g.get("AvgC>2.5"), "U25": g.get("PC<2.5") or g.get("AvgC<2.5")})}
                    for g in self.history if g["t_ms"] > now - 10 * B.DAY and (g.get("PSCH") or g.get("AvgCH") or g.get("PC>2.5"))]
         self.book.settle(results, closing)
+        for lane in self.lanes.values():
+            lane.settle(results, closing)
 
     # ── odds from the laptop ──────────────────────────────────────────────
     @staticmethod
@@ -557,21 +573,32 @@ class BetsService:
             j.update(status="failed", why=f"SportyBet said: {str(payload.get('error') or 'no code')[:160]}")
         return {"ok": True}
 
+    @staticmethod
+    def _roll_view(book: B.Book, rng: tuple, board: list[dict], now: int, day: str) -> dict:
+        """A rollover card's data: the open leg, or the candidate for the next one, the chain and its history."""
+        lo, hi = rng
+        todays = [p for p in book.picks if p["day"] == day and p["status"] != "replaced"]
+        open_pick = book.open_pick()
+        last = book.last_pick()
+        candidate = None
+        if not open_pick and book.chain["refills"] <= B.ROLL_REFILLS:
+            candidate = B.rollover_pick([x for x in board if not last or x["t_ms"] > last["t_ms"]], now, lo=lo, hi=hi)
+        today = open_pick or (todays[-1] if todays and not candidate else None)
+        chain = book.chain
+        p_now = (today or candidate or {}).get("p")
+        left = B.ROLL_TARGET - chain["day"]
+        return {"today": today, "candidate": candidate, "chain": chain, "target": B.ROLL_TARGET, "range": [lo, hi],
+                "today_legs": len(todays), "today_won": sum(1 for p in todays if p["status"] == "won"),
+                "misses": B.rollover_misses(board, now, lo=lo, hi=hi) if not (today or candidate) else [],
+                "refills_max": B.ROLL_REFILLS, "start": B.ROLL_START,
+                "p_finish": B.chain_odds(p_now, left) if p_now else None, "days_left": left,
+                "history": book.picks[-30:][::-1]}
+
     def public(self, board: list[dict] | None = None) -> dict:
         now = int(time.time() * 1000)
         if board is None:
             board = self.board(now) if self.books else []
         day = datetime.fromtimestamp(now / 1000, LAGOS).strftime("%Y-%m-%d")
-        todays = [p for p in self.book.picks if p["day"] == day and p["status"] != "replaced"]
-        open_pick = self.book.open_pick()
-        last = self.book.last_pick()
-        candidate = None
-        if not open_pick and self.book.chain["refills"] <= B.ROLL_REFILLS:
-            candidate = B.rollover_pick([x for x in board if not last or x["t_ms"] > last["t_ms"]], now)
-        today = open_pick or (todays[-1] if todays and not candidate else None)
-        chain = self.book.chain
-        p_now = (today or candidate or {}).get("p")
-        left = B.ROLL_TARGET - chain["day"]
         pats = []
         for kind in ("sharp", "avg"):
             for m in ("1", "2", "1X", "X2"):
@@ -588,12 +615,9 @@ class BetsService:
                 "next_kick": min((x["t_ms"] for x in board), default=None),
                 "near": [{**x, "rule": B.rule_of(x)} for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"
                          and x["market"] in B.CORE][:40],
-                "rollover": {"today": today, "candidate": candidate, "chain": chain, "target": B.ROLL_TARGET,
-                             "today_legs": len(todays), "today_won": sum(1 for p in todays if p["status"] == "won"),
-                             "misses": B.rollover_misses(board, now) if not (today or candidate) else [],
-                             "refills_max": B.ROLL_REFILLS, "start": B.ROLL_START,
-                             "p_finish": B.chain_odds(p_now, left) if p_now else None, "days_left": left,
-                             "history": self.book.picks[-30:][::-1]},
+                "rollover": self._roll_view(self.book, (B.ROLL_MIN, B.ROLL_MAX), board, now, day),
+                "lanes": [{"key": k, "name": v["name"], **self._roll_view(self.lanes[k], v["range"], board, now, day)}
+                          for k, v in B.LANES.items()],
                 "record": self.book.record(), "flat_recent": self.book.flat[-40:][::-1], "patterns": pats,
                 "method": B.method(), "methods": self.methods, "study": self.study,
                 "settings": {"flat": [B.FLAT_MIN, B.FLAT_MAX, B.FLAT_EDGE, B.FLAT_STAKE], "flat_low": B.FLAT_EDGE_LOW,

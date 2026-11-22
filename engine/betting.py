@@ -659,36 +659,43 @@ def day_end(now_ms: int) -> int:
     return ((now_ms + WAT) // DAY + 1) * DAY - WAT
 
 
-def rollover_ok(x: dict) -> bool:
-    """The rollover's rules for one bet: odds 1.20-1.50, no worse than 2% under fair (at least fair in lower leagues,
-    internationals and goals bets), not over 10% above it, fresh Nigerian odds and a fresh sharp price."""
-    return (ROLL_MIN <= x["odds"] <= ROLL_MAX and x["market"] in CORE and x["market"] != "X"
+# Friends' own rollovers: the same rules and the same chain, each in its own odds range (and its own paper book)
+LANES = {"george": {"name": "George Section", "range": (1.90, 2.30)},
+         "muiz": {"name": "Muiz Section", "range": (9.80, 10.40)}}
+
+
+def rollover_ok(x: dict, lo: float = ROLL_MIN, hi: float = ROLL_MAX) -> bool:
+    """The rollover's rules for one bet: odds in its range (1.20-1.50 for the main one), no worse than 2% under fair
+    (at least fair in lower leagues, internationals and goals bets), not over 10% above it, fresh Nigerian odds and a
+    fresh sharp price."""
+    return (lo <= x["odds"] <= hi and x["market"] in CORE and x["market"] != "X"
             and roll_bar(x) <= x["edge"] <= EDGE_MAX and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H)
 
 
-def rollover_pick(board: list[dict], now_ms: int, until_ms: int | None = None) -> dict | None:
+def rollover_pick(board: list[dict], now_ms: int, until_ms: int | None = None, lo: float = ROLL_MIN,
+                  hi: float = ROLL_MAX) -> dict | None:
     """The next rollover bet, or None if nothing qualifies: of the games kicking off before the end of today (Lagos),
     the earliest qualifying slot, so that as many legs as possible fit in the day; within that slot (90 minutes), the
     most likely."""
     until = day_end(now_ms) if until_ms is None else until_ms
-    c = [x for x in board if x["t_ms"] <= until and rollover_ok(x)]
+    c = [x for x in board if x["t_ms"] <= until and rollover_ok(x, lo, hi)]
     if not c:
         return None
     first = min(x["t_ms"] for x in c)
     return max((x for x in c if x["t_ms"] <= first + ROLL_SLOT), key=lambda x: (x["p"], x["edge"]))
 
 
-def rollover_misses(board: list[dict], now_ms: int, n: int = 3) -> list[dict]:
+def rollover_misses(board: list[dict], now_ms: int, n: int = 3, lo: float = ROLL_MIN, hi: float = ROLL_MAX) -> list[dict]:
     """When nothing qualifies: the games left today closest to being the rollover pick, each with the tests it fails in
     plain words, fewest failures first."""
     out = []
     until = day_end(now_ms)
     for x in board:
-        if x["market"] == "X" or x["market"] not in CORE or x["t_ms"] > until or not ROLL_MIN - 0.05 <= x["odds"] <= ROLL_MAX + 0.10:
+        if x["market"] == "X" or x["market"] not in CORE or x["t_ms"] > until or not lo * 0.96 <= x["odds"] <= hi * 1.07:
             continue
         why = []
-        if not ROLL_MIN <= x["odds"] <= ROLL_MAX:
-            why.append(f"odds {x['odds']:.2f}, needs {ROLL_MIN:.2f}–{ROLL_MAX:.2f}")
+        if not lo <= x["odds"] <= hi:
+            why.append(f"odds {x['odds']:.2f}, needs {lo:.2f}–{hi:.2f}")
         if x["edge"] < roll_bar(x):
             where = ("an international" if x.get("intl") else "a goals bet" if x.get("market") in GOALS
                      else "a lower league" if lower(x) else None)
