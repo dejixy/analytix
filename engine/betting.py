@@ -647,20 +647,41 @@ def roll_bar(x: dict) -> float:
     return 0.0 if lower(x) else ROLL_EDGE
 
 
-def rollover_pick(board: list[dict], now_ms: int) -> dict | None:
-    """Today's one rollover bet (see the module note), or None if nothing qualifies."""
-    c = [x for x in board if ROLL_MIN <= x["odds"] <= ROLL_MAX and x["t_ms"] <= now_ms + 30 * HOUR and x["market"] in CORE
-         and roll_bar(x) <= x["edge"] <= EDGE_MAX
-         and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H and x["market"] != "X"]
-    return max(c, key=lambda x: (x["p"], x["edge"])) if c else None
+WAT = 3600_000                        # Lagos is an hour ahead of UTC, all year
+ROLL_SLOT = 90 * 60_000               # games starting this close to the earliest qualifying one count as the same slot
+
+
+def day_end(now_ms: int) -> int:
+    """Midnight at the end of today in Lagos (ms)."""
+    return ((now_ms + WAT) // DAY + 1) * DAY - WAT
+
+
+def rollover_ok(x: dict) -> bool:
+    """The rollover's rules for one bet: odds 1.15-1.35, no worse than 2% under fair (at least fair in lower leagues,
+    internationals and goals bets), not over 10% above it, fresh Nigerian odds and a fresh sharp price."""
+    return (ROLL_MIN <= x["odds"] <= ROLL_MAX and x["market"] in CORE and x["market"] != "X"
+            and roll_bar(x) <= x["edge"] <= EDGE_MAX and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H)
+
+
+def rollover_pick(board: list[dict], now_ms: int, until_ms: int | None = None) -> dict | None:
+    """The next rollover bet, or None if nothing qualifies: of the games kicking off before the end of today (Lagos),
+    the earliest qualifying slot, so that as many legs as possible fit in the day; within that slot (90 minutes), the
+    most likely."""
+    until = day_end(now_ms) if until_ms is None else until_ms
+    c = [x for x in board if x["t_ms"] <= until and rollover_ok(x)]
+    if not c:
+        return None
+    first = min(x["t_ms"] for x in c)
+    return max((x for x in c if x["t_ms"] <= first + ROLL_SLOT), key=lambda x: (x["p"], x["edge"]))
 
 
 def rollover_misses(board: list[dict], now_ms: int, n: int = 3) -> list[dict]:
-    """When nothing qualifies: the games in the next 30 hours closest to being the rollover pick, each with the tests
-    it fails in plain words, fewest failures first."""
+    """When nothing qualifies: the games left today closest to being the rollover pick, each with the tests it fails in
+    plain words, fewest failures first."""
     out = []
+    until = day_end(now_ms)
     for x in board:
-        if x["market"] == "X" or x["market"] not in CORE or x["t_ms"] > now_ms + 30 * HOUR or not 1.10 <= x["odds"] <= 1.45:
+        if x["market"] == "X" or x["market"] not in CORE or x["t_ms"] > until or not 1.10 <= x["odds"] <= 1.45:
             continue
         why = []
         if not ROLL_MIN <= x["odds"] <= ROLL_MAX:
@@ -695,7 +716,7 @@ class Book:
     def __init__(self, path: Path | None = None):
         self.path = Path(path) if path else None
         self.flat: list[dict] = []
-        self.picks: list[dict] = []                 # one a day: {day, bet, chain, stake, status, ...}
+        self.picks: list[dict] = []                 # as many a day as fit: {day, bet, chain, leg, stake, status, ...}
         self.chain = {"n": 1, "balance": float(ROLL_START), "day": 0, "refills": 0, "best": 0}
         self.load()
 
@@ -732,9 +753,16 @@ class Book:
     def today_pick(self, day: str) -> dict | None:
         return next((p for p in self.picks if p["day"] == day), None)
 
+    def open_pick(self) -> dict | None:
+        return next((p for p in self.picks if p["status"] == "open"), None)
+
     def add_pick(self, x: dict, day: str, now_ms: int) -> dict | None:
-        """Today's rollover bet, once a day, only when yesterday's has settled (the balance has to be known)."""
-        if self.today_pick(day) or any(p["status"] == "open" for p in self.picks):
+        """The next rollover bet, only once the last one has settled (the balance has to be known) and only on a game
+        kicking off after it (as many a day as fit)."""
+        if self.open_pick():
+            return None
+        last = self.picks[-1] if self.picks else None
+        if last and x["t_ms"] <= last["t_ms"]:
             return None
         if self.chain["refills"] > ROLL_REFILLS:
             return None

@@ -46,7 +46,7 @@ def games_cap(target: float) -> int:
     return MAX_GAMES_BIG if target > BIG else MAX_GAMES
 HAIRCUT, HAIRCUT_LOW, HAIRCUT_CORNERS = 0.01, 0.02, 0.04
 LADDER = (1.5, 2, 3, 5, 10, 20, 50, 100, 200, 500, 1000)
-DAYS = (1, 3, 7)
+DAYS = (0, 1, 3, 7)                 # 0: today only (until midnight in Lagos)
 
 
 def bins_for(top: float) -> int:
@@ -226,8 +226,13 @@ def build(solvers: dict[str, Builder], target: float, past: dict | None = None, 
 
 
 def solvers(board: list[dict], books: dict[str, dict], now_ms: int, days: int, kinds: tuple | None = None) -> dict[str, Builder]:
-    until = now_ms + days * B.DAY
+    until = window_end(now_ms, days)
     return {b: Builder(legs(board, b, got.get("t_ms"), now_ms, until, kinds)) for b, got in books.items()}
+
+
+def window_end(now_ms: int, days: int) -> int:
+    """The end of the combo builder's window: midnight in Lagos for today only (0), else `days` from now."""
+    return B.day_end(now_ms) if days == 0 else now_ms + days * B.DAY
 
 
 # ── players to score: a slip of their own ────────────────────────────────────
@@ -274,7 +279,7 @@ def scorer_slip(bets: list[dict], target: float) -> list[dict] | None:
 def scorers(books: dict[str, dict], now_ms: int, days: int, target: float) -> dict:
     """The players-to-score slip for a total-odds target: no chance, edge or fair odds (we have none to give)."""
     target = min(max(float(target), T_MIN), T_MAX)
-    legs = scorer_legs(books, now_ms, now_ms + days * B.DAY)
+    legs = scorer_legs(books, now_ms, window_end(now_ms, days))
     out = {"games": len({x["match_id"] for x in legs}), "players": len(legs), "slip": None}
     s = scorer_slip(legs, target)
     if s:

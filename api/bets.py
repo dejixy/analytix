@@ -15,9 +15,9 @@ The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live m
                    the count models as they stand
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
-    paper book     every ten minutes: new flat value bets are booked at a flat stake, today's rollover pick is made once
-                   (after 06:00 Lagos, and only once the last one has settled), open bets are settled from results
-                   (The Odds API's scores, else football-data) and given their closing-line value
+    paper book     every ten minutes: new flat value bets are booked at a flat stake, the next rollover leg is booked once
+                   the last has settled (as many a day as fit, from 06:00 Lagos), and open bets are settled from
+                   results (The Odds API's scores, else football-data) and given their closing-line value
 Kept in data/bets.json (the book), data/bets_odds.json (the last push from each book) and data/bets_sharp.json (the last
 paid sharp read, so a restart reuses it until it's a day old instead of spending credits again).
 
@@ -53,6 +53,8 @@ LAGOS = ZoneInfo("Africa/Lagos")
 ODDS_API_LEAGUES = ("E0", "E1", "E2", "E3", "SP1", "I1", "D1", "F1", "UCL", "UEL", "UECL")    # read daily; the other six
                                                                   # leagues come from football-data and the pre-kick-off read
 EVERY_S = {"history": 86400, "fixtures": 6 * 3600, "sharp": 86400, "book": 600}
+ROLL_DONE_MS = 115 * 60_000           # a game is over about this long after kick-off
+ROLL_SCORES_S = 900                   # the open rollover leg's league: its scores asked this often
 MIN_CREDITS = 40
 FRESH_MIN_CREDITS = 100        # the pre-kick-off reads stop here, keeping the rest of the month for the daily read
 FRESH_FROM_H, FRESH_TO_H, FRESH_EVERY_H = 0.5, 3, 2      # read again 30 min to 3 h before kick-off, a league every 2 h
@@ -234,8 +236,8 @@ class BetsService:
         self._save_sharp()
 
     async def _book(self) -> None:
-        """Refresh the sharp price of games about to start, book new flat value bets, make today's rollover pick,
-        settle what has finished."""
+        """Refresh the sharp price of games about to start, book new flat value bets, settle what has finished, then
+        book the next rollover leg (as many a day as fit: the next one as soon as the last has settled)."""
         now = int(time.time() * 1000)
         try:
             await self._pre_kickoff(now)
@@ -244,22 +246,27 @@ class BetsService:
         board = await self.board_async(now)
         for x in B.value_bets(board, before_ms=now + B.BOOK_DAYS * B.DAY):
             self.book.add_flat(x, now)
+        await self._settle(now)
         day = datetime.fromtimestamp(now / 1000, LAGOS)
-        if day.hour >= 6:
-            pick = B.rollover_pick(board, now)
+        if day.hour >= 6 and not self.book.open_pick():
+            last = self.book.picks[-1] if self.book.picks else None
+            pick = B.rollover_pick([x for x in board if not last or x["t_ms"] > last["t_ms"]], now)
             if pick:
                 self.book.add_pick(pick, day.strftime("%Y-%m-%d"), now)
-        await self._settle(now)
         self.book.save()
 
     async def _settle(self, now: int) -> None:
-        open_ = [b for b in [*self.book.flat, *self.book.picks] if b["status"] == "open" and b["t_ms"] < now - 2 * B.HOUR]
+        # a game is over about 1h55 after kick-off; the rollover's league is asked every 15 minutes from then (the next
+        # leg waits for it), any other at most once an hour
+        open_ = [b for b in [*self.book.flat, *self.book.picks] if b["status"] == "open" and b["t_ms"] < now - ROLL_DONE_MS]
+        roll = {b["league"] for b in self.book.picks if b["status"] == "open"}
         results = [g for g in self.history if g.get("hg") is not None and g["t_ms"] > now - 10 * B.DAY]
         if open_ and os.getenv("ANALYTIX_ODDS_API_KEY") and (self.credits is None or self.credits >= MIN_CREDITS // 2):
             sport = lambda k: self._sport(k) or ((k, k) if k.startswith("soccer_") else None)
-            leagues = {b["league"] for b in open_ if sport(b["league"]) and time.time() - self._scores_at.get(b["league"], 0) > 3600}
+            leagues = {b["league"] for b in open_ if sport(b["league"])
+                       and time.time() - self._scores_at.get(b["league"], 0) > (ROLL_SCORES_S if b["league"] in roll else 3600)}
             try:
-                for k in leagues:                         # at most once an hour a league: two credits a read
+                for k in leagues:                         # two credits a read
                     self._scores_at[k] = time.time()
                 got, left, _errors = await self.fetch_odds_api({k: sport(k) for k in leagues}, "scores") if leagues else ({}, None, [])
                 self.credits = left if left is not None else self.credits
@@ -505,8 +512,13 @@ class BetsService:
         if board is None:
             board = self.board(now) if self.books else []
         day = datetime.fromtimestamp(now / 1000, LAGOS).strftime("%Y-%m-%d")
-        today = self.book.today_pick(day)
-        candidate = B.rollover_pick(board, now) if not today else None
+        todays = [p for p in self.book.picks if p["day"] == day]
+        open_pick = self.book.open_pick()
+        last = self.book.picks[-1] if self.book.picks else None
+        candidate = None
+        if not open_pick and self.book.chain["refills"] <= B.ROLL_REFILLS:
+            candidate = B.rollover_pick([x for x in board if not last or x["t_ms"] > last["t_ms"]], now)
+        today = open_pick or (todays[-1] if todays and not candidate else None)
         chain = self.book.chain
         p_now = (today or candidate or {}).get("p")
         left = B.ROLL_TARGET - chain["day"]
@@ -527,6 +539,7 @@ class BetsService:
                 "near": [{**x, "rule": B.rule_of(x)} for x in board if B.FLAT_MIN <= x["odds"] <= B.FLAT_MAX and x["market"] != "X"
                          and x["market"] in B.CORE][:40],
                 "rollover": {"today": today, "candidate": candidate, "chain": chain, "target": B.ROLL_TARGET,
+                             "today_legs": len(todays), "today_won": sum(1 for p in todays if p["status"] == "won"),
                              "misses": B.rollover_misses(board, now) if not (today or candidate) else [],
                              "refills_max": B.ROLL_REFILLS, "start": B.ROLL_START,
                              "p_finish": B.chain_odds(p_now, left) if p_now else None, "days_left": left,
