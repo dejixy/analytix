@@ -156,7 +156,7 @@ function Rollover({ r, pub, s }) {
           <p className="az-note">
             {r.today ? (r.today.status === "open" ? "Booked on paper. Once it settles, the next qualifying game later today is booked."
               : `Settled: ${r.today.status === "won" ? "won" : "lost"} ${r.today.score || ""}. Nothing else qualifies later today.`)
-              : "Best candidate right now: booked on the next pass (every 10 minutes, from 06:00 Lagos), then fixed. After it settles, the next qualifying game later today follows."}
+              : "Best candidate right now: booked on the next pass (every 10 minutes), then fixed. After it settles, the next qualifying game later today follows."}
           </p>
         </div>
       ) : (
