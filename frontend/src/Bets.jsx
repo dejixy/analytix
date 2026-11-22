@@ -128,15 +128,94 @@ function Why({ x, s }) {
   );
 }
 
-function Rollover({ r, pub, s }) {
+// The rollover side: your rollover, George's or Muiz's, one at a time, picked with the toggle in the box's title row
+const ROLL_VIEW = "analytix.bets.rollview";
+function RollSide({ d }) {
+  const [view, setView] = useState(() => {
+    try {
+      return localStorage.getItem(ROLL_VIEW) || "mine";
+    } catch {
+      return "mine";
+    }
+  });
+  const choose = (v) => {
+    setView(v);
+    try {
+      localStorage.setItem(ROLL_VIEW, v);
+    } catch { /* private window: not kept */ }
+  };
+  const lanes = d.lanes || [];
+  const lane = lanes.find((l) => l.key === view);
+  const opts = [["mine", "Rollover"], ...lanes.map((l) => [l.key, l.name.replace(/ Section$/, "")])];
+  const toggle = lanes.length ? (
+    <span className="az-seg" role="group" aria-label="Whose rollover">
+      {opts.map(([k, label]) => (
+        <button key={k} className={(lane ? lane.key : "mine") === k ? "on" : ""} aria-pressed={(lane ? lane.key : "mine") === k}
+          onClick={() => choose(k)}>{label}</button>
+      ))}
+    </span>
+  ) : null;
+  return lane ? <Rollover r={lane} pub={d.public} s={d.settings} title={lane.name} head={toggle} />
+    : <Rollover r={d.rollover} pub={d.public} s={d.settings} head={toggle} />;
+}
+
+// A friend's rollover leg: a slip of several of today's games
+function SlipLeg({ x, r, c, pub }) {
+  const open = r.today && r.today.status === "open";
+  const stake = r.today ? r.today.stake : c.balance;
+  return (
+    <div className="bt-pick">
+      <div className="bt-pick-top">
+        <div>
+          <div className="bt-pick-name">{x.n} games</div>
+          <div className="muted">last kick-off {kick(x.last_ms || x.t_ms)}</div>
+        </div>
+        <div className="bt-pick-odds">
+          <b className="num">{odd(x.odds)}</b>
+          <span className="muted">{BOOK[x.book] || x.book}</span>
+        </div>
+      </div>
+      <div className="az-kpis">
+        <div><span className="muted">Chance of winning</span><b className="num">{pct(x.p, 1)}</b></div>
+        <div><span className="muted">Edge at this price</span><b className={`num ${tone(x.edge)}`}>{sgn(x.edge)}</b></div>
+        <div><span className="muted">Least likely game</span><b className="num">{pct(x.least, 1)}</b></div>
+        {!pub && <div><span className="muted">Stake (whole balance)</span><b className="num">{naira(stake)}</b></div>}
+        {!pub && <div><span className="muted">Returns if it wins</span><b className="num up">{naira(stake * x.odds)}</b></div>}
+      </div>
+      {x.book === "sportybet" && <SportyCode url={`/api/bets/lane/code?lane=${r.key}`} slip={x.key} pub={pub} />}
+      <div className="az-scroll"><table className="az-table bt-t">
+        <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Chance</th>{r.today && <th>Result</th>}</tr></thead>
+        <tbody>
+          {x.legs.map((g) => (
+            <tr key={g.key}>
+              <td className="muted num">{kick(g.t_ms)}</td>
+              <td className="bt-name"><b>{pick(g)}</b><span className="muted az-cat">{g.home} v {g.away}{g.league_name || g.league ? ` · ${g.league_name || g.league}` : ""}</span></td>
+              <td className="r num">{odd(g.odds)}</td>
+              <td className="r num">{pct(g.p + (g.p_void || 0), 1)}</td>
+              {r.today && <td className={g.status === "won" ? "up" : g.status === "lost" ? "down" : "muted"}>{g.status === "open" ? "open" : `${g.status} ${g.score || ""}`}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      <p className="az-note">
+        {r.today ? (open ? "Booked on paper. Once every game has finished (or one loses), the next slip from games later today is booked."
+          : `Settled: ${r.today.status === "won" ? "won" : "lost"}. No slip from games later today lands in the range.`)
+          : "Best slip right now: booked on the next pass (every 10 minutes), then fixed."}
+      </p>
+    </div>
+  );
+}
+
+function Rollover({ r, pub, s, title = "Today's rollover pick", head = null }) {
   const c = r.chain;
   const x = r.today || r.candidate;
   const used = c.refills >= r.refills_max + 1;
+  const rng = r.range || s?.roll || [1.2, 1.5];
   return (
     <section className="panel">
-      <Top title="Today's rollover pick" facts={[r.today_legs ? `${r.today_won} won today` : null,
-        ...(pub ? [] : [`chain ${c.n}`, `win ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`])]} />
-      {x ? (
+      <Top title={title} facts={[r.today_legs ? `${r.today_won} won today` : null,
+        ...(pub ? [] : [`chain ${c.n}`, `win ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`])]}>{head}</Top>
+      {x && x.legs ? <SlipLeg x={x} r={r} c={c} pub={pub} /> : x ? (
         <div className="bt-pick">
           <div className="bt-pick-top">
             <div>
@@ -163,7 +242,8 @@ function Rollover({ r, pub, s }) {
         </div>
       ) : (
         <>
-          <p className="az-note">Nothing qualifies right now: odds {odd(s?.roll?.[0] ?? 1.2)}–{odd(s?.roll?.[1] ?? 1.5)}, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
+          <p className="az-note">{r.slip ? `No slip lands between ${odd(rng[0])} and ${odd(rng[1])} right now from games later today, each priced no worse than 2% under fair, with fresh odds${pub ? "" : " from your laptop"}.`
+            : <>Nothing qualifies right now: odds {odd(rng[0])}–{odd(rng[1])}, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</>}</p>
           {(r.misses || []).length > 0 && (
             <ul className="bt-why">
               {r.misses.map((m) => (
@@ -187,7 +267,7 @@ function Rollover({ r, pub, s }) {
             <tbody>
               {r.history.map((p) => (
                 <tr key={`${p.key}-${p.placed_ms}`}>
-                  <td className="muted num">{p.day}</td>{!pub && <td className="num">{p.chain} · {p.leg}</td>}<td className="bt-name">{pick(p)}</td>
+                  <td className="muted num">{p.day}</td>{!pub && <td className="num">{p.chain} · {p.leg}</td>}<td className="bt-name">{p.legs ? `${p.n} games` : pick(p)}</td>
                   <td className="r num">{odd(p.odds)}</td>{!pub && <td className="r num">{naira(p.stake)}</td>}
                   <td className={p.status === "won" ? "up" : p.status === "lost" ? "down" : "muted"}>{p.status === "open" ? "open" : `${p.status} ${p.score || ""}`}</td>
                 </tr>
@@ -309,24 +389,25 @@ function Scorers({ sc, q, target, pub }) {
   );
 }
 
-function SportyCode({ q, slip, pub }) {
+function SportyCode({ q, url, slip, pub }) {
   const [job, setJob] = useState(null);
   const [copied, setCopied] = useState(false);
-  useEffect(() => setJob(null), [q, slip]);
+  const u = url || `/api/bets/combo/code?${q}`;
+  useEffect(() => setJob(null), [u, slip]);
   useEffect(() => {
     if (job?.status !== "waiting") return undefined;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/bets/combo/code?${q}`);
+        const r = await fetch(u);
         if (r.ok) setJob(await r.json());
       } catch { /* tried again on the next tick */ }
     }, 3000);
     return () => clearTimeout(h);
-  }, [job, q]);
+  }, [job, u]);
   const ask = async () => {
     setJob({ status: "waiting" });
     try {
-      const r = await fetch(`/api/bets/combo/code?${q}`);
+      const r = await fetch(u);
       setJob(r.ok ? await r.json() : { status: "failed", why: "the server didn't answer" });
     } catch {
       setJob({ status: "failed", why: "the server didn't answer" });
@@ -751,7 +832,7 @@ export default function Bets() {
       {d && (
         <div className="term-grid">
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
-          <div className="tw-5 term-col"><Rollover r={d.rollover} pub={d.public} s={d.settings} /></div>
+          <div className="tw-5 term-col"><RollSide d={d} /></div>
           <div className="tw-7"><Value d={d} /></div>
           <Combo stamp={d.now_ms} pub={d.public} />
           {!d.public && <Record rec={d.record} recent={d.flat_recent} pub={d.public} />}

@@ -247,6 +247,12 @@ async def bets_combo_code(request: Request, target: float = 10, days: int = 1, l
                                               _kinds(markets), "scorers" if which == "scorers" else "slip", games or None)
 
 
+@router.get("/bets/lane/code")
+async def bets_lane_code(request: Request, lane: str = ""):
+    """A SportyBet booking code for a friend's rollover slip (George's or Muiz's), made on the laptop."""
+    return await _rt(request).bets.lane_code(lane.strip().lower()[:20], bool(request.scope.get("analytix_public")))
+
+
 @router.get("/bets/code-jobs")
 async def bets_code_jobs(request: Request):
     """For the laptop collector: SportyBet slips waiting for a booking code."""
