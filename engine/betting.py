@@ -757,12 +757,25 @@ class Book:
     def open_pick(self) -> dict | None:
         return next((p for p in self.picks if p["status"] == "open"), None)
 
+    def last_pick(self) -> dict | None:
+        """The latest leg that stands (a replaced one doesn't)."""
+        return next((p for p in reversed(self.picks) if p["status"] != "replaced"), None)
+
+    def replace_open(self, now_ms: int, ok) -> dict | None:
+        """The open leg, if it no longer fits the rules (they changed after it was booked) and its game hasn't started:
+        withdrawn (it never counts), so the next pass books a leg under the rules as they are."""
+        p = self.open_pick()
+        if p and p["t_ms"] > now_ms and not ok(p):
+            p.update(status="replaced", replaced_ms=now_ms)
+            return p
+        return None
+
     def add_pick(self, x: dict, day: str, now_ms: int) -> dict | None:
         """The next rollover bet, only once the last one has settled (the balance has to be known) and only on a game
         kicking off after it (as many a day as fit)."""
         if self.open_pick():
             return None
-        last = self.picks[-1] if self.picks else None
+        last = self.last_pick()
         if last and x["t_ms"] <= last["t_ms"]:
             return None
         if self.chain["refills"] > ROLL_REFILLS:
@@ -812,7 +825,7 @@ class Book:
         staked = sum(b["stake"] for b in s)
         profit = sum(b["profit"] for b in s)
         clv = [b["clv"] for b in self.flat if b.get("clv") is not None]
-        p = [x for x in self.picks if x["status"] != "open"]
+        p = [x for x in self.picks if x["status"] in ("won", "lost")]
         return {"flat": {"n": len(s), "won": sum(1 for b in s if b["status"] == "won"), "staked": staked, "profit": profit,
                          "roi": profit / staked if staked else None, "open": sum(1 for b in self.flat if b["status"] == "open"),
                          "clv": sum(clv) / len(clv) if clv else None, "clv_n": len(clv),

@@ -1038,3 +1038,16 @@ def test_rollover_legs_fill_the_day():
     assert bk.add_pick(_bet("again", 1.2, NOW + 8 * H, home="Ham", away="Eggs"), "2026-11-18", NOW + 11 * H) is None  # earlier than the last
     assert bk.chain["day"] == 2 and [p["status"] for p in bk.picks] == ["won", "won"]
     assert C.window_end(NOW, 0) == B.day_end(NOW) and C.window_end(NOW, 3) == NOW + 3 * D and 0 in C.DAYS
+
+
+def test_a_leg_booked_under_old_rules_is_replaced():
+    bk = B.Book()
+    old = bk.add_pick(_bet("brighton", 1.15, NOW + 6 * H, p=0.86), "2026-11-21", NOW - 10 * H)     # booked under 1.15-1.35
+    ok = lambda p: B.ROLL_MIN <= p["odds"] <= B.ROLL_MAX
+    assert bk.replace_open(NOW, ok) is old and old["status"] == "replaced" and bk.open_pick() is None
+    new = bk.add_pick(_bet("new", 1.30, NOW + 3 * H, home="Town", away="Albion"), "2026-11-22", NOW)   # earlier is fine
+    assert new and new["leg"] == 1 and new["stake"] == 5000 and bk.last_pick() is new
+    assert bk.replace_open(NOW, ok) is None                                       # it fits: kept
+    assert bk.record()["rollover"]["picks"] == 0                                  # a replaced leg never counts
+    bk.picks[-1]["odds"] = 1.10
+    assert bk.replace_open(NOW + 4 * H, ok) is None                               # already kicked off: it stands
