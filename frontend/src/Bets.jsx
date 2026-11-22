@@ -250,7 +250,7 @@ function Value({ d }) {
 
 const WINDOWS = [["0", "Today"], ["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
-const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["up", "1Up / 2Up"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
+const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["up1", "1Up"], ["up2", "2Up"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
   ["btts", "Both teams to score"], ["mix", "Home/away or over"], ["handicap", "Handicap"], ["corners", "Corners"], ["shots", "Team shots"],
   ["saves", "Goalkeeper saves"], ["subs", "Substitution to score"], ["scorers", "Players to score"]];
 const ALL_KINDS = KINDS.map(([k]) => k);
@@ -364,7 +364,8 @@ function Combo({ stamp, pub }) {
   const [kinds, setKinds] = useState(() => {
     const k = saved().kinds;
     if (!Array.isArray(k) || !k.length || OLD_ALL.every((x) => k.includes(x))) return ALL_KINDS;    // everything stays everything
-    return ALL_KINDS.filter((x) => k.includes(x) || (x === "dc" && k.includes("win")));             // wins used to carry double chance
+    return ALL_KINDS.filter((x) => k.includes(x) || (x === "dc" && k.includes("win"))              // wins used to carry double chance
+      || ((x === "up1" || x === "up2") && k.includes("up")));                                        // 1Up and 2Up shared a button
   });
   const flip = (k) => setKinds((ks) => (ks.includes(k) ? (ks.length > 1 ? ks.filter((x) => x !== k) : ks) : ALL_KINDS.filter((x) => x === k || ks.includes(x))));
   const [c, setC] = useState(null);
