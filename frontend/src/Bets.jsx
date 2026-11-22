@@ -249,6 +249,7 @@ function Value({ d }) {
 }
 
 const WINDOWS = [["0", "Today"], ["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
+const GAMES = [["", "auto"], ...[10, 15, 20, 25, 30].map((v) => [String(v), String(v)])];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
 const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["up1", "1Up"], ["up2", "2Up"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
   ["btts", "Both teams to score"], ["mix", "Home/away or over"], ["handicap", "Handicap"], ["corners", "Corners"], ["shots", "Team shots"],
@@ -361,6 +362,7 @@ function Combo({ stamp, pub }) {
   const [days, setDays] = useState(() => saved().days || "1");
   const [least, setLeast] = useState(() => saved().least || "");
   const [book, setBook] = useState(() => saved().book || "");
+  const [games, setGames] = useState(() => saved().games || "");
   const [kinds, setKinds] = useState(() => {
     const k = saved().kinds;
     if (!Array.isArray(k) || !k.length || OLD_ALL.every((x) => k.includes(x))) return ALL_KINDS;    // everything stays everything
@@ -373,13 +375,13 @@ function Combo({ stamp, pub }) {
   const ok = t >= 1.1 && t <= 1000;
   useEffect(() => {
     try {
-      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds }));
+      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds, games }));
     } catch { /* private window: not kept */ }
     if (!ok) return undefined;
     let live = true;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}&markets=${kinds.join(",")}`);
+        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}&markets=${kinds.join(",")}&games=${games || 0}`);
         const j = await r.json();
         if (live && r.ok) setC(j);
       } catch { /* the header shows when the server is down */ }
@@ -388,11 +390,11 @@ function Combo({ stamp, pub }) {
       live = false;
       clearTimeout(h);
     };
-  }, [t, ok, target, days, least, book, kinds, stamp]);
+  }, [t, ok, target, days, least, book, kinds, games, stamp]);
   const s = c?.slip;
   const g = c?.settings;
   const onlyScorers = kinds.length === 1 && kinds[0] === "scorers";
-  const q = `target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}`;
+  const q = `target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}&games=${games || 0}`;
   const past = (r) => r.past && r.past.n ? r.past : null;
   const floor = c && (c.least || g.floors[g.floors.length - 1]);
   return (
@@ -409,6 +411,12 @@ function Combo({ stamp, pub }) {
           <span className="muted">Each game</span>
           <select className="az-select" value={least} onChange={(e) => setLeast(e.target.value)}>
             {LEAST.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+          </select>
+        </label>
+        <label className="bt-target">
+          <span className="muted">Max games</span>
+          <select className="az-select" value={games} onChange={(e) => setGames(e.target.value)}>
+            {GAMES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
           </select>
         </label>
         <label className="bt-target">
