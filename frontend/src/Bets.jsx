@@ -128,7 +128,38 @@ function Why({ x, s }) {
   );
 }
 
-function Rollover({ r, pub, s, title = "Today's rollover pick" }) {
+// The rollover side: your rollover, George's or Muiz's, one at a time, picked with the toggle in the box's title row
+const ROLL_VIEW = "analytix.bets.rollview";
+function RollSide({ d }) {
+  const [view, setView] = useState(() => {
+    try {
+      return localStorage.getItem(ROLL_VIEW) || "mine";
+    } catch {
+      return "mine";
+    }
+  });
+  const choose = (v) => {
+    setView(v);
+    try {
+      localStorage.setItem(ROLL_VIEW, v);
+    } catch { /* private window: not kept */ }
+  };
+  const lanes = d.lanes || [];
+  const lane = lanes.find((l) => l.key === view);
+  const opts = [["mine", "Rollover"], ...lanes.map((l) => [l.key, l.name.replace(/ Section$/, "")])];
+  const toggle = lanes.length ? (
+    <span className="az-seg" role="group" aria-label="Whose rollover">
+      {opts.map(([k, label]) => (
+        <button key={k} className={(lane ? lane.key : "mine") === k ? "on" : ""} aria-pressed={(lane ? lane.key : "mine") === k}
+          onClick={() => choose(k)}>{label}</button>
+      ))}
+    </span>
+  ) : null;
+  return lane ? <Rollover r={lane} pub={d.public} s={d.settings} title={lane.name} head={toggle} />
+    : <Rollover r={d.rollover} pub={d.public} s={d.settings} head={toggle} />;
+}
+
+function Rollover({ r, pub, s, title = "Today's rollover pick", head = null }) {
   const c = r.chain;
   const x = r.today || r.candidate;
   const used = c.refills >= r.refills_max + 1;
@@ -136,7 +167,7 @@ function Rollover({ r, pub, s, title = "Today's rollover pick" }) {
   return (
     <section className="panel">
       <Top title={title} facts={[r.today_legs ? `${r.today_won} won today` : null,
-        ...(pub ? [] : [`chain ${c.n}`, `win ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`])]} />
+        ...(pub ? [] : [`chain ${c.n}`, `win ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`])]}>{head}</Top>
       {x ? (
         <div className="bt-pick">
           <div className="bt-pick-top">
@@ -752,10 +783,7 @@ export default function Bets() {
       {d && (
         <div className="term-grid">
           {!d.enabled && <p className="az-note term-wide">The bets suite reads its sources in live mode only.</p>}
-          <div className="tw-5 term-col">
-            <Rollover r={d.rollover} pub={d.public} s={d.settings} />
-            {(d.lanes || []).map((l) => <Rollover key={l.key} r={l} pub={d.public} s={d.settings} title={l.name} />)}
-          </div>
+          <div className="tw-5 term-col"><RollSide d={d} /></div>
           <div className="tw-7"><Value d={d} /></div>
           <Combo stamp={d.now_ms} pub={d.public} />
           {!d.public && <Record rec={d.record} recent={d.flat_recent} pub={d.public} />}
