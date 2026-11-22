@@ -42,7 +42,13 @@ FLOORS = (0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60)   # every game on the slip a
 MAX_GAMES, MAX_GAMES_BIG, BIG = 15, 20, 200      # a target over BIG may use up to 20 games
 
 
-def games_cap(target: float) -> int:
+GAME_CAPS = (10, 15, 20, 25, 30)                # the most games a slip may have, when chosen on the page
+
+
+def games_cap(target: float, cap: int | None = None) -> int:
+    """The most games a slip may have: the chosen cap, else 15 (20 for a target over 200)."""
+    if cap in GAME_CAPS:
+        return cap
     return MAX_GAMES_BIG if target > BIG else MAX_GAMES
 HAIRCUT, HAIRCUT_LOW, HAIRCUT_CORNERS = 0.01, 0.02, 0.04
 LADDER = (1.5, 2, 3, 5, 10, 20, 50, 100, 200, 500, 1000)
@@ -152,10 +158,10 @@ class Builder:
     def __init__(self, bets: list[dict], top: float = T_MAX):
         self.bets, self.top, self.n, self._at = bets, top, len(bets), {}
 
-    def find(self, target: float, floor: float) -> list[dict] | None:
+    def find(self, target: float, floor: float, cap: int | None = None) -> list[dict] | None:
         if floor not in self._at:
             self._at[floor] = Solver([x for x in self.bets if chance(x) >= floor], self.top)
-        return self._at[floor].find(target, max_n=games_cap(target))
+        return self._at[floor].find(target, max_n=games_cap(target, cap))
 
     def reach(self, cap: int = MAX_GAMES) -> float:
         """The biggest total of at most `cap` games: the longest price of each game, the longest of those."""
@@ -190,18 +196,18 @@ def mode(least: float | None) -> str:
     return "safest" if least is None else f"{least:.2f}"
 
 
-def best_of(books: dict[str, Builder], target: float, least: float | None = None) -> list[dict] | None:
+def best_of(books: dict[str, Builder], target: float, least: float | None = None, cap: int | None = None) -> list[dict] | None:
     """The slip for a target over every book: the safest level any book reaches it at, the best return there; or, with
     a minimum chance, the best return with every game at least that likely."""
     for floor in (FLOORS if least is None else (least,)):
-        got = [s for s in (b.find(target, floor) for b in books.values()) if s]
+        got = [s for s in (b.find(target, floor, cap) for b in books.values()) if s]
         if got:
             return max(got, key=value)
     return None
 
 
 def build(solvers: dict[str, Builder], target: float, past: dict | None = None, least: float | None = None,
-          book: str | None = None, kinds: tuple | None = None) -> dict:
+          book: str | None = None, kinds: tuple | None = None, cap: int | None = None) -> dict:
     """The page's data: the slip for the target, and each size on the ladder with its record on past games (safest first,
     or every game at least `least` likely), from every book or only `book`."""
     target = min(max(float(target), T_MIN), T_MAX)
@@ -209,19 +215,19 @@ def build(solvers: dict[str, Builder], target: float, past: dict | None = None, 
     if book:
         solvers = {k: v for k, v in solvers.items() if k == book}
     least = snap(least)
-    s = best_of(solvers, target, least)
+    s = best_of(solvers, target, least, cap)
     replayed = kinds is None or set(kinds) <= {"win", "goals"}     # the replay only has wins and over/under 2.5
     ladder, done_past = [], ((past or {}).get(mode(least)) or {}) if replayed else {}
     for t in LADDER:
-        x = best_of(solvers, t, least)
-        ladder.append({"target": t, **(slip(x, False) if x else {}), "past": done_past.get(str(t))})
+        x = best_of(solvers, t, least, cap)
+        ladder.append({"target": t, **(slip(x, False) if x else {}), "past": done_past.get(str(t)) if cap is None or cap == games_cap(t) else None})   # replayed at the usual cap
     done = [r for r in ladder if r.get("n")]
     top = max(done, key=lambda r: r["edge"]) if done else None
     return {"target": target, "least": least, "slip": slip(s) if s else None, "ladder": ladder,
             "best_target": top["target"] if top else None,
-            "reach": max((sv.reach(games_cap(target)) for sv in solvers.values()), default=1.0),
+            "reach": max((sv.reach(games_cap(target, cap)) for sv in solvers.values()), default=1.0),
             "bets": sum(sv.n for sv in solvers.values()), "books": every, "book": book or None,
-            "settings": {"leg_min": LEG_MIN, "floors": list(FLOORS), "games": games_cap(target), "tol": TOL, "range": [T_MIN, T_MAX],
+            "settings": {"leg_min": LEG_MIN, "floors": list(FLOORS), "games": games_cap(target, cap), "cap": cap, "caps": list(GAME_CAPS), "tol": TOL, "range": [T_MIN, T_MAX],
                          "haircut": [HAIRCUT, HAIRCUT_LOW]}}
 
 
@@ -259,7 +265,7 @@ def scorer_legs(books: dict[str, dict], now_ms: int, until_ms: int, book: str = 
     return out
 
 
-def scorer_slip(bets: list[dict], target: float) -> list[dict] | None:
+def scorer_slip(bets: list[dict], target: float, cap: int | None = None) -> list[dict] | None:
     """Goalscorers only, one a game: the slip whose longest-priced player is as short as possible (the book's own
     favourites), then the fewest players."""
     if not bets:
@@ -268,7 +274,7 @@ def scorer_slip(bets: list[dict], target: float) -> list[dict] | None:
     lo, hi, best = 0, len(prices) - 1, None
     while lo <= hi:                                        # more players to choose from only ever reaches more totals
         mid = (lo + hi) // 2
-        got = Solver([x for x in bets if x["odds"] <= prices[mid]], top=target).find(target, max_n=games_cap(target))
+        got = Solver([x for x in bets if x["odds"] <= prices[mid]], top=target).find(target, max_n=games_cap(target, cap))
         if got:
             best, hi = got, mid - 1
         else:
@@ -276,12 +282,12 @@ def scorer_slip(bets: list[dict], target: float) -> list[dict] | None:
     return best
 
 
-def scorers(books: dict[str, dict], now_ms: int, days: int, target: float) -> dict:
+def scorers(books: dict[str, dict], now_ms: int, days: int, target: float, cap: int | None = None) -> dict:
     """The players-to-score slip for a total-odds target: no chance, edge or fair odds (we have none to give)."""
     target = min(max(float(target), T_MIN), T_MAX)
     legs = scorer_legs(books, now_ms, window_end(now_ms, days))
     out = {"games": len({x["match_id"] for x in legs}), "players": len(legs), "slip": None}
-    s = scorer_slip(legs, target)
+    s = scorer_slip(legs, target, cap)
     if s:
         s = sorted(s, key=lambda x: x["t_ms"])
         out["slip"] = {"book": s[0]["book"], "odds": math.prod(x["odds"] for x in s), "n": len(s), "p": None, "edge": None,
