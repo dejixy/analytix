@@ -21,6 +21,8 @@ Market codes (shared with engine/betting.py, the collector and the page):
                             3.5); on a whole line a level result is refunded
     EH011 EH01X EH012 ...   three-way handicap h:a (here 0:1, the away side starting a goal up): home, draw or away
                             after the head start
+    UP11 UP12 UP21 UP22     SportyBet's 1Up / 2Up: the home (1) or away (2) side wins, or is paid early once it leads by
+                            1 (1Up) or 2 (2Up) goals at any point (leads())
 """
 from __future__ import annotations
 
@@ -152,6 +154,37 @@ def markets(m: np.ndarray) -> dict[str, float | tuple[float, float]]:
         adj = _H + h - a
         out[f"EH{h}{a}1"], out[f"EH{h}{a}X"], out[f"EH{h}{a}2"] = (float(m[adj > 0].sum()), float(m[adj == 0].sum()),
                                                                    float(m[adj < 0].sum()))
+    return out
+
+
+LEAD_N = 12                                        # goals in a game followed for leads() (more is too rare to matter)
+
+
+def leads(lh: float, la: float) -> dict[str, float]:
+    """1Up and 2Up. Goals come at steady rates (lh home, la away), so given n goals in all, each is the home side's
+    with chance lh / (lh + la), in any order: the goal difference is a walk of n steps. 1Up pays once a side has led
+    by 1 at any point (a win always has); 2Up once it has led by 2, or if it wins."""
+    r = lh + la
+    if r <= 0:
+        return {}
+    q = lh / r
+    out = {"UP11": 0.0, "UP12": 0.0, "UP21": 0.0, "UP22": 0.0}
+    states = {(0, 0, 0): 1.0}                       # (goal difference, highest, lowest) -> chance, after n goals
+    w = math.exp(-r)
+    for n in range(LEAD_N + 1):
+        for (d, hi, lo), p in states.items():
+            pw = p * w
+            out["UP11"] += pw * (hi >= 1)
+            out["UP12"] += pw * (lo <= -1)
+            out["UP21"] += pw * (hi >= 2 or d >= 1)
+            out["UP22"] += pw * (lo <= -2 or d <= -1)
+        nxt: dict = {}
+        for (d, hi, lo), p in states.items():
+            for step, pr in ((1, q), (-1, 1 - q)):
+                k = (d + step, max(hi, d + step), min(lo, d + step))
+                nxt[k] = nxt.get(k, 0.0) + p * pr
+        states = nxt
+        w *= r / (n + 1)
     return out
 
 

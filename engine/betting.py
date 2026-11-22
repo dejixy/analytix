@@ -40,7 +40,7 @@ GOALS = ("O25", "U25")               # over / under 2.5 goals: priced from Pinna
 CORE = ("1", "X", "2", "1X", "12", "X2", "O25", "U25")   # value bets and the rollover use these; the combo builder all
 # The combo builder's other markets (engine/goals.py and engine/corners.py hold their codes): draw no bet exactly from
 # Pinnacle's win prices; the goals model's from its win and over/under prices; corners from the corners model
-KINDS = ("win", "dc", "dnb", "goals", "team", "btts", "mix", "handicap", "corners", "shots", "saves", "subs", "scorers")
+KINDS = ("win", "dc", "up", "dnb", "goals", "team", "btts", "mix", "handicap", "corners", "shots", "saves", "subs", "scorers")
 # A substitute scoring: every goal in a game is the goals model's expected total, and a share of goals is scored by
 # substitutes. No feed says which goals subs scored, so that share is read from SportyBet's own yes/no prices across
 # every game it prices (the median, needing SUB_MIN games), and only each game's expected goals is ours:
@@ -251,6 +251,8 @@ def kind(market: str) -> str | None:
         return "scorers"
     if market in ("SUBY", "SUBN"):                                 # a goal scored by a substitute: yes / no
         return "subs"
+    if market in ("UP11", "UP12", "UP21", "UP22"):                 # SportyBet's 1Up / 2Up (early payout on a lead)
+        return "up"
     c = K.parse(market)
     return K.KIND[c[0]] if c else None
 
@@ -462,7 +464,7 @@ def model_fair(s: dict, fair1x2: dict, need: set, corners=None) -> dict[str, dic
     out = {}
     for m in need & {"DNB1", "DNB2"}:
         out[m] = {"p": fair1x2["1" if m == "DNB1" else "2"], "p_void": fair1x2["X"], "src": s["src"], "model": None}
-    goal = {m for m in need if kind(m) in ("goals", "team", "btts", "mix", "handicap", "subs")} - set(GOALS)
+    goal = {m for m in need if kind(m) in ("goals", "team", "btts", "mix", "handicap", "subs", "up")} - set(GOALS)
     if goal:
         po = goals_fair(s).get("O25")
         key = (s["id"], round(fair1x2["1"], 4), round(fair1x2["2"], 4), round(po, 4) if po else None, G.RHO)
@@ -471,7 +473,7 @@ def model_fair(s: dict, fair1x2: dict, need: set, corners=None) -> dict[str, dic
             if len(_MODEL_FITS) > 4000:
                 _MODEL_FITS.clear()
             lh, la = G.fit(fair1x2["1"], fair1x2["X"], fair1x2["2"], po)
-            mk = _MODEL_FITS[key] = {**G.markets(G.grid(lh, la)), "_lam": lh + la}
+            mk = _MODEL_FITS[key] = {**G.markets(G.grid(lh, la)), **G.leads(lh, la), "_lam": lh + la}
         src = "goals model on Pinnacle's prices" + ("" if po else " (win prices only)")
         for m in goal & {"SUBN", "SUBY"}:                       # set again from the substitutes' share in build()
             lam = mk["_lam"]
