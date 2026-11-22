@@ -241,6 +241,32 @@ def window_end(now_ms: int, days: int) -> int:
     return B.day_end(now_ms) if days == 0 else now_ms + days * B.DAY
 
 
+# ── friends' rollovers: a slip of today's games in an odds range ─────────────
+def roll_slip(board: list[dict], books: dict[str, dict], now_ms: int, lo: float, hi: float) -> dict | None:
+    """A friend's rollover slip: games kicking off later today (Lagos) that each pass the rollover's rules (Pinnacle-
+    priced markets, no worse than 2% under fair, fresh odds and sharp price), on one book, safest games first, the
+    total landing from lo to hi. The slip's record (legs, total odds, chance, edge), or None."""
+    until = B.day_end(now_ms)
+    per_book = {}
+    for b, got in books.items():
+        ls = [x for x in legs(board, b, got.get("t_ms"), now_ms, until) if x["market"] in B.CORE and x["edge"] >= B.roll_bar(x)]
+        if ls:
+            per_book[b] = ls
+    tol = hi / lo - 1
+    for floor in FLOORS:
+        got = [s for s in (Solver([x for x in ls if chance(x) >= floor], top=hi).find(lo, tol, max_n=games_cap(hi))
+                           for ls in per_book.values()) if s]
+        if got:
+            s = sorted(max(got, key=value), key=lambda x: x["t_ms"])
+            return {"key": "+".join(x["key"] for x in s), "legs": s, "n": len(s), "book": s[0]["book"],
+                    "odds": math.prod(x["odds"] for x in s), "p": math.prod(chance(x) for x in s),
+                    "fair_p": math.prod(chance(x) for x in s), "edge": math.prod(ev(x) for x in s) - 1,
+                    "least": min(chance(x) for x in s), "t_ms": s[0]["t_ms"], "last_ms": s[-1]["t_ms"],
+                    "market": "slip", "home": s[0]["home"], "away": s[0]["away"], "league": s[0]["league"],
+                    "coded": all(x.get("sel") for x in s)}
+    return None
+
+
 # ── players to score: a slip of their own ────────────────────────────────────
 SCORERS_PER_GAME = 8          # each game's shortest-priced goalscorers considered
 

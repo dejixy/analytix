@@ -1126,28 +1126,47 @@ def test_the_combo_builder_takes_a_game_cap():
     assert C.build(books, 20, {"safest": {"20": {"n": 5}}}, cap=15)["ladder"][5]["past"] == {"n": 5}    # 15 is the usual cap
 
 
-def test_george_and_muiz_rollovers():
-    """Friends' rollovers: the same rules and chain, each in its own odds range and its own paper book."""
+def test_george_and_muiz_rollovers(tmp_path):
+    """Friends' rollovers: a slip of today's games in their odds range, safest games first, on one book, rolled over
+    like the main one in a paper book of their own; settled game by game."""
     from api.bets import BetsService
+    from engine import combos as C
     rt = SimpleNamespace(mode="replay")
-    import tempfile
-    tmp = Path(tempfile.mkdtemp())
-    svc = BetsService(rt, tmp / "bets.json", tmp / "odds.json")
+    svc = BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json")
     assert set(svc.lanes) == {"george", "muiz"} and B.LANES["george"]["range"] == (1.90, 2.30) and B.LANES["muiz"]["range"] == (9.80, 10.40)
-    board = [_row(key="main", odds=1.30, edge=0.0, p=0.77, t_ms=NOW + 3 * H),
-             _row(key="even", odds=2.10, edge=0.01, p=0.48, t_ms=NOW + 4 * H, home="C", away="D"),
-             _row(key="long", odds=10.0, edge=-0.01, p=0.099, t_ms=NOW + 5 * H, home="E", away="F", market="2"),
-             _row(key="too_long", odds=11.0, edge=0.0, p=0.091, t_ms=NOW + 2 * H, home="G", away="H", market="2")]
+    teams = [("Arsenal", "Fulham"), ("Chelsea", "Wolves"), ("Liverpool", "Everton"), ("Man City", "Burnley"), ("Newcastle", "Brentford"),
+             ("Barcelona", "Alaves"), ("Real Madrid", "Getafe"), ("Bayern", "Mainz"), ("Inter", "Lecce"), ("Napoli", "Como"),
+             ("PSG", "Lorient"), ("Ajax", "Heracles")]
+    board = []
+    for i, (h, a) in enumerate(teams):
+        odds = 1.20 + 0.02 * i
+        p = 0.99 / odds
+        board.append({**_row(key=f"g{i}", home=h, away=a, odds=odds, edge=odds * p - 1, p=p, fair_p=p, t_ms=NOW + (3 + i * 0.25) * H),
+                      "match_id": f"m{i}", "p_void": 0.0, "others": [{"book": "sportybet", "odds": odds, "sel": {"event": f"e{i}", "market": "1",
+                                                                                                                "specifier": "", "outcome": "1"}}]})
+    svc.books = {"sportybet": {"t_ms": NOW, "rows": []}}
+    g = C.roll_slip(board, svc.books, NOW, 1.90, 2.30)
+    assert g and 1.90 <= g["odds"] <= 2.30 * 1.0001 and g["n"] >= 2 and g["book"] == "sportybet" and g["coded"]
+    m = C.roll_slip(board, svc.books, NOW, 9.80, 10.40)
+    assert m and 9.80 <= m["odds"] <= 10.40 * 1.0001 and m["n"] > g["n"]
+    assert C.roll_slip(board, svc.books, NOW + 20 * H, 1.9, 2.3) is None                     # tomorrow: nothing left today
     day = "2026-11-18"
-    BetsService._roll(svc.book, (B.ROLL_MIN, B.ROLL_MAX), board, NOW, day)
-    for k, lane in svc.lanes.items():
-        BetsService._roll(lane, B.LANES[k]["range"], board, NOW, day)
-    assert [p["key"] for p in svc.book.picks] == ["main"]
-    assert [p["key"] for p in svc.lanes["george"].picks] == ["even"] and [p["key"] for p in svc.lanes["muiz"].picks] == ["long"]
-    assert svc.lanes["muiz"].picks[0]["stake"] == B.ROLL_START                         # a chain of its own
-    view = BetsService._roll_view(svc.lanes["muiz"], B.LANES["muiz"]["range"], board, NOW, day)
-    assert view["today"]["key"] == "long" and view["range"] == [9.80, 10.40] and view["chain"]["n"] == 1
+    svc._roll(svc.lanes["george"], B.LANES["george"]["range"], board, NOW, day, slip=True)
+    leg = svc.lanes["george"].picks[0]
+    assert leg["legs"] and leg["stake"] == B.ROLL_START and leg["status"] == "open" and all(x["status"] == "open" for x in leg["legs"])
+    view = svc._roll_view(svc.lanes["george"], B.LANES["george"]["range"], board, NOW, day, slip=True)
+    assert view["today"] is leg and view["slip"] and view["range"] == [1.90, 2.30]
+    games = leg["legs"]
+    res = [{"home": x["home"], "away": x["away"], "t_ms": x["t_ms"], "hg": 2, "ag": 0} for x in games[:-1]]
+    svc.lanes["george"].settle(res)
+    assert leg["status"] == "open"                                                          # one game still to play
+    svc.lanes["george"].settle(res + [{"home": games[-1]["home"], "away": games[-1]["away"], "t_ms": games[-1]["t_ms"], "hg": 3, "ag": 1}])
+    assert leg["status"] == "won" and abs(svc.lanes["george"].chain["balance"] - B.ROLL_START * leg["odds"]) < 1e-6
+    svc._roll(svc.lanes["muiz"], B.LANES["muiz"]["range"], board, NOW, day, slip=True)
+    mz = svc.lanes["muiz"].picks[0]
+    svc.lanes["muiz"].settle([{"home": mz["legs"][0]["home"], "away": mz["legs"][0]["away"], "t_ms": mz["legs"][0]["t_ms"], "hg": 0, "ag": 1}])
+    assert mz["status"] == "lost" and svc.lanes["muiz"].chain["refills"] == 1                # lost on its first lost game
+    job = svc._code_job(g)
+    assert job["status"] == "waiting" and job["games"] == g["n"]
     svc.lanes["george"].save()
-    assert (tmp / "bets_george.json").exists() and B.Book(tmp / "bets_george.json").picks[0]["key"] == "even"
-    empty = BetsService._roll_view(B.Book(), B.LANES["muiz"]["range"], board[:2], NOW, day)
-    assert empty["today"] is None and empty["candidate"] is None and isinstance(empty["misses"], list)
+    assert B.Book(tmp_path / "bets_george.json").picks[0]["legs"]

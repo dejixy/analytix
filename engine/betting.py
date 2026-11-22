@@ -751,6 +751,11 @@ class Book:
     def _slim(x: dict) -> dict:
         keep = ("key", "match_id", "home", "away", "league", "league_name", "t_ms", "market", "book", "odds", "fair_p", "p",
                 "edge", "sharp_src", "p_hist", "edge_hist")
+        if x.get("legs"):                                  # a slip of several games (a friend's rollover)
+            legs = [{k: g.get(k) for k in ("key", "home", "away", "league", "league_name", "t_ms", "market", "odds", "p",
+                                           "p_void", "edge", "sel")} | {"status": "open"} for g in x["legs"]]
+            return {**{k: x.get(k) for k in keep}, "legs": legs, "n": len(legs), "last_ms": x.get("last_ms"),
+                    "least": x.get("least"), "coded": x.get("coded"), "rule": None}
         return {**{k: x.get(k) for k in keep}, "rule": rule_of(x)}
 
     def add_flat(self, x: dict, now_ms: int, stake: float = FLAT_STAKE) -> dict | None:
@@ -785,7 +790,7 @@ class Book:
         if self.open_pick():
             return None
         last = self.last_pick()
-        if last and x["t_ms"] <= last["t_ms"]:
+        if last and not x.get("legs") and x["t_ms"] <= last["t_ms"]:
             return None
         if self.chain["refills"] > ROLL_REFILLS:
             return None
@@ -799,6 +804,23 @@ class Book:
         prices ({home, away, t_ms, fair}). Returns what settled."""
         done = []
         for b in [*self.flat, *self.picks]:
+            if b["status"] == "open" and b.get("legs"):         # a slip: lost on its first lost game, won on the last
+                for g in b["legs"]:
+                    if g["status"] == "open":
+                        r = match_fixture(g["home"], g["away"], g["t_ms"], results, within_h=30)
+                        if r and r.get("hg") is not None:
+                            w = wins(g["market"], r["hg"], r["ag"])
+                            g.update(status="void" if w is None else "won" if w else "lost", score=f"{r['hg']}-{r['ag']}")
+                st = [g["status"] for g in b["legs"]]
+                if "lost" in st or "open" not in st:
+                    won = "lost" not in st
+                    odds = math.prod(g["odds"] for g in b["legs"] if g["status"] == "won")   # a refunded game counts 1
+                    b.update(status="won" if won else "lost", score=f"{st.count('won')} of {len(st)}",
+                             profit=round(b["stake"] * (odds - 1) if won else -b["stake"], 2), odds_paid=odds)
+                    done.append(b)
+                    if b in self.picks:
+                        self._roll(b, won)
+                continue
             if b["status"] == "open":
                 r = match_fixture(b["home"], b["away"], b["t_ms"], results, within_h=30)
                 if r and r.get("hg") is not None:
@@ -820,7 +842,7 @@ class Book:
     def _roll(self, p: dict, won: bool) -> None:
         c = self.chain
         if won:
-            c["balance"] = p["stake"] * p["odds"]
+            c["balance"] = p["stake"] * p.get("odds_paid", p["odds"])
             c["day"] += 1
             c["best"] = max(c["best"], c["day"])
         else:
