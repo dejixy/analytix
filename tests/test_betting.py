@@ -1150,6 +1150,10 @@ def test_george_and_muiz_rollovers(tmp_path):
     m = C.roll_slip(board, svc.books, NOW, 9.80, 10.40)
     assert m and 9.80 <= m["odds"] <= 10.40 * 1.0001 and m["n"] > g["n"]
     assert C.roll_slip(board, svc.books, NOW + 20 * H, 1.9, 2.3) is None                     # tomorrow: nothing left today
+    two = [{**x, "others": [*x["others"], {"book": "bet9ja", "odds": round(x["odds"] + 0.05, 2)}]} for x in board]
+    both = {"sportybet": {"t_ms": NOW, "rows": []}, "bet9ja": {"t_ms": NOW, "rows": []}}
+    assert C.roll_slip(two, both, NOW, 1.9, 2.3)["book"] == "sportybet"                    # SportyBet first: a code can be made
+    assert C.roll_slip(two, both, NOW, 1.9, 2.3, prefer=None)["book"] == "bet9ja"          # else the better price
     day = "2026-11-18"
     svc._roll(svc.lanes["george"], B.LANES["george"]["range"], board, NOW, day, slip=True)
     leg = svc.lanes["george"].picks[0]

@@ -242,10 +242,16 @@ def window_end(now_ms: int, days: int) -> int:
 
 
 # ── friends' rollovers: a slip of today's games in an odds range ─────────────
-def roll_slip(board: list[dict], books: dict[str, dict], now_ms: int, lo: float, hi: float) -> dict | None:
+def roll_slip(board: list[dict], books: dict[str, dict], now_ms: int, lo: float, hi: float,
+              prefer: str | None = "sportybet") -> dict | None:
     """A friend's rollover slip: games kicking off later today (Lagos) that each pass the rollover's rules (Pinnacle-
     priced markets, no worse than 2% under fair, fresh odds and sharp price), on one book, safest games first, the
-    total landing from lo to hi. The slip's record (legs, total odds, chance, edge), or None."""
+    total landing from lo to hi. On `prefer` (SportyBet, so a booking code can be made) whenever it can make one, else
+    on whichever book can. The slip's record (legs, total odds, chance, edge), or None."""
+    if prefer and prefer in books:
+        got = roll_slip(board, {prefer: books[prefer]}, now_ms, lo, hi, prefer=None)
+        if got:
+            return got
     until = B.day_end(now_ms)
     per_book = {}
     for b, got in books.items():
