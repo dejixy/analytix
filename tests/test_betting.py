@@ -309,13 +309,13 @@ def test_bars_cap_and_lower_leagues():
 
 
 def test_rollover_misses_say_why():
-    board = [_row(key="a", odds=1.25, edge=-0.04), _row(key="b", odds=1.38, edge=0.01, agree=False),
+    board = [_row(key="a", odds=1.25, edge=-0.04), _row(key="b", odds=1.18, edge=0.01, agree=False),
              _row(key="c", odds=1.22, edge=-0.01, agree=None, intl=True), _row(key="d", odds=1.25, t_ms=NOW + 40 * H),
              _row(key="e", odds=1.90), _row(key="f", odds=1.25, edge=-0.005, league="E2")]
     m = {x["key"]: x["why"] for x in B.rollover_misses(board, NOW, n=6)}
     assert set(m) == {"a", "b", "c", "f"}                                     # too late and too long a price left out
     assert m["a"] == ["4.0% under fair, allowed 2%"]
-    assert m["b"] == ["odds 1.38, needs 1.15–1.35"]                         # form isn't a test any more
+    assert m["b"] == ["odds 1.18, needs 1.20–1.50"]                         # form isn't a test any more
     assert m["c"] == ["1.0% under fair; an international needs at least fair"]
     assert m["f"] == ["0.5% under fair; a lower league needs at least fair"]
 

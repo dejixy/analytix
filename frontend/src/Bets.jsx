@@ -161,7 +161,7 @@ function Rollover({ r, pub, s }) {
         </div>
       ) : (
         <>
-          <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
+          <p className="az-note">Nothing qualifies right now: odds {odd(s?.roll?.[0] ?? 1.2)}–{odd(s?.roll?.[1] ?? 1.5)}, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
           {(r.misses || []).length > 0 && (
             <ul className="bt-why">
               {r.misses.map((m) => (
