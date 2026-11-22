@@ -1069,7 +1069,7 @@ def test_1up_and_2up():
     spec.loader.exec_module(N)
     assert [N.sporty_more(mid, "", oid, "") for mid, oid in (("60200", "1"), ("60200", "3"), ("60100", "1"), ("60100", "3"), ("60200", "2"))] \
         == ["UP11", "UP12", "UP21", "UP22", None]
-    assert all(N.MORE.match(c) and B.kind(c) == "up" for c in ("UP11", "UP22"))
+    assert all(N.MORE.match(c) for c in ("UP11", "UP22")) and [B.kind(c) for c in ("UP11", "UP12", "UP21", "UP22")] == ["up1", "up1", "up2", "up2"]
     sharp = [_sharp("Manchester City", "Fulham", NOW + 5 * H, 1.40, 5.8, 7.4, read=NOW, sid="s1")]
     books = {"sportybet": {"t_ms": NOW, "rows": [{"home": "Manchester City", "away": "Fulham", "t_ms": NOW + 5 * H,
                                                    "odds": {"1": 1.40, "UP11": 1.18, "UP21": 1.36}}]}}
