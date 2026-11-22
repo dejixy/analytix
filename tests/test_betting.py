@@ -1075,3 +1075,20 @@ def test_1up_and_2up():
                                                    "odds": {"1": 1.40, "UP11": 1.18, "UP21": 1.36}}]}}
     board = {x["market"]: x for x in B.build(books, sharp, [], {}, NOW)}
     assert board["UP11"]["model"] == "goals" and board["UP11"]["p"] > board["UP21"]["p"] > board["1"]["p"]
+
+
+def test_the_combo_builder_takes_a_game_cap():
+    from engine import combos as C
+    assert C.games_cap(50) == 15 and C.games_cap(500) == 20 and C.games_cap(50, 30) == 30 and C.games_cap(500, 10) == 10
+    assert C.games_cap(50, 12) == 15                                         # not one of the choices: the usual cap
+    bets = [{"key": f"g{i}", "match_id": f"g{i}", "home": f"H{i}", "away": f"A{i}", "league": "E0", "t_ms": NOW + (3 + i) * H,
+             "market": "1", "book": "bet9ja", "odds": o, "p": 0.98 / o, "p_void": 0.0, "chance": 0.98 / o, "edge": -0.02}
+            for i, o in enumerate([1.20, 1.25, 1.30, 1.35] * 7 + [1.20, 1.25])]
+    books = {"bet9ja": C.Builder(bets)}
+    assert C.best_of(books, 20, cap=10) is None                              # the 10 longest come to about 18
+    got = C.best_of(books, 20, cap=20)
+    assert got and len(got) <= 20 and 20 <= math.prod(x["odds"] for x in got) <= 22
+    out = C.build(books, 20, {"safest": {"20": {"n": 5}}}, cap=10)
+    assert out["slip"] is None and out["settings"]["games"] == 10 and out["settings"]["cap"] == 10
+    assert out["ladder"][5]["target"] == 20 and out["ladder"][5]["past"] is None            # not replayed at 10 games
+    assert C.build(books, 20, {"safest": {"20": {"n": 5}}}, cap=15)["ladder"][5]["past"] == {"n": 5}    # 15 is the usual cap
