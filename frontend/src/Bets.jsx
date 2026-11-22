@@ -28,6 +28,8 @@ const more = (x) => {
     const n = (x.player || "").match(/^([^,(]+),\s*([^(]+?)\s*(\(.+\))?$/);          // "Foden, Phil (Man City)"
     return `${n ? `${n[2]} ${n[1]}${n[3] ? ` ${n[3]}` : ""}` : x.player || "A player"} to score`;
   }
+  const up = m.match(/^UP([12])([12])$/);
+  if (up) return `${up[2] === "1" ? x.home : x.away} ${up[1]}Up`;
   if (m === "SUBN") return "Substitution not to score";
   if (m === "SUBY") return "Substitution to score";
   if (m === "GG") return "Both teams to score: yes";
@@ -248,7 +250,7 @@ function Value({ d }) {
 
 const WINDOWS = [["0", "Today"], ["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
-const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
+const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["up", "1Up / 2Up"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
   ["btts", "Both teams to score"], ["mix", "Home/away or over"], ["handicap", "Handicap"], ["corners", "Corners"], ["shots", "Team shots"],
   ["saves", "Goalkeeper saves"], ["subs", "Substitution to score"], ["scorers", "Players to score"]];
 const ALL_KINDS = KINDS.map(([k]) => k);

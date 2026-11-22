@@ -643,7 +643,7 @@ def test_the_collector_reads_over_under():
     row = N.sporty_rows(sporty)[0]
     assert row["over_2_5"] == 1.72 and row["under_2_5"] == 2.08 and row["home"] == 1.37
     assert N.goals_line("x", [{"odds": {"over_2_5": 1.7, "under_2_5": 2.1, "O15": 1.2, "CO95": 1.8}}, {"odds": {"home": 1.2}}]) == \
-        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1, handicaps on 0, shots on 0, keeper saves on 0, win or over on 0, players to score on 0, substitute scores on 0"
+        "  x: over/under 2.5 on 1 of 2 games; other markets on 1, corners on 1, handicaps on 0, shots on 0, keeper saves on 0, win or over on 0, players to score on 0, substitute scores on 0, 1Up/2Up on 0"
 
 
 def test_value_bets_by_either_rule():
@@ -1051,3 +1051,27 @@ def test_a_leg_booked_under_old_rules_is_replaced():
     assert bk.record()["rollover"]["picks"] == 0                                  # a replaced leg never counts
     bk.picks[-1]["odds"] = 1.10
     assert bk.replace_open(NOW + 4 * H, ok) is None                               # already kicked off: it stands
+
+
+def test_1up_and_2up():
+    """1Up: the side has led by 1 at any point (a win always has). 2Up: led by 2 at any point, or won."""
+    import importlib.util
+    from engine import goals as G
+    L = G.leads(1.7, 1.0)
+    p1 = float(G.grid(1.7, 1.0, rho=0.0)[G.MASKS["1"]].sum())
+    assert p1 < L["UP21"] < L["UP11"] < 1 and L["UP12"] < L["UP11"] and L["UP22"] < L["UP12"]
+    lone = G.leads(1.0, 0.0)                                         # only the home side scores: it leads once it scores
+    assert abs(lone["UP11"] - (1 - math.exp(-1.0))) < 1e-9 and lone["UP12"] == 0
+    flip = G.leads(1.0, 1.7)
+    assert abs(flip["UP11"] - L["UP12"]) < 1e-12 and abs(flip["UP21"] - L["UP22"]) < 1e-12
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    assert [N.sporty_more(mid, "", oid, "") for mid, oid in (("60200", "1"), ("60200", "3"), ("60100", "1"), ("60100", "3"), ("60200", "2"))] \
+        == ["UP11", "UP12", "UP21", "UP22", None]
+    assert all(N.MORE.match(c) and B.kind(c) == "up" for c in ("UP11", "UP22"))
+    sharp = [_sharp("Manchester City", "Fulham", NOW + 5 * H, 1.40, 5.8, 7.4, read=NOW, sid="s1")]
+    books = {"sportybet": {"t_ms": NOW, "rows": [{"home": "Manchester City", "away": "Fulham", "t_ms": NOW + 5 * H,
+                                                   "odds": {"1": 1.40, "UP11": 1.18, "UP21": 1.36}}]}}
+    board = {x["market"]: x for x in B.build(books, sharp, [], {}, NOW)}
+    assert board["UP11"]["model"] == "goals" and board["UP11"]["p"] > board["UP21"]["p"] > board["1"]["p"]
