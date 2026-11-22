@@ -1014,3 +1014,27 @@ def test_substitution_to_score():
     assert C.haircut(no) == C.HAIRCUT_CORNERS
     few = B.build({"sportybet": {"t_ms": t, "rows": rows[:3]}}, sharp, [], {}, t)          # too few games: the default share
     assert {round(x["sub_share"], 4) for x in few if x["market"] == "SUBN"} == {B.SUB_SHARE}
+
+
+def test_rollover_legs_fill_the_day():
+    """As many rollover legs a day as fit: the next one once the last has settled, from games later today only, the
+    earliest qualifying slot first; and the combo builder's today-only window."""
+    from engine import combos as C
+    lagos_10 = NOW                                                    # 09:00 UTC = 10:00 in Lagos
+    assert B.day_end(lagos_10) == int(datetime(2026, 11, 18, 23, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    rows = [_row(key="early", t_ms=NOW + 4 * H, odds=1.30, edge=0.0, p=0.77),
+            _row(key="early_better", t_ms=NOW + 5 * H, odds=1.25, edge=0.0, p=0.80),   # the same slot (within 90 minutes)
+            _row(key="late", t_ms=NOW + 9 * H, odds=1.20, edge=0.0, p=0.84),
+            _row(key="tomorrow", t_ms=NOW + 20 * H, odds=1.20, edge=0.0, p=0.90)]
+    assert B.rollover_pick(rows, NOW)["key"] == "early_better"         # the earliest slot, its most likely game
+    assert B.rollover_pick(rows[2:], NOW)["key"] == "late"             # tomorrow's game waits for tomorrow
+    bk = B.Book()
+    first = bk.add_pick(_bet("early_better", 1.25, NOW + 5 * H, p=0.8), "2026-11-18", NOW)
+    assert first and bk.add_pick(_bet("late", 1.20, NOW + 9 * H), "2026-11-18", NOW) is None      # the first is open
+    bk.settle([{"home": "Big City", "away": "Rovers", "t_ms": NOW + 5 * H, "hg": 1, "ag": 0}])
+    second = bk.add_pick(_bet("late", 1.20, NOW + 9 * H, home="Town", away="Albion"), "2026-11-18", NOW + 7 * H)
+    assert second and second["leg"] == 2 and second["stake"] == 6250.0 and second["day"] == "2026-11-18"
+    bk.settle([{"home": "Town", "away": "Albion", "t_ms": NOW + 9 * H, "hg": 2, "ag": 0}])
+    assert bk.add_pick(_bet("again", 1.2, NOW + 8 * H, home="Ham", away="Eggs"), "2026-11-18", NOW + 11 * H) is None  # earlier than the last
+    assert bk.chain["day"] == 2 and [p["status"] for p in bk.picks] == ["won", "won"]
+    assert C.window_end(NOW, 0) == B.day_end(NOW) and C.window_end(NOW, 3) == NOW + 3 * D and 0 in C.DAYS

@@ -132,7 +132,8 @@ function Rollover({ r, pub, s }) {
   const used = c.refills >= r.refills_max + 1;
   return (
     <section className="panel">
-      <Top title="Today's rollover pick" facts={pub ? [] : [`chain ${c.n}`, `day ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`]} />
+      <Top title="Today's rollover pick" facts={[r.today_legs ? `${r.today_won} won today` : null,
+        ...(pub ? [] : [`chain ${c.n}`, `win ${c.day} of ${r.target}`, `refills ${c.refills} of ${r.refills_max}`])]} />
       {x ? (
         <div className="bt-pick">
           <div className="bt-pick-top">
@@ -153,14 +154,14 @@ function Rollover({ r, pub, s }) {
           </div>
           <Why x={x} s={s} />
           <p className="az-note">
-            {r.today ? (r.today.status === "open" ? "Booked for today on paper. It settles after the game; tomorrow's pick waits for it."
-              : `Settled: ${r.today.status === "won" ? "won" : "lost"} ${r.today.score || ""}.`)
-              : "Best candidate right now; today's pick is booked on the next pass (every 10 minutes, from 06:00 Lagos) and then fixed."}
+            {r.today ? (r.today.status === "open" ? "Booked on paper. Once it settles, the next qualifying game later today is booked."
+              : `Settled: ${r.today.status === "won" ? "won" : "lost"} ${r.today.score || ""}. Nothing else qualifies later today.`)
+              : "Best candidate right now: booked on the next pass (every 10 minutes, from 06:00 Lagos), then fixed. After it settles, the next qualifying game later today follows."}
           </p>
         </div>
       ) : (
         <>
-          <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off within 30 hours, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
+          <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
           {(r.misses || []).length > 0 && (
             <ul className="bt-why">
               {r.misses.map((m) => (
@@ -175,7 +176,7 @@ function Rollover({ r, pub, s }) {
           <div><span className="muted">Balance</span><b className="num">{naira(c.balance)}</b></div>
           <div><span className="muted">Best run</span><b className="num">{c.best} wins</b></div>
           <div><span className="muted">Spent so far</span><b className="num">{naira(r.start * (c.refills + 1))}</b></div>
-          <div><span className="muted">Chance of day {r.target} from here</span><b className="num">{r.p_finish == null ? "-" : r.p_finish < 0.0001 ? "under 0.01%" : pct(r.p_finish, 2)}</b></div>
+          <div><span className="muted">Chance of {r.target} straight wins from here</span><b className="num">{r.p_finish == null ? "-" : r.p_finish < 0.0001 ? "under 0.01%" : pct(r.p_finish, 2)}</b></div>
         </div>}
         {used && !pub && <p className="az-note">The six refills are used up: no new chain is started.</p>}
         {r.history.length > 0 && (
@@ -183,7 +184,7 @@ function Rollover({ r, pub, s }) {
             <thead><tr><th>Day</th>{!pub && <th>Chain · leg</th>}<th>Pick</th><th className="r">Odds</th>{!pub && <th className="r">Stake</th>}<th>Result</th></tr></thead>
             <tbody>
               {r.history.map((p) => (
-                <tr key={p.day}>
+                <tr key={`${p.key}-${p.placed_ms}`}>
                   <td className="muted num">{p.day}</td>{!pub && <td className="num">{p.chain} · {p.leg}</td>}<td className="bt-name">{pick(p)}</td>
                   <td className="r num">{odd(p.odds)}</td>{!pub && <td className="r num">{naira(p.stake)}</td>}
                   <td className={p.status === "won" ? "up" : p.status === "lost" ? "down" : "muted"}>{p.status === "open" ? "open" : `${p.status} ${p.score || ""}`}</td>
@@ -245,7 +246,7 @@ function Value({ d }) {
   );
 }
 
-const WINDOWS = [["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
+const WINDOWS = [["0", "Today"], ["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
 const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
   ["btts", "Both teams to score"], ["mix", "Home/away or over"], ["handicap", "Handicap"], ["corners", "Corners"], ["shots", "Team shots"],
