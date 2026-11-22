@@ -1077,6 +1077,38 @@ def test_1up_and_2up():
     assert board["UP11"]["model"] == "goals" and board["UP11"]["p"] > board["UP21"]["p"] > board["1"]["p"]
 
 
+def test_results_come_from_espn_first(tmp_path, monkeypatch):
+    """A finished rollover leg settles from ESPN's free scoreboard within minutes, with no Odds API credits spent."""
+    import asyncio
+    import api.bets as AB
+    from api.bets import BetsService
+    from ingestion import intel as I
+    rt = type("RT", (), {"mode": "replay"})()
+    svc = BetsService(rt, tmp_path / "bets.json", tmp_path / "odds.json")
+    asked = []
+
+    async def board(sport, league, date=None):
+        asked.append((league, date))
+        return [{"completed": True, "start_ms": NOW, "home_score": 2, "away_score": 1,
+                 "home": {"team": {"displayName": "Barcelona"}}, "away": {"team": {"displayName": "Real Betis"}}},
+                {"completed": False, "start_ms": NOW + H, "home_score": 0, "away_score": 0,
+                 "home": {"team": {"displayName": "Sevilla"}}, "away": {"team": {"displayName": "Getafe"}}}]
+    monkeypatch.setattr(I, "fetch_scoreboard", board)
+    called = []
+
+    async def odds_api(*a, **k):
+        called.append(a)
+        return {}, None, []
+    svc.fetch_odds_api = odds_api
+    monkeypatch.setenv("ANALYTIX_ODDS_API_KEY", "x")
+    leg = svc.book.add_pick(_bet("barca", 1.30, NOW, home="Barcelona", away="Real Betis", p=0.8) | {"league": "SP1"}, "2026-11-18", NOW - H)
+    asyncio.run(svc._settle(NOW + 2 * H))
+    assert leg["status"] == "won" and leg["score"] == "2-1" and not called            # no credits spent
+    assert {lg for lg, _ in asked} == {"esp.1"} and svc.book.chain["day"] == 1
+    assert AB.espn_slug("soccer_uefa_champs_league") == "uefa.champions" and AB.espn_slug("E2") == "eng.3"
+    assert AB.espn_slug("soccer_fifa_world_cup_qualifiers_europe") is None
+
+
 def test_the_combo_builder_takes_a_game_cap():
     from engine import combos as C
     assert C.games_cap(50) == 15 and C.games_cap(500) == 20 and C.games_cap(50, 30) == 30 and C.games_cap(500, 10) == 10

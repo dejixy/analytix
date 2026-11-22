@@ -36,7 +36,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -54,7 +54,19 @@ ODDS_API_LEAGUES = ("E0", "E1", "E2", "E3", "SP1", "I1", "D1", "F1", "UCL", "UEL
                                                                   # leagues come from football-data and the pre-kick-off read
 EVERY_S = {"history": 86400, "fixtures": 6 * 3600, "sharp": 86400, "book": 600}
 ROLL_DONE_MS = 115 * 60_000           # a game is over about this long after kick-off
-ROLL_SCORES_S = 900                   # the open rollover leg's league: its scores asked this often
+ROLL_SCORES_S = 900                   # the open rollover leg's league: its scores asked this often (The Odds API)
+ESPN_ROLL_S, ESPN_OTHER_S = 240, 1800 # ESPN's free scoreboards: the rollover leg's league, any other open bet's
+ESPN_SOCCER = {"E0": "eng.1", "E1": "eng.2", "E2": "eng.3", "E3": "eng.4", "SP1": "esp.1", "I1": "ita.1", "D1": "ger.1",
+               "F1": "fra.1", "N1": "ned.1", "P1": "por.1", "SC0": "sco.1", "B1": "bel.1", "T1": "tur.1", "G1": "gre.1"}
+
+
+def espn_slug(league: str) -> str | None:
+    """ESPN's scoreboard for a league code or a UEFA cup's key, if it has one."""
+    if league in ESPN_SOCCER:
+        return ESPN_SOCCER[league]
+    k = (league or "").lower()
+    return ("uefa.champions" if "champs_league" in k or k == "ucl" else "uefa.europa.conf" if "conference" in k or k == "uecl"
+            else "uefa.europa" if "europa_league" in k or k == "uel" else None)
 MIN_CREDITS = 40
 FRESH_MIN_CREDITS = 100        # the pre-kick-off reads stop here, keeping the rest of the month for the daily read
 FRESH_FROM_H, FRESH_TO_H, FRESH_EVERY_H = 0.5, 3, 2      # read again 30 min to 3 h before kick-off, a league every 2 h
@@ -86,6 +98,7 @@ class BetsService:
         self.cups: dict[str, tuple[str, str]] = dict(F.CUPS)  # the European cups: {code: (name, sport key)}
         self._fresh_at: dict[str, int] = {}                   # when each league last had a pre-kick-off read
         self._scores_at: dict[str, float] = {}                # when each league's results were last asked for
+        self._espn_cache: dict[tuple, tuple[float, list]] = {}  # (ESPN league, day) -> (asked at, final scores)
         self.status: dict[str, dict] = {k: {"ok": None, "at": None, "error": None} for k in ("history", "fixtures", "sharp", "book")}
         self._board: tuple[float, int, list] | None = None    # (built at, generation, rows)
         self._gen = 0                                          # bumped whenever odds, prices or history change
@@ -258,12 +271,45 @@ class BetsService:
                 self.book.add_pick(pick, day.strftime("%Y-%m-%d"), now)
         self.book.save()
 
+    async def _espn(self, open_: list[dict], roll: set, now: int) -> list[dict]:
+        """Final scores from ESPN's free scoreboards (no credits) for the open bets' leagues and days: the rollover
+        leg's league every few minutes, any other every half hour; the last answer kept in between."""
+        from ingestion import intel as I
+        want: dict = {}
+        for b in open_:
+            slug = espn_slug(b["league"])
+            if slug:
+                for shift in (0, -5 * B.HOUR):                # ESPN's days are US time: the kick-off's date both ways
+                    d = datetime.fromtimestamp((b["t_ms"] + shift) / 1000, timezone.utc).strftime("%Y%m%d")
+                    want[(slug, d)] = min(want.get((slug, d), ESPN_OTHER_S), ESPN_ROLL_S if b["league"] in roll else ESPN_OTHER_S)
+        out = []
+        for (slug, d), every in want.items():
+            at, got = self._espn_cache.get((slug, d), (0.0, []))
+            if time.time() - at > every:
+                try:
+                    games = await I.fetch_scoreboard("soccer", slug, d)
+                    got = [{"home": g["home"]["team"].get("displayName") or "", "away": g["away"]["team"].get("displayName") or "",
+                            "t_ms": g["start_ms"], "hg": g["home_score"], "ag": g["away_score"]}
+                           for g in games if g.get("completed") and g.get("start_ms") and g.get("home_score") is not None
+                           and g.get("away_score") is not None]
+                    self._espn_cache[(slug, d)] = (time.time(), got)
+                except Exception as exc:                  # noqa: BLE001 - The Odds API and football-data still settle it
+                    log.info("bets ESPN scores %s %s: %s", slug, d, exc)
+            out += got
+        if len(self._espn_cache) > 200:
+            self._espn_cache = dict(list(self._espn_cache.items())[-100:])
+        return out
+
     async def _settle(self, now: int) -> None:
-        # a game is over about 1h55 after kick-off; the rollover's league is asked every 15 minutes from then (the next
-        # leg waits for it), any other at most once an hour
+        # a game is over about 1h55 after kick-off. ESPN's free scoreboards are read first (the rollover leg's league
+        # every few minutes, so the next leg isn't kept waiting); The Odds API's scores (two credits a league) only for
+        # what ESPN didn't settle: the rollover's league every 15 minutes, any other at most once an hour
         open_ = [b for b in [*self.book.flat, *self.book.picks] if b["status"] == "open" and b["t_ms"] < now - ROLL_DONE_MS]
         roll = {b["league"] for b in self.book.picks if b["status"] == "open"}
         results = [g for g in self.history if g.get("hg") is not None and g["t_ms"] > now - 10 * B.DAY]
+        if open_:
+            results += await self._espn(open_, roll, now)
+            open_ = [b for b in open_ if not B.match_fixture(b["home"], b["away"], b["t_ms"], results, within_h=30)]
         if open_ and os.getenv("ANALYTIX_ODDS_API_KEY") and (self.credits is None or self.credits >= MIN_CREDITS // 2):
             sport = lambda k: self._sport(k) or ((k, k) if k.startswith("soccer_") else None)
             leagues = {b["league"] for b in open_ if sport(b["league"])
