@@ -16,7 +16,7 @@ The bets suite, live (/bets, /api/bets; engine/betting.py has the rules). Live m
     Nigerian odds  pushed from a laptop in Nigeria (scripts/naijaOdds.py) to POST /api/bets/odds through the tunnel;
                    ANALYTIX_BETS_TOKEN, if set, must match its X-Bets-Token header
     paper book     every ten minutes: new flat value bets are booked at a flat stake, the next rollover leg is booked once
-                   the last has settled (as many a day as fit, from 06:00 Lagos), and open bets are settled from
+                   the last has settled (as many a day as fit, any time of day), and open bets are settled from
                    results (The Odds API's scores, else football-data) and given their closing-line value
 Kept in data/bets.json (the book), data/bets_odds.json (the last push from each book) and data/bets_sharp.json (the last
 paid sharp read, so a restart reuses it until it's a day old instead of spending credits again).
@@ -247,9 +247,12 @@ class BetsService:
         for x in B.value_bets(board, before_ms=now + B.BOOK_DAYS * B.DAY):
             self.book.add_flat(x, now)
         await self._settle(now)
+        gone = self.book.replace_open(now, lambda p: B.ROLL_MIN <= p["odds"] <= B.ROLL_MAX)
+        if gone:                                          # the odds range changed after it was booked
+            log.info("bets rollover: %s v %s at %.2f replaced under the new odds range", gone["home"], gone["away"], gone["odds"])
         day = datetime.fromtimestamp(now / 1000, LAGOS)
-        if day.hour >= 6 and not self.book.open_pick():
-            last = self.book.picks[-1] if self.book.picks else None
+        if not self.book.open_pick():
+            last = self.book.last_pick()
             pick = B.rollover_pick([x for x in board if not last or x["t_ms"] > last["t_ms"]], now)
             if pick:
                 self.book.add_pick(pick, day.strftime("%Y-%m-%d"), now)
@@ -512,9 +515,9 @@ class BetsService:
         if board is None:
             board = self.board(now) if self.books else []
         day = datetime.fromtimestamp(now / 1000, LAGOS).strftime("%Y-%m-%d")
-        todays = [p for p in self.book.picks if p["day"] == day]
+        todays = [p for p in self.book.picks if p["day"] == day and p["status"] != "replaced"]
         open_pick = self.book.open_pick()
-        last = self.book.picks[-1] if self.book.picks else None
+        last = self.book.last_pick()
         candidate = None
         if not open_pick and self.book.chain["refills"] <= B.ROLL_REFILLS:
             candidate = B.rollover_pick([x for x in board if not last or x["t_ms"] > last["t_ms"]], now)

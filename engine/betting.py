@@ -16,9 +16,10 @@ Pure functions and a small paper book; ingestion/football.py reads the data, api
     value        edge = Nigerian odds x the sharp fair chance - 1. Flat bets: odds 1.20 to 1.50 and an edge of 2%+ (3%+ in
                  lower leagues and internationals) up to 10%, odds read in the last two hours, a sharp price from the last
                  24; shown up to a week ahead, booked on paper from three days before kick-off
-    rollover     one pick a day, fixed once made: odds 1.15 to 1.35, kick-off within 30 hours, edge no worse than -2% (at
-                 least fair in lower leagues and internationals); the highest sharp chance of winning. Followed as a
-                 paper chain from N5,000, the balance riding on each pick, with up to six refills
+    rollover     as many legs a day as fit, each fixed once made and booked only once the last has settled: odds 1.20
+                 to 1.50, kick-off later the same day (Lagos), edge no worse than -2% (at least fair in lower leagues and
+                 internationals); the earliest qualifying slot, its highest sharp chance of winning. Followed as a paper
+                 chain from N5,000, the balance riding on each pick, with up to six refills
     record       every flat value bet and every rollover pick, followed to its result with its closing-line value (the
                  bet's odds against the fair closing price: beating the close is the earliest sign an edge is real)
 """
@@ -56,7 +57,7 @@ FLAT_EDGE_LOW = 0.03                 # leagues where Pinnacle's own price is les
 EDGE_MAX = 0.10                      # above this an "edge" is nearly always a stale price or the wrong game: not bet
 LOWER_LEAGUES = {"E2", "E3", "SC0", "B1", "T1", "G1"}
 FLAT_STAKE = 250
-ROLL_MIN, ROLL_MAX, ROLL_EDGE = 1.15, 1.35, -0.02
+ROLL_MIN, ROLL_MAX, ROLL_EDGE = 1.20, 1.50, -0.02
 ROLL_START, ROLL_REFILLS, ROLL_TARGET = 5_000, 6, 30
 ODDS_FRESH_H, SHARP_FRESH_H = 2, 24
 SHOW_DAYS, BOOK_DAYS = 7, 3          # games shown up to a week ahead; paper bets booked from three days before kick-off
@@ -657,7 +658,7 @@ def day_end(now_ms: int) -> int:
 
 
 def rollover_ok(x: dict) -> bool:
-    """The rollover's rules for one bet: odds 1.15-1.35, no worse than 2% under fair (at least fair in lower leagues,
+    """The rollover's rules for one bet: odds 1.20-1.50, no worse than 2% under fair (at least fair in lower leagues,
     internationals and goals bets), not over 10% above it, fresh Nigerian odds and a fresh sharp price."""
     return (ROLL_MIN <= x["odds"] <= ROLL_MAX and x["market"] in CORE and x["market"] != "X"
             and roll_bar(x) <= x["edge"] <= EDGE_MAX and x["odds_age_h"] <= ODDS_FRESH_H and x["sharp_age_h"] <= SHARP_FRESH_H)
@@ -681,7 +682,7 @@ def rollover_misses(board: list[dict], now_ms: int, n: int = 3) -> list[dict]:
     out = []
     until = day_end(now_ms)
     for x in board:
-        if x["market"] == "X" or x["market"] not in CORE or x["t_ms"] > until or not 1.10 <= x["odds"] <= 1.45:
+        if x["market"] == "X" or x["market"] not in CORE or x["t_ms"] > until or not ROLL_MIN - 0.05 <= x["odds"] <= ROLL_MAX + 0.10:
             continue
         why = []
         if not ROLL_MIN <= x["odds"] <= ROLL_MAX:
@@ -756,12 +757,25 @@ class Book:
     def open_pick(self) -> dict | None:
         return next((p for p in self.picks if p["status"] == "open"), None)
 
+    def last_pick(self) -> dict | None:
+        """The latest leg that stands (a replaced one doesn't)."""
+        return next((p for p in reversed(self.picks) if p["status"] != "replaced"), None)
+
+    def replace_open(self, now_ms: int, ok) -> dict | None:
+        """The open leg, if it no longer fits the rules (they changed after it was booked) and its game hasn't started:
+        withdrawn (it never counts), so the next pass books a leg under the rules as they are."""
+        p = self.open_pick()
+        if p and p["t_ms"] > now_ms and not ok(p):
+            p.update(status="replaced", replaced_ms=now_ms)
+            return p
+        return None
+
     def add_pick(self, x: dict, day: str, now_ms: int) -> dict | None:
         """The next rollover bet, only once the last one has settled (the balance has to be known) and only on a game
         kicking off after it (as many a day as fit)."""
         if self.open_pick():
             return None
-        last = self.picks[-1] if self.picks else None
+        last = self.last_pick()
         if last and x["t_ms"] <= last["t_ms"]:
             return None
         if self.chain["refills"] > ROLL_REFILLS:
@@ -811,7 +825,7 @@ class Book:
         staked = sum(b["stake"] for b in s)
         profit = sum(b["profit"] for b in s)
         clv = [b["clv"] for b in self.flat if b.get("clv") is not None]
-        p = [x for x in self.picks if x["status"] != "open"]
+        p = [x for x in self.picks if x["status"] in ("won", "lost")]
         return {"flat": {"n": len(s), "won": sum(1 for b in s if b["status"] == "won"), "staked": staked, "profit": profit,
                          "roi": profit / staked if staked else None, "open": sum(1 for b in self.flat if b["status"] == "open"),
                          "clv": sum(clv) / len(clv) if clv else None, "clv_n": len(clv),

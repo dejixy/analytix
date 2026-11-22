@@ -309,13 +309,13 @@ def test_bars_cap_and_lower_leagues():
 
 
 def test_rollover_misses_say_why():
-    board = [_row(key="a", odds=1.25, edge=-0.04), _row(key="b", odds=1.38, edge=0.01, agree=False),
+    board = [_row(key="a", odds=1.25, edge=-0.04), _row(key="b", odds=1.18, edge=0.01, agree=False),
              _row(key="c", odds=1.22, edge=-0.01, agree=None, intl=True), _row(key="d", odds=1.25, t_ms=NOW + 40 * H),
              _row(key="e", odds=1.90), _row(key="f", odds=1.25, edge=-0.005, league="E2")]
     m = {x["key"]: x["why"] for x in B.rollover_misses(board, NOW, n=6)}
     assert set(m) == {"a", "b", "c", "f"}                                     # too late and too long a price left out
     assert m["a"] == ["4.0% under fair, allowed 2%"]
-    assert m["b"] == ["odds 1.38, needs 1.15–1.35"]                         # form isn't a test any more
+    assert m["b"] == ["odds 1.18, needs 1.20–1.50"]                         # form isn't a test any more
     assert m["c"] == ["1.0% under fair; an international needs at least fair"]
     assert m["f"] == ["0.5% under fair; a lower league needs at least fair"]
 
@@ -1038,3 +1038,16 @@ def test_rollover_legs_fill_the_day():
     assert bk.add_pick(_bet("again", 1.2, NOW + 8 * H, home="Ham", away="Eggs"), "2026-11-18", NOW + 11 * H) is None  # earlier than the last
     assert bk.chain["day"] == 2 and [p["status"] for p in bk.picks] == ["won", "won"]
     assert C.window_end(NOW, 0) == B.day_end(NOW) and C.window_end(NOW, 3) == NOW + 3 * D and 0 in C.DAYS
+
+
+def test_a_leg_booked_under_old_rules_is_replaced():
+    bk = B.Book()
+    old = bk.add_pick(_bet("brighton", 1.15, NOW + 6 * H, p=0.86), "2026-11-21", NOW - 10 * H)     # booked under 1.15-1.35
+    ok = lambda p: B.ROLL_MIN <= p["odds"] <= B.ROLL_MAX
+    assert bk.replace_open(NOW, ok) is old and old["status"] == "replaced" and bk.open_pick() is None
+    new = bk.add_pick(_bet("new", 1.30, NOW + 3 * H, home="Town", away="Albion"), "2026-11-22", NOW)   # earlier is fine
+    assert new and new["leg"] == 1 and new["stake"] == 5000 and bk.last_pick() is new
+    assert bk.replace_open(NOW, ok) is None                                       # it fits: kept
+    assert bk.record()["rollover"]["picks"] == 0                                  # a replaced leg never counts
+    bk.picks[-1]["odds"] = 1.10
+    assert bk.replace_open(NOW + 4 * H, ok) is None                               # already kicked off: it stands

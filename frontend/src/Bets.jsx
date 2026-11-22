@@ -156,12 +156,12 @@ function Rollover({ r, pub, s }) {
           <p className="az-note">
             {r.today ? (r.today.status === "open" ? "Booked on paper. Once it settles, the next qualifying game later today is booked."
               : `Settled: ${r.today.status === "won" ? "won" : "lost"} ${r.today.score || ""}. Nothing else qualifies later today.`)
-              : "Best candidate right now: booked on the next pass (every 10 minutes, from 06:00 Lagos), then fixed. After it settles, the next qualifying game later today follows."}
+              : "Best candidate right now: booked on the next pass (every 10 minutes), then fixed. After it settles, the next qualifying game later today follows."}
           </p>
         </div>
       ) : (
         <>
-          <p className="az-note">Nothing qualifies right now: odds 1.15–1.35, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
+          <p className="az-note">Nothing qualifies right now: odds {odd(s?.roll?.[0] ?? 1.2)}–{odd(s?.roll?.[1] ?? 1.5)}, kick-off later today, priced no worse than 2% under fair, with fresh odds{pub ? "" : " from your laptop"}.{(r.misses || []).length ? " Closest:" : ""}</p>
           {(r.misses || []).length > 0 && (
             <ul className="bt-why">
               {r.misses.map((m) => (
