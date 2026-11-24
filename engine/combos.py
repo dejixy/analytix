@@ -12,8 +12,8 @@ least that likely: fewer, longer-priced games than safest-first when the minimum
 Each bet's edge counts a point lower there (two in lower leagues and internationals, where Pinnacle's price is less
 sure): the edges that look best are the ones most likely overstated. The chance and return shown are the measured ones.
 
-Markets: wins and double chance, draw no bet (a draw refunds it, so its "chance" is of not losing), total goals, each
-team's goals, both teams to score, a result or over x goals, and total corners; `kinds` picks which may go on a slip.
+Markets: wins and double chance, draw no bet (a draw refunds it, so its "chance" is of not losing), over 1.5 and over
+2.5 goals, both teams to score, a result or over x goals, and total corners; `kinds` picks which may go on a slip.
 Safest first mixes every picked kind. Goals markets other than over/under 2.5 come from the goals model and count two
 points lower; corners come from the corners model alone (no sharp price) and count four points lower.
 
@@ -216,7 +216,7 @@ def build(solvers: dict[str, Builder], target: float, past: dict | None = None, 
         solvers = {k: v for k, v in solvers.items() if k == book}
     least = snap(least)
     s = best_of(solvers, target, least, cap)
-    replayed = kinds is None or set(kinds) <= {"win", "goals"}     # the replay only has wins and over/under 2.5
+    replayed = kinds is None or set(kinds) <= {"win", "o25"}       # the replay only has wins and over/under 2.5
     ladder, done_past = [], ((past or {}).get(mode(least)) or {}) if replayed else {}
     for t in LADDER:
         x = best_of(solvers, t, least, cap)

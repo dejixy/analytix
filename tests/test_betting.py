@@ -772,6 +772,8 @@ def test_the_goals_and_corners_models():
     assert [B.kind(k) for k in ("1", "DNB2", "O35", "HO15", "GG", "1|O15", "CO95", "ZZ")] == \
         ["win", "dnb", "goals", "team", "btts", "mix", "corners", None]
     assert [B.kind(k) for k in ("1X", "12", "X2")] == ["dc", "dc", "dc"]                  # double chance has its own button
+    assert [B.kind(k) for k in ("O15", "O25", "U25", "HO05")] == ["o15", "o25", "goals", "team"]
+    assert {"o15", "o25"} <= set(B.KINDS) and not {"goals", "team"} & set(B.KINDS)         # over 1.5 and 2.5 only on slips
     rnd = random.Random(4)
     hist = []
     for k in range(900):
@@ -782,6 +784,20 @@ def test_the_goals_and_corners_models():
     assert model.find("Man City") == "Manchester City" and model.find("Real Madrid") is None
     mh, ma = model.expect("Manchester City", "Burnley", "E0")
     assert mh > ma and abs(sum(K.total(mh, ma, 8.0)) - 1) < 1e-9 and K.wins("CO95", 6, 4) and not K.wins("CU95", 6, 4)
+
+
+def test_over_1_5_and_over_2_5_have_a_button_each():
+    from engine import combos as C
+    t = NOW
+    sharp = [{**_sharp("Arsenal", "Fulham", t + 5 * H, 1.55, 4.2, 6.0, read=t), "ou_odds": {"O25": 1.45, "U25": 2.85}},
+             _sharp("Chelsea", "Wolves", t + 6 * H, 1.50, 4.4, 6.5, read=t)]           # no over/under price: no over 2.5
+    odds = {"1": 1.5, "O15": 1.25, "O25": 1.45, "U35": 1.3, "HO05": 1.1}
+    books = {"sportybet": {"t_ms": t, "rows": [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"], "odds": dict(odds)} for s in sharp]}}
+    board = B.build(books, sharp, [], {}, t)
+    got = lambda kinds: sorted((x["home"], x["market"]) for x in C.solvers(board, books, t, 1, kinds)["sportybet"].bets)
+    assert got(("o15",)) == [("Arsenal", "O15"), ("Chelsea", "O15")]
+    assert got(("o25",)) == [("Arsenal", "O25")]
+    assert not {m for _, m in got(B.KINDS)} & {"U35", "HO05"}                                # other lines and team goals: off slips
 
 
 def test_the_combo_builder_mixes_markets():
@@ -802,13 +818,14 @@ def test_the_combo_builder_mixes_markets():
     assert by[("Manchester City", "O15")]["model"] == "goals" and by[("Manchester City", "CO85")]["model"] == "corners"
     assert {x["market"] for x in B.value_bets(board, edge=-1)} <= set(B.CORE)              # the new markets: combos only
     all_kinds = C.solvers(board, books, t, 1)
-    goals_only = C.solvers(board, books, t, 1, ("goals",))
+    goals_only = C.solvers(board, books, t, 1, ("o15",))
     assert {x["market"] for x in goals_only["sportybet"].bets} == {"O15"}
     mixed = C.best_of(all_kinds, 1.15)
     assert mixed and all(C.chance(x) >= 0.6 for x in mixed) and len({x["match_id"] for x in mixed}) == len(mixed)
     s = C.slip([x for x in all_kinds["sportybet"].bets if x["market"] == "DNB1"])
     assert abs(s["p"] - math.prod(x["p"] + x["p_void"] for x in all_kinds["sportybet"].bets if x["market"] == "DNB1")) < 1e-12
-    assert C.build(all_kinds, 1.15, {"safest": {"1.5": {"n": 9}}}, kinds=("win", "goals", "corners"))["ladder"][0]["past"] is None
+    assert C.build(all_kinds, 1.15, {"safest": {"1.5": {"n": 9}}}, kinds=("win", "o25", "corners"))["ladder"][0]["past"] is None
+    assert C.build(all_kinds, 1.15, {"safest": {"1.5": {"n": 9}}}, kinds=("win", "o25"))["ladder"][0]["past"] == {"n": 9}
     _, rows = F.parse_push({"book": "sportybet", "rows": [{"home": "A", "away": "B", "t_ms": t, "odds": {"O15": 1.2, "CO95": 1.8, "nonsense": 2}}]})
     assert rows[0]["odds"] == {"O15": 1.2, "CO95": 1.8}
 

@@ -238,7 +238,7 @@ def _leagues(leagues: str) -> tuple | None:
 
 
 def _kinds(markets: str) -> tuple | None:
-    """The combo builder's market picker: "win,goals,corners" (empty: every kind)."""
+    """The combo builder's market picker: "win,o25,corners" (empty: every kind)."""
     from engine import betting as B
     got = tuple(k for k in B.KINDS if k in {m.strip().lower() for m in markets.split(",")})
     return got or None
