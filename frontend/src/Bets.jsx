@@ -261,14 +261,14 @@ function Rollover({ r, pub, s, title = "Today's rollover pick", head = null }) {
           <div><span className="muted">Chance of {r.target} straight wins from here</span><b className="num">{r.p_finish == null ? "-" : r.p_finish < 0.0001 ? "under 0.01%" : pct(r.p_finish, 2)}</b></div>
         </div>}
         {used && !pub && <p className="az-note">The six refills are used up: no new chain is started.</p>}
-        {r.history.length > 0 && (
+        {!pub && r.history.length > 0 && (
           <div className="az-scroll az-mid"><table className="az-table bt-t">
-            <thead><tr><th>Day</th>{!pub && <th>Chain · leg</th>}<th>Pick</th><th className="r">Odds</th>{!pub && <th className="r">Stake</th>}<th>Result</th></tr></thead>
+            <thead><tr><th>Day</th><th>Chain · leg</th><th>Pick</th><th className="r">Odds</th><th className="r">Stake</th><th>Result</th></tr></thead>
             <tbody>
               {r.history.map((p) => (
                 <tr key={`${p.key}-${p.placed_ms}`}>
-                  <td className="muted num">{p.day}</td>{!pub && <td className="num">{p.chain} · {p.leg}</td>}<td className="bt-name">{p.legs ? `${p.n} games` : pick(p)}</td>
-                  <td className="r num">{odd(p.odds)}</td>{!pub && <td className="r num">{naira(p.stake)}</td>}
+                  <td className="muted num">{p.day}</td><td className="num">{p.chain} · {p.leg}</td><td className="bt-name">{p.legs ? `${p.n} games` : pick(p)}</td>
+                  <td className="r num">{odd(p.odds)}</td><td className="r num">{naira(p.stake)}</td>
                   <td className={p.status === "won" ? "up" : p.status === "lost" ? "down" : "muted"}>{p.status === "open" ? "open" : `${p.status} ${p.score || ""}`}</td>
                 </tr>
               ))}

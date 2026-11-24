@@ -210,6 +210,10 @@ def test_the_service(tmp_path, monkeypatch):
         svc._changed()
         got = await svc.snapshot(public=True)
         assert svc._board is before and got["public"] is True and svc._rebuild_task is not None
+        assert all(r["history"] == [] for r in (got["rollover"], *got["lanes"]))       # past picks: not on the public link
+        svc.book.picks.append({"day": "2026-11-24", "key": "k", "status": "won", "placed_ms": 1, "t_ms": 1})
+        assert (await svc.snapshot())["rollover"]["history"][0]["key"] == "k"          # but on the laptop
+        svc.book.picks.pop()
         await svc._rebuild_task
         assert svc._board is not before and svc._fresh()
     asyncio.run(stale())

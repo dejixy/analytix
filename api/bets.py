@@ -493,7 +493,11 @@ class BetsService:
         """What the page shows, with the slow parts done off the event loop (public: opened through the public link)."""
         board = await self.board_async(wait=False) if self.books else []
         await asyncio.to_thread(lambda: [self._matched(k) for k in list(self.books)])
-        return {**self.public(board), "public": public}
+        out = {**self.public(board), "public": public}
+        if public:                                        # past picks and their results: on the laptop only
+            for r in (out["rollover"], *out["lanes"]):
+                r["history"] = []
+        return out
 
     async def combo(self, target: float, days: int = 1, least: float | None = None, book: str | None = None,
                     kinds: tuple | None = None, games: int | None = None, leagues: tuple | None = None) -> dict:
