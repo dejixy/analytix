@@ -329,6 +329,21 @@ function Value({ d }) {
 }
 
 const WINDOWS = [["0", "Today"], ["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
+// A picked league's name, kept so the picker can still show it when that league has no games in the window
+const LEAGUE_NAMES = "analytix.bets.leaguenames";
+const savedName = (code) => {
+  try {
+    return JSON.parse(localStorage.getItem(LEAGUE_NAMES) || "{}")[code] || code;
+  } catch {
+    return code;
+  }
+};
+const rememberName = (code, name) => {
+  if (!code || !name) return;
+  try {
+    localStorage.setItem(LEAGUE_NAMES, JSON.stringify({ ...JSON.parse(localStorage.getItem(LEAGUE_NAMES) || "{}"), [code]: name }));
+  } catch { /* private window: not kept */ }
+};
 const GAMES = [["", "auto"], ...[10, 15, 20, 25, 30].map((v) => [String(v), String(v)])];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
 const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["up1", "1Up"], ["up2", "2Up"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
@@ -444,6 +459,11 @@ function Combo({ stamp, pub }) {
   const [least, setLeast] = useState(() => saved().least || "");
   const [book, setBook] = useState(() => saved().book || "");
   const [games, setGames] = useState(() => saved().games || "");
+  const [leagues, setLeagues] = useState(() => (Array.isArray(saved().leagues) ? saved().leagues : saved().league ? [saved().league] : []));
+  const flipLeague = (code, name) => {
+    rememberName(code, name);
+    setLeagues((ls) => (ls.includes(code) ? ls.filter((x) => x !== code) : [...ls, code]));
+  };
   const [kinds, setKinds] = useState(() => {
     const k = saved().kinds;
     if (!Array.isArray(k) || !k.length || OLD_ALL.every((x) => k.includes(x))) return ALL_KINDS;    // everything stays everything
@@ -456,13 +476,13 @@ function Combo({ stamp, pub }) {
   const ok = t >= 1.1 && t <= 1000;
   useEffect(() => {
     try {
-      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds, games }));
+      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds, games, leagues }));
     } catch { /* private window: not kept */ }
     if (!ok) return undefined;
     let live = true;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}&markets=${kinds.join(",")}&games=${games || 0}`);
+        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}&markets=${kinds.join(",")}&games=${games || 0}&leagues=${encodeURIComponent(leagues.join(","))}`);
         const j = await r.json();
         if (live && r.ok) setC(j);
       } catch { /* the header shows when the server is down */ }
@@ -471,11 +491,13 @@ function Combo({ stamp, pub }) {
       live = false;
       clearTimeout(h);
     };
-  }, [t, ok, target, days, least, book, kinds, games, stamp]);
+  }, [t, ok, target, days, least, book, kinds, games, leagues, stamp]);
   const s = c?.slip;
   const g = c?.settings;
   const onlyScorers = kinds.length === 1 && kinds[0] === "scorers";
-  const q = `target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}&games=${games || 0}`;
+  const q = `target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}&games=${games || 0}&leagues=${encodeURIComponent(leagues.join(","))}`;
+  const leagueList = [...(c?.leagues || [])];
+  leagues.forEach((code) => { if (!leagueList.some((l) => l.code === code)) leagueList.push({ code, name: savedName(code), games: 0 }); });
   const past = (r) => r.past && r.past.n ? r.past : null;
   const floor = c && (c.least || g.floors[g.floors.length - 1]);
   return (
@@ -515,6 +537,18 @@ function Combo({ stamp, pub }) {
           {KINDS.map(([k, label]) => <button key={k} className={kinds.includes(k) ? "on" : ""} aria-pressed={kinds.includes(k)} onClick={() => flip(k)}>{label}</button>)}
         </span>
       </div>
+      {leagueList.length > 0 && (
+        <div className="bt-kinds">
+          <span className="muted">Leagues</span>
+          <span className="az-seg" role="group" aria-label="Leagues">
+            <button className={leagues.length ? "" : "on"} aria-pressed={!leagues.length} onClick={() => setLeagues([])}>All</button>
+            {leagueList.map((l) => (
+              <button key={l.code} className={leagues.includes(l.code) ? "on" : ""} aria-pressed={leagues.includes(l.code)}
+                onClick={() => flipLeague(l.code, l.name)}>{l.name}{l.games ? ` (${l.games})` : ""}</button>
+            ))}
+          </span>
+        </div>
+      )}
       {!c ? <p className="az-note">Finding the best slip…</p> : onlyScorers ? null : s ? (
         <>
           <div className="az-kpis">
@@ -548,7 +582,8 @@ function Combo({ stamp, pub }) {
         </>
       ) : (
         <p className="az-note">
-          {!c.bets ? (c.book && c.books?.length && !c.books.includes(c.book)
+          {!c.bets ? (c.picked?.length ? `No games in ${c.picked.map((code) => leagueList.find((l) => l.code === code)?.name || code).join(", ")} in this window with fresh odds for these markets.`
+            : c.book && c.books?.length && !c.books.includes(c.book)
             ? `${BOOK[c.book] || c.book} has none of these markets in this window: ${c.books.map((k) => BOOK[k] || k).join(", ")} ${c.books.length > 1 ? "do" : "does"}.`
             : kinds.length < ALL_KINDS.length && !c.books?.length ? "None of the books has these markets in this window."
             : "No fresh odds from the books for games in this window right now.")

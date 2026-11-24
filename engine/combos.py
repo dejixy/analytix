@@ -231,9 +231,33 @@ def build(solvers: dict[str, Builder], target: float, past: dict | None = None, 
                          "haircut": [HAIRCUT, HAIRCUT_LOW]}}
 
 
-def solvers(board: list[dict], books: dict[str, dict], now_ms: int, days: int, kinds: tuple | None = None) -> dict[str, Builder]:
+def solvers(board: list[dict], books: dict[str, dict], now_ms: int, days: int, kinds: tuple | None = None,
+            leagues_in: tuple | None = None) -> dict[str, Builder]:
     until = window_end(now_ms, days)
+    if leagues_in:                                        # only these leagues (and cups)
+        board = [x for x in board if x.get("league") in leagues_in]
     return {b: Builder(legs(board, b, got.get("t_ms"), now_ms, until, kinds)) for b, got in books.items()}
+
+
+def leagues(board: list[dict], now_ms: int, days: int) -> list[dict]:
+    """The leagues with games in the window, for the page's picker: [{code, name, games}], most games first."""
+    until = window_end(now_ms, days)
+    seen: dict = {}
+    for x in board:
+        if now_ms + 10 * 60_000 <= x["t_ms"] <= until and x.get("league"):
+            d = seen.setdefault(x["league"], {"code": x["league"], "name": x.get("league_name") or x["league"], "games": set()})
+            d["games"].add(x["match_id"])
+    return sorted(({**d, "games": len(d["games"])} for d in seen.values()), key=lambda d: (-d["games"], d["name"]))
+
+
+def _norm(name: str) -> str:
+    return "".join(c for c in (name or "").lower() if c.isalnum())
+
+
+def same_league(a: str, b: str) -> bool:
+    """Two books' names for a league ("LaLiga", "La Liga") as the same one."""
+    x, y = _norm(a), _norm(b)
+    return bool(x and y) and (x == y or x in y or y in x)
 
 
 def window_end(now_ms: int, days: int) -> int:
@@ -277,7 +301,8 @@ def roll_slip(board: list[dict], books: dict[str, dict], now_ms: int, lo: float,
 SCORERS_PER_GAME = 8          # each game's shortest-priced goalscorers considered
 
 
-def scorer_legs(books: dict[str, dict], now_ms: int, until_ms: int, book: str = "sportybet") -> list[dict]:
+def scorer_legs(books: dict[str, dict], now_ms: int, until_ms: int, book: str = "sportybet",
+                league_names: tuple | None = None) -> list[dict]:
     """Each game's shortest-priced anytime goalscorers on a book. There's no chance of our own for these (no sharp
     price, no player data), so a leg's p is only the book's own 1 / odds, used to search, never shown."""
     got = books.get(book)
@@ -285,7 +310,8 @@ def scorer_legs(books: dict[str, dict], now_ms: int, until_ms: int, book: str = 
         return []
     out = []
     for r in got.get("rows") or []:
-        if not now_ms + 10 * 60_000 <= r["t_ms"] <= until_ms:
+        if not now_ms + 10 * 60_000 <= r["t_ms"] <= until_ms or (
+                league_names and not any(same_league(r.get("league", ""), n) for n in league_names)):
             continue
         names, ids = r.get("players") or {}, r.get("ids") or {}
         ps = sorted(((m, o) for m, o in r["odds"].items() if B.kind(m) == "scorers" and o >= LEG_MIN), key=lambda t: t[1])
@@ -314,10 +340,11 @@ def scorer_slip(bets: list[dict], target: float, cap: int | None = None) -> list
     return best
 
 
-def scorers(books: dict[str, dict], now_ms: int, days: int, target: float, cap: int | None = None) -> dict:
+def scorers(books: dict[str, dict], now_ms: int, days: int, target: float, cap: int | None = None,
+            league_names: tuple | None = None) -> dict:
     """The players-to-score slip for a total-odds target: no chance, edge or fair odds (we have none to give)."""
     target = min(max(float(target), T_MIN), T_MAX)
-    legs = scorer_legs(books, now_ms, window_end(now_ms, days))
+    legs = scorer_legs(books, now_ms, window_end(now_ms, days), league_names=league_names)
     out = {"games": len({x["match_id"] for x in legs}), "players": len(legs), "slip": None}
     s = scorer_slip(legs, target, cap)
     if s:
