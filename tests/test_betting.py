@@ -786,6 +786,20 @@ def test_the_goals_and_corners_models():
     assert mh > ma and abs(sum(K.total(mh, ma, 8.0)) - 1) < 1e-9 and K.wins("CO95", 6, 4) and not K.wins("CU95", 6, 4)
 
 
+def test_over_1_5_and_over_2_5_have_a_button_each():
+    from engine import combos as C
+    t = NOW
+    sharp = [{**_sharp("Arsenal", "Fulham", t + 5 * H, 1.55, 4.2, 6.0, read=t), "ou_odds": {"O25": 1.45, "U25": 2.85}},
+             _sharp("Chelsea", "Wolves", t + 6 * H, 1.50, 4.4, 6.5, read=t)]           # no over/under price: no over 2.5
+    odds = {"1": 1.5, "O15": 1.25, "O25": 1.45, "U35": 1.3, "HO05": 1.1}
+    books = {"sportybet": {"t_ms": t, "rows": [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"], "odds": dict(odds)} for s in sharp]}}
+    board = B.build(books, sharp, [], {}, t)
+    got = lambda kinds: sorted((x["home"], x["market"]) for x in C.solvers(board, books, t, 1, kinds)["sportybet"].bets)
+    assert got(("o15",)) == [("Arsenal", "O15"), ("Chelsea", "O15")]
+    assert got(("o25",)) == [("Arsenal", "O25")]
+    assert not {m for _, m in got(B.KINDS)} & {"U35", "HO05"}                                # other lines and team goals: off slips
+
+
 def test_the_combo_builder_mixes_markets():
     from engine import combos as C
     from engine import corners as K
