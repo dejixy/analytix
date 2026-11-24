@@ -346,7 +346,7 @@ const rememberName = (code, name) => {
 };
 const GAMES = [["", "auto"], ...[10, 15, 20, 25, 30].map((v) => [String(v), String(v)])];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
-const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["up1", "1Up"], ["up2", "2Up"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
+const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["up1", "1Up"], ["up2", "2Up"], ["dnb", "Draw no bet"], ["o15", "Over 1.5 goals"], ["o25", "Over 2.5 goals"],
   ["btts", "Both teams to score"], ["mix", "Home/away or over"], ["handicap", "Handicap"], ["corners", "Corners"], ["shots", "Team shots"],
   ["saves", "Goalkeeper saves"], ["subs", "Substitution to score"], ["scorers", "Players to score"]];
 const ALL_KINDS = KINDS.map(([k]) => k);
@@ -468,7 +468,8 @@ function Combo({ stamp, pub }) {
     const k = saved().kinds;
     if (!Array.isArray(k) || !k.length || OLD_ALL.every((x) => k.includes(x))) return ALL_KINDS;    // everything stays everything
     return ALL_KINDS.filter((x) => k.includes(x) || (x === "dc" && k.includes("win"))              // wins used to carry double chance
-      || ((x === "up1" || x === "up2") && k.includes("up")));                                        // 1Up and 2Up shared a button
+      || ((x === "up1" || x === "up2") && k.includes("up"))                                          // 1Up and 2Up shared a button
+      || ((x === "o15" || x === "o25") && k.includes("goals")));                                     // over/under goals became over 1.5 and 2.5
   });
   const flip = (k) => setKinds((ks) => (ks.includes(k) ? (ks.length > 1 ? ks.filter((x) => x !== k) : ks) : ALL_KINDS.filter((x) => x === k || ks.includes(x))));
   const [c, setC] = useState(null);
@@ -630,7 +631,7 @@ function Combo({ stamp, pub }) {
 function Models({ m, kinds }) {
   const rows = [];
   const goals = m?.goals?.markets || {};
-  const want = { goals: ["O15", "O35", "U15", "U35"], team: ["HO05", "HO15", "AO05", "AO15"], btts: ["GG", "NG"], mix: ["1|O15", "2|O15", "1|O25", "2|O25"],
+  const want = { o15: ["O15"], o25: ["O25"], btts: ["GG", "NG"], mix: ["1|O15", "2|O15", "1|O25", "2|O25"],
     handicap: ["AH1M15", "AH2M15", "AH1P15", "AH2P15", "EH011", "EH101"] };
   for (const [k, codes] of Object.entries(want)) if (kinds.includes(k)) codes.forEach((code) => goals[code]?.n && rows.push([code, goals[code]]));
   for (const [k, stats] of [["corners", ["corners"]], ["shots", ["shots", "sot"]], ["saves", ["saves"]]]) {

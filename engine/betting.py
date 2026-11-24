@@ -40,7 +40,9 @@ GOALS = ("O25", "U25")               # over / under 2.5 goals: priced from Pinna
 CORE = ("1", "X", "2", "1X", "12", "X2", "O25", "U25")   # value bets and the rollover use these; the combo builder all
 # The combo builder's other markets (engine/goals.py and engine/corners.py hold their codes): draw no bet exactly from
 # Pinnacle's win prices; the goals model's from its win and over/under prices; corners from the corners model
-KINDS = ("win", "dc", "up1", "up2", "dnb", "goals", "team", "btts", "mix", "handicap", "corners", "shots", "saves", "subs", "scorers")
+# Goals are offered as over 1.5 and over 2.5 only: the other lines and each team's goals are still read and priced, but
+# never go on a slip
+KINDS = ("win", "dc", "up1", "up2", "dnb", "o15", "o25", "btts", "mix", "handicap", "corners", "shots", "saves", "subs", "scorers")
 # A substitute scoring: every goal in a game is the goals model's expected total, and a share of goals is scored by
 # substitutes. No feed says which goals subs scored, so that share is read from SportyBet's own yes/no prices across
 # every game it prices (the median, needing SUB_MIN games), and only each game's expected goals is ours:
@@ -241,6 +243,8 @@ def kind(market: str) -> str | None:
         return "btts"
     if len(market) == 4 and market[:2] in ("HO", "HU", "AO", "AU") and market[2] in "012" and market[3] == "5":
         return "team"
+    if market in ("O15", "O25"):                                   # over 1.5 / over 2.5 goals: a button each
+        return market.lower()
     if len(market) == 3 and market[0] in "OU" and market[1] in "01234" and market[2] == "5":
         return "goals"
     from engine import corners as K
@@ -464,7 +468,7 @@ def model_fair(s: dict, fair1x2: dict, need: set, corners=None) -> dict[str, dic
     out = {}
     for m in need & {"DNB1", "DNB2"}:
         out[m] = {"p": fair1x2["1" if m == "DNB1" else "2"], "p_void": fair1x2["X"], "src": s["src"], "model": None}
-    goal = {m for m in need if kind(m) in ("goals", "team", "btts", "mix", "handicap", "subs", "up1", "up2")} - set(GOALS)
+    goal = {m for m in need if kind(m) in ("o15", "goals", "team", "btts", "mix", "handicap", "subs", "up1", "up2")} - set(GOALS)
     if goal:
         po = goals_fair(s).get("O25")
         key = (s["id"], round(fair1x2["1"], 4), round(fair1x2["2"], 4), round(po, 4) if po else None, G.RHO)
