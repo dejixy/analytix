@@ -329,6 +329,21 @@ function Value({ d }) {
 }
 
 const WINDOWS = [["0", "Today"], ["1", "24 hours"], ["3", "3 days"], ["7", "7 days"]];
+// A picked league's name, kept so the picker can still show it when that league has no games in the window
+const LEAGUE_NAMES = "analytix.bets.leaguenames";
+const savedName = (code) => {
+  try {
+    return JSON.parse(localStorage.getItem(LEAGUE_NAMES) || "{}")[code] || code;
+  } catch {
+    return code;
+  }
+};
+const rememberName = (code, name) => {
+  if (!code || !name) return;
+  try {
+    localStorage.setItem(LEAGUE_NAMES, JSON.stringify({ ...JSON.parse(localStorage.getItem(LEAGUE_NAMES) || "{}"), [code]: name }));
+  } catch { /* private window: not kept */ }
+};
 const GAMES = [["", "auto"], ...[10, 15, 20, 25, 30].map((v) => [String(v), String(v)])];
 const LEAST = [["", "safest first"], ...[60, 65, 70, 75, 80, 85, 90].map((v) => [String(v / 100), `${v}%+`])];
 const KINDS = [["win", "1X2"], ["dc", "Double chance"], ["up1", "1Up"], ["up2", "2Up"], ["dnb", "Draw no bet"], ["goals", "Over/under goals"], ["team", "Team goals"],
@@ -444,6 +459,7 @@ function Combo({ stamp, pub }) {
   const [least, setLeast] = useState(() => saved().least || "");
   const [book, setBook] = useState(() => saved().book || "");
   const [games, setGames] = useState(() => saved().games || "");
+  const [league, setLeague] = useState(() => saved().league || "");
   const [kinds, setKinds] = useState(() => {
     const k = saved().kinds;
     if (!Array.isArray(k) || !k.length || OLD_ALL.every((x) => k.includes(x))) return ALL_KINDS;    // everything stays everything
@@ -456,13 +472,13 @@ function Combo({ stamp, pub }) {
   const ok = t >= 1.1 && t <= 1000;
   useEffect(() => {
     try {
-      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds, games }));
+      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds, games, league }));
     } catch { /* private window: not kept */ }
     if (!ok) return undefined;
     let live = true;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}&markets=${kinds.join(",")}&games=${games || 0}`);
+        const r = await fetch(`/api/bets/combo?target=${t}&days=${days}&least=${least || 0}&book=${book}&markets=${kinds.join(",")}&games=${games || 0}&league=${encodeURIComponent(league)}`);
         const j = await r.json();
         if (live && r.ok) setC(j);
       } catch { /* the header shows when the server is down */ }
@@ -471,11 +487,13 @@ function Combo({ stamp, pub }) {
       live = false;
       clearTimeout(h);
     };
-  }, [t, ok, target, days, least, book, kinds, games, stamp]);
+  }, [t, ok, target, days, least, book, kinds, games, league, stamp]);
   const s = c?.slip;
   const g = c?.settings;
   const onlyScorers = kinds.length === 1 && kinds[0] === "scorers";
-  const q = `target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}&games=${games || 0}`;
+  const q = `target=${t}&days=${days}&least=${least || 0}&markets=${kinds.join(",")}&games=${games || 0}&league=${encodeURIComponent(league)}`;
+  const leagueList = [...(c?.leagues || [])];
+  if (league && !leagueList.some((l) => l.code === league)) leagueList.push({ code: league, name: savedName(league), games: 0 });
   const past = (r) => r.past && r.past.n ? r.past : null;
   const floor = c && (c.least || g.floors[g.floors.length - 1]);
   return (
@@ -492,6 +510,16 @@ function Combo({ stamp, pub }) {
           <span className="muted">Each game</span>
           <select className="az-select" value={least} onChange={(e) => setLeast(e.target.value)}>
             {LEAST.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+          </select>
+        </label>
+        <label className="bt-target">
+          <span className="muted">League</span>
+          <select className="az-select" value={league} onChange={(e) => {
+            setLeague(e.target.value);
+            rememberName(e.target.value, leagueList.find((l) => l.code === e.target.value)?.name);
+          }}>
+            <option value="">all</option>
+            {leagueList.map((l) => <option key={l.code} value={l.code}>{l.name}{l.games ? ` (${l.games})` : ""}</option>)}
           </select>
         </label>
         <label className="bt-target">
@@ -548,7 +576,8 @@ function Combo({ stamp, pub }) {
         </>
       ) : (
         <p className="az-note">
-          {!c.bets ? (c.book && c.books?.length && !c.books.includes(c.book)
+          {!c.bets ? (c.league ? `No games in ${leagueList.find((l) => l.code === c.league)?.name || c.league} in this window with fresh odds for these markets.`
+            : c.book && c.books?.length && !c.books.includes(c.book)
             ? `${BOOK[c.book] || c.book} has none of these markets in this window: ${c.books.map((k) => BOOK[k] || k).join(", ")} ${c.books.length > 1 ? "do" : "does"}.`
             : kinds.length < ALL_KINDS.length && !c.books?.length ? "None of the books has these markets in this window."
             : "No fresh odds from the books for games in this window right now.")

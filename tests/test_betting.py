@@ -1174,3 +1174,23 @@ def test_george_and_muiz_rollovers(tmp_path):
     assert job["status"] == "waiting" and job["games"] == g["n"]
     svc.lanes["george"].save()
     assert B.Book(tmp_path / "bets_george.json").picks[0]["legs"]
+
+
+def test_the_combo_builder_picks_one_league():
+    import asyncio
+    from api.bets import BetsService
+    from engine import combos as C
+    rt = SimpleNamespace(mode="replay")
+    svc = BetsService(rt)
+    sharp = [_sharp("Arsenal", "Fulham", NOW + 3 * H, 1.30, 5.8, 10.0, read=NOW, sid="s1"),
+             _sharp("Barcelona", "Alaves", NOW + 4 * H, 1.25, 6.5, 12.0, read=NOW, sid="s2")]
+    sharp[1]["league"], sharp[1]["league_name"] = "SP1", "La Liga"
+    rows = [{"home": s["home"], "away": s["away"], "t_ms": s["t_ms"], "odds": {"1": 1.32, "1X": 1.06}} for s in sharp]
+    svc.books = {"bet9ja": {"t_ms": int(time.time() * 1000), "rows": rows}}
+    board = B.build(svc.books, sharp, [], {}, NOW)
+    got = C.leagues(board, NOW, 1)
+    assert [(d["code"], d["games"]) for d in got] == [("E0", 1), ("SP1", 1)] or [(d["code"], d["games"]) for d in got] == [("SP1", 1), ("E0", 1)]
+    only = C.solvers(board, svc.books, NOW, 1, None, "SP1")
+    assert {x["home"] for x in only["bet9ja"].bets} == {"Barcelona"}
+    assert {x["home"] for x in C.solvers(board, svc.books, NOW, 1)["bet9ja"].bets} == {"Arsenal", "Barcelona"}
+    assert C.same_league("LaLiga", "La Liga") and C.same_league("Champions League", "UEFA Champions League") and not C.same_league("Serie A", "La Liga")
