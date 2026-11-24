@@ -223,12 +223,18 @@ async def bets(request: Request):
 
 @router.get("/bets/combo")
 async def bets_combo(request: Request, target: float = 10, days: int = 1, least: float = 0, book: str = "", markets: str = "",
-                     games: int = 0, league: str = ""):
+                     games: int = 0, leagues: str = ""):
     """The combo builder: the best accumulator for a total-odds target (1.1 to 1,000) over today or the next 1, 3 or 7
     days, safest games first (least=0) or with every game at least `least` likely (0.60 to 0.90), with at most `games`
     games (10, 15, 20, 25 or 30; 0: 15, or 20 for a target over 200)."""
     return await _rt(request).bets.combo(target, days, least or None, book.strip().lower()[:20] or None, _kinds(markets),
-                                         games or None, league.strip()[:60] or None)
+                                         games or None, _leagues(leagues))
+
+
+def _leagues(leagues: str) -> tuple | None:
+    """The combo builder's league picker: "E0,SP1,soccer_uefa_champs_league" (empty: every league)."""
+    got = tuple(x.strip()[:60] for x in (leagues or "").split(",") if x.strip())[:40]
+    return got or None
 
 
 def _kinds(markets: str) -> tuple | None:
@@ -240,12 +246,12 @@ def _kinds(markets: str) -> tuple | None:
 
 @router.get("/bets/combo/code")
 async def bets_combo_code(request: Request, target: float = 10, days: int = 1, least: float = 0, markets: str = "",
-                          which: str = "slip", games: int = 0, league: str = ""):
+                          which: str = "slip", games: int = 0, leagues: str = ""):
     """A SportyBet booking code for the combo builder's SportyBet slip at these settings, or its players-to-score
     slip (which=scorers), made on the laptop."""
     return await _rt(request).bets.combo_code(target, days, least or None, bool(request.scope.get("analytix_public")),
                                               _kinds(markets), "scorers" if which == "scorers" else "slip", games or None,
-                                              league.strip()[:60] or None)
+                                              _leagues(leagues))
 
 
 @router.get("/bets/lane/code")

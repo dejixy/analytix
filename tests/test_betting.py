@@ -1190,7 +1190,11 @@ def test_the_combo_builder_picks_one_league():
     board = B.build(svc.books, sharp, [], {}, NOW)
     got = C.leagues(board, NOW, 1)
     assert [(d["code"], d["games"]) for d in got] == [("E0", 1), ("SP1", 1)] or [(d["code"], d["games"]) for d in got] == [("SP1", 1), ("E0", 1)]
-    only = C.solvers(board, svc.books, NOW, 1, None, "SP1")
+    only = C.solvers(board, svc.books, NOW, 1, None, ("SP1",))
     assert {x["home"] for x in only["bet9ja"].bets} == {"Barcelona"}
+    both = C.solvers(board, svc.books, NOW, 1, None, ("SP1", "E0"))
+    assert {x["home"] for x in both["bet9ja"].bets} == {"Arsenal", "Barcelona"}
+    from api.routes import _leagues
+    assert _leagues("E0, SP1,,") == ("E0", "SP1") and _leagues("") is None
     assert {x["home"] for x in C.solvers(board, svc.books, NOW, 1)["bet9ja"].bets} == {"Arsenal", "Barcelona"}
     assert C.same_league("LaLiga", "La Liga") and C.same_league("Champions League", "UEFA Champions League") and not C.same_league("Serie A", "La Liga")
