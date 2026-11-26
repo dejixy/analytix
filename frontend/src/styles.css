@@ -1627,6 +1627,7 @@ kbd {
 .term .bt-target input::-webkit-outer-spin-button, .term .bt-target input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .term .bt-target input:focus { outline: none; border-color: var(--t-ink2); }
 .term .bt-target input[aria-invalid="true"] { border-color: var(--t-red); }
+.term .bt-target input.bt-code-in { width: 96px; text-transform: uppercase; letter-spacing: 0.04em; }
 .term .bt-kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px; border-bottom: 1px solid var(--t-line); font-size: 11.5px; }
 .term .bt-kinds .az-seg { flex-wrap: wrap; }
 .term .bt-code { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; padding: 10px 12px; border-bottom: 1px solid var(--t-line); font-size: 12px; }

@@ -244,14 +244,59 @@ def _kinds(markets: str) -> tuple | None:
     return got or None
 
 
+@router.get("/bets/combo/bundle")
+async def bets_combo_bundle(request: Request, target: float = 10, days: int = 1, least: float = 0, book: str = "",
+                            markets: str = "", games: int = 0, leagues: str = "", tickets: int = 5):
+    """The mixer bundle: `tickets` slips (2 to 10) at the target, no game on more than two of them."""
+    return await _rt(request).bets.bundle(target, days, least or None, book.strip().lower()[:20] or None, _kinds(markets),
+                                          games or None, _leagues(leagues), tickets)
+
+
 @router.get("/bets/combo/code")
 async def bets_combo_code(request: Request, target: float = 10, days: int = 1, least: float = 0, markets: str = "",
-                          which: str = "slip", games: int = 0, leagues: str = ""):
-    """A SportyBet booking code for the combo builder's SportyBet slip at these settings, or its players-to-score
-    slip (which=scorers), made on the laptop."""
+                          which: str = "slip", games: int = 0, leagues: str = "", tickets: int = 5, book: str = ""):
+    """A SportyBet booking code for the combo builder's SportyBet slip at these settings, its players-to-score slip
+    (which=scorers) or ticket k of the mixer bundle (which=t<k>, built on `book` as shown), made on the laptop."""
+    which = which if which == "scorers" or (which[:1] == "t" and which[1:].isdigit() and len(which) <= 3) else "slip"
     return await _rt(request).bets.combo_code(target, days, least or None, bool(request.scope.get("analytix_public")),
-                                              _kinds(markets), "scorers" if which == "scorers" else "slip", games or None,
-                                              _leagues(leagues))
+                                              _kinds(markets), which, games or None, _leagues(leagues), tickets,
+                                              book.strip().lower()[:20] or None)
+
+
+@router.get("/bets/vet")
+async def bets_vet(request: Request, code: str = "", markets: str = "", leagues: str = ""):
+    """The Vet: a SportyBet ticket by its booking code, game by game against the board, with swaps from these markets
+    and leagues (loaded from SportyBet on the laptop: ask again until it's ready)."""
+    return await _rt(request).bets.vet(code[:20], _kinds(markets), _leagues(leagues), bool(request.scope.get("analytix_public")))
+
+
+@router.get("/bets/vet/code")
+async def bets_vet_code(request: Request, code: str = "", markets: str = "", leagues: str = ""):
+    """A SportyBet booking code for the vetted ticket, made on the laptop."""
+    return await _rt(request).bets.vet_code(code[:20], _kinds(markets), _leagues(leagues), bool(request.scope.get("analytix_public")))
+
+
+@router.get("/bets/vet-jobs")
+async def bets_vet_jobs(request: Request):
+    """For the laptop collector: booking codes waiting to be loaded from SportyBet for the Vet."""
+    try:
+        return _rt(request).bets.vet_jobs(request.headers.get("x-bets-token", ""), bool(request.scope.get("analytix_public")))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+
+
+@router.post("/bets/vet-jobs")
+async def bets_vet_done(request: Request):
+    """From the laptop collector: a ticket's games as SportyBet sent them (or its error)."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "send JSON")
+    try:
+        return _rt(request).bets.vet_done(payload if isinstance(payload, dict) else {}, request.headers.get("x-bets-token", ""),
+                                          bool(request.scope.get("analytix_public")))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
 
 
 @router.get("/bets/lane/code")

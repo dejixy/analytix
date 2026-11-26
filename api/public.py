@@ -16,9 +16,10 @@ import re
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "testserver"}
 VIA_PROXY = (b"cf-connecting-ip", b"cf-ray", b"cf-visitor", b"cdn-loop", b"x-forwarded-for", b"x-forwarded-host")
-OPEN_PATHS = {"/bets", "/api/bets", "/api/bets/combo", "/api/bets/combo/code", "/api/bets/lane/code"}
+OPEN_PATHS = {"/bets", "/api/bets", "/api/bets/combo", "/api/bets/combo/code", "/api/bets/combo/bundle",
+              "/api/bets/lane/code", "/api/bets/vet", "/api/bets/vet/code"}
 OPEN_PREFIXES = ("/assets/",)
-TOKEN_PATHS = {"/api/bets/odds": ("POST",), "/api/bets/code-jobs": ("GET", "POST")}   # the collector's, with the token
+TOKEN_PATHS = {"/api/bets/odds": ("POST",), "/api/bets/code-jobs": ("GET", "POST"), "/api/bets/vet-jobs": ("GET", "POST")}   # the collector's, with the token
 MAX_POST = 8_000_000                                     # bytes: a push of every book's games is well under 1 MB
 ROBOTS = b"User-agent: *\nDisallow: /\n"
 

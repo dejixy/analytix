@@ -453,6 +453,149 @@ function SportyCode({ q, url, slip, pub }) {
   );
 }
 
+const VIEWS = [["slip", "Slip"], ["mixer", "Mixer bundle"], ["vet", "Vet"]];
+const TICKETS = ["2", "3", "4", "5", "6", "8", "10"];
+const legName = (x) => (x.market ? pick(x) : x.label || "-");
+const legSub = (x) => `${x.home} v ${x.away}${x.league_name || x.league ? ` · ${x.league_name || x.league}` : ""}`;
+
+// The mixer bundle: several tickets at the target, no game on more than two of them
+function Mixer({ q, pub }) {
+  const [b, setB] = useState(null);
+  useEffect(() => {
+    let live = true;
+    setB(null);
+    const h = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/bets/combo/bundle?${q}`);
+        const j = await r.json();
+        if (live && r.ok) setB(j);
+      } catch { /* the header shows when the server is down */ }
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(h);
+    };
+  }, [q]);
+  if (!b) return <p className="az-note">Building the bundle…</p>;
+  if (!b.tickets.length) return <p className="az-note">No ticket lands at these settings in this window.</p>;
+  return (
+    <>
+      <div className="az-kpis">
+        <div><span className="muted">Tickets</span><b className="num">{b.tickets.length}{b.tickets.length < b.asked ? ` of ${b.asked}` : ""}</b></div>
+        <div><span className="muted">Games used</span><b className="num">{b.games}</b></div>
+        <div><span className="muted">Games on two tickets</span><b className="num">{b.shared}</b></div>
+        <div><span className="muted">Most tickets one game can sink</span><b className="num">{b.most}</b></div>
+        <div><span className="muted">Most games two tickets share</span><b className="num">{b.overlap}</b></div>
+        <div><span className="muted">Tickets expected to win</span><b className="num">{b.expected.toFixed(2)}</b></div>
+      </div>
+      {b.tickets.map((s, i) => (
+        <div key={s.legs.map((x) => x.key).join()}>
+          <div className="bt-kinds">
+            <b>Ticket {i + 1}</b>
+            <span className="num">{odd(s.odds)}</span>
+            <span className="muted">{s.n} games · {BOOK[s.book] || s.book}</span>
+            <span className="muted">chance <b className="num">{chance(s.p)}</b></span>
+            <span className="muted">edge <b className={`num ${tone(s.edge)}`}>{sgn(s.edge)}</b></span>
+          </div>
+          {s.book === "sportybet" && s.coded && <SportyCode q={`${q}&which=t${i + 1}`} slip={s.legs.map((x) => x.key).join()} pub={pub} />}
+          <div className="az-scroll"><table className="az-table bt-t">
+            <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Chance</th><th>Also on</th></tr></thead>
+            <tbody>
+              {s.legs.map((x) => (
+                <tr key={x.key}>
+                  <td className="muted num">{kick(x.t_ms)}</td>
+                  <td className="bt-name"><b>{pick(x)}</b>{x.model && <span className="az-flag muted" title={x.sharp_src}>{MODEL[x.model] || `${x.model} model`}</span>}
+                    <span className="muted az-cat">{legSub(x)}</span></td>
+                  <td className="r num">{odd(x.odds)}</td>
+                  <td className="r num">{pct(x.p + (x.p_void || 0), 1)}</td>
+                  <td className="muted">{x.also.length ? x.also.map((k) => `ticket ${k}`).join(", ") : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+// The Vet: a SportyBet ticket by its code, game by game, with what could trip it and what to do about it
+const VERDICT = { keep: ["keep", "up"], swap: ["swap it", "down"], safer: ["safer bet", "down"], drop: ["take it off", "down"],
+  started: ["started", "muted"], off: ["suspended", "down"], unpriced: ["can't price this bet", "muted"], unknown: ["not on the board", "muted"] };
+const optText = (o) => (o.kind === "drop" ? "take it off" : `${legName(o.bet)} ${odd(o.bet.odds)} (${pct(o.bet.p, 1)})${o.kind === "swap" ? `, ${o.bet.home} v ${o.bet.away}` : ""}`);
+
+function Vet({ code, q, pub }) {
+  const [v, setV] = useState(null);
+  const u = `/api/bets/vet?code=${encodeURIComponent(code)}&${q}`;
+  useEffect(() => {
+    if (!code) return undefined;
+    let live = true;
+    let h = null;
+    const load = async () => {
+      try {
+        const r = await fetch(u);
+        const j = r.ok ? await r.json() : { status: "failed", why: "the server didn't answer" };
+        if (!live) return;
+        setV(j);
+        if (j.status === "waiting") h = setTimeout(load, 3000);
+      } catch {
+        if (live) h = setTimeout(load, 3000);
+      }
+    };
+    setV({ status: "waiting" });
+    load();
+    return () => {
+      live = false;
+      clearTimeout(h);
+    };
+  }, [u, code]);
+  if (!code) return null;
+  if (!v || v.status === "waiting") return <p className="az-note">Loading {code} from SportyBet{pub ? "" : " through your laptop"}…</p>;
+  if (v.status !== "ready") return <p className="az-note">{v.why || "No ticket on that code."}</p>;
+  const tk = v.ticket;
+  const vt = v.vetted;
+  return (
+    <>
+      <div className="az-kpis">
+        <div><span className="muted">Ticket</span><b className="num">{odd(tk.odds)}</b></div>
+        <div><span className="muted">Games</span><b className="num">{tk.n}</b></div>
+        <div><span className="muted">Chance of winning{tk.priced < tk.n ? ` (${tk.priced} priced)` : ""}</span><b className="num">{chance(tk.p)}</b></div>
+        <div><span className="muted">Edge at this price</span><b className={`num ${tone(tk.edge)}`}>{sgn(tk.edge)}</b></div>
+        <div><span className="muted">Vetted ticket</span><b className="num">{odd(vt.odds)}</b></div>
+        <div><span className="muted">Its chance{vt.priced < vt.n ? ` (${vt.priced} priced)` : ""}</span><b className={`num ${vt.p != null && tk.p != null ? tone(vt.p - tk.p) : ""}`}>{chance(vt.p)}</b></div>
+        <div><span className="muted">Changes</span><b className="num">{vt.changes}</b></div>
+      </div>
+      {vt.changes > 0 && vt.coded && vt.legs.length > 0 && (
+        <SportyCode url={`/api/bets/vet/code?code=${encodeURIComponent(code)}&${q}`} slip={`${code}:${vt.legs.map((x) => x.sel.event + x.sel.outcome).join()}`} pub={pub} />
+      )}
+      {!v.fresh && <p className="az-note down">SportyBet's odds on the board are over 2 hours old: swaps may be missing.</p>}
+      <div className="az-scroll"><table className="az-table bt-t">
+        <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Chance</th><th className="r">Edge</th><th>Verdict</th><th>Fix</th><th className="r">Ticket after</th></tr></thead>
+        <tbody>
+          {v.legs.map((x) => {
+            const [word, cls] = VERDICT[x.verdict] || [x.verdict, "muted"];
+            const fix = x.fix != null ? x.options[x.fix] : null;
+            const others = x.verdict === "keep" || x.verdict === "started" ? [] : x.options.filter((o, k) => k !== x.fix);
+            return (
+              <tr key={`${x.sel.event}:${x.sel.market}:${x.sel.outcome}`}>
+                <td className="muted num">{kick(x.t_ms)}</td>
+                <td className="bt-name"><b>{legName(x)}</b>{x.model && <span className="az-flag muted" title={x.sharp_src}>{MODEL[x.model] || `${x.model} model`}</span>}
+                  <span className="muted az-cat">{legSub(x)}</span></td>
+                <td className="r num">{odd(x.odds)}</td>
+                <td className="r num">{x.p == null ? "-" : pct(x.p, 1)}</td>
+                <td className={`r num ${tone(x.edge)}`}>{x.edge == null ? "-" : sgn(x.edge)}</td>
+                <td className={cls}>{word}{x.weakest ? <span className="muted"> · least likely</span> : null}{x.why.length ? <span className="muted az-cat">{x.why.join("; ")}</span> : null}</td>
+                <td>{fix ? <b>{optText(fix)}</b> : "-"}{others.map((o) => <span key={o.kind} className="muted az-cat">or {optText(o)} · ticket {odd(o.odds)}, {chance(o.p)}</span>)}</td>
+                <td className="r num">{fix ? <>{odd(fix.odds)} <span className="muted">{chance(fix.p)}</span></> : "-"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table></div>
+    </>
+  );
+}
+
 function Combo({ stamp, pub }) {
   const [target, setTarget] = useState(() => saved().target || "10");
   const [days, setDays] = useState(() => saved().days || "1");
@@ -472,12 +615,17 @@ function Combo({ stamp, pub }) {
       || ((x === "o15" || x === "o25") && k.includes("goals")));                                     // over/under goals became over 1.5 and 2.5
   });
   const flip = (k) => setKinds((ks) => (ks.includes(k) ? (ks.length > 1 ? ks.filter((x) => x !== k) : ks) : ALL_KINDS.filter((x) => x === k || ks.includes(x))));
+  const [view, setView] = useState(() => (VIEWS.some(([k]) => k === saved().view) ? saved().view : "slip"));
+  const [tickets, setTickets] = useState(() => saved().tickets || "5");
+  const [vetIn, setVetIn] = useState("");
+  const [vetCode, setVetCode] = useState("");
+  const vetGo = () => setVetCode(vetIn.trim().toUpperCase());
   const [c, setC] = useState(null);
   const t = Number(target);
   const ok = t >= 1.1 && t <= 1000;
   useEffect(() => {
     try {
-      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds, games, leagues }));
+      localStorage.setItem(SAVED, JSON.stringify({ target, days, least, book, kinds, games, leagues, view, tickets }));
     } catch { /* private window: not kept */ }
     if (!ok) return undefined;
     let live = true;
@@ -492,7 +640,7 @@ function Combo({ stamp, pub }) {
       live = false;
       clearTimeout(h);
     };
-  }, [t, ok, target, days, least, book, kinds, games, leagues, stamp]);
+  }, [t, ok, target, days, least, book, kinds, games, leagues, stamp, view, tickets]);
   const s = c?.slip;
   const g = c?.settings;
   const onlyScorers = kinds.length === 1 && kinds[0] === "scorers";
@@ -503,8 +651,20 @@ function Combo({ stamp, pub }) {
   const floor = c && (c.least || g.floors[g.floors.length - 1]);
   return (
     <section className="panel term-wide">
-      <Top title="Combo builder" facts={!c ? [] : onlyScorers ? [`${c.scorers?.players || 0} goalscorers`, "shortest odds first", "one a game"]
+      <Top title="Combo builder" facts={!c || view === "vet" ? [] : view === "mixer" ? [`${tickets} tickets`, "a game on 2 at most", `up to ${g.games} games each`]
+        : onlyScorers ? [`${c.scorers?.players || 0} goalscorers`, "shortest odds first", "one a game"]
         : [`${c.bets} bets`, c.least ? `every game ${pct(c.least)}+` : "safest games first", `up to ${g.games} games`, "one book a slip"]}>
+        <Seg value={view} set={setView} opts={VIEWS} />
+        {view === "vet" ? (
+          <>
+            <label className="bt-target">
+              <span className="muted">SportyBet code</span>
+              <input className="bt-code-in" type="text" value={vetIn} maxLength={12} spellCheck={false} autoCapitalize="characters"
+                onChange={(e) => setVetIn(e.target.value.replace(/[^a-z0-9]/gi, ""))} onKeyDown={(e) => e.key === "Enter" && vetGo()} />
+            </label>
+            <button className="az-go" onClick={vetGo} disabled={vetIn.trim().length < 4}>Vet</button>
+          </>
+        ) : <>
         <label className="bt-target">
           <span className="muted">Total odds</span>
           <input type="number" inputMode="decimal" min="1.1" max="1000" step="any" value={target} aria-invalid={!ok}
@@ -530,7 +690,16 @@ function Combo({ stamp, pub }) {
             {[...new Set([...(c?.books || []), ...(book ? [book] : [])])].map((k) => <option key={k} value={k}>{BOOK[k] || k}</option>)}
           </select>
         </label>
+        {view === "mixer" && (
+          <label className="bt-target">
+            <span className="muted">Tickets</span>
+            <select className="az-select" value={tickets} onChange={(e) => setTickets(e.target.value)}>
+              {TICKETS.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </label>
+        )}
         <Seg value={days} set={setDays} opts={WINDOWS} />
+        </>}
       </Top>
       <div className="bt-kinds">
         <span className="muted">Markets</span>
@@ -550,6 +719,9 @@ function Combo({ stamp, pub }) {
           </span>
         </div>
       )}
+      {view === "mixer" && <Mixer q={`${q}&book=${book}&tickets=${tickets}`} pub={pub} />}
+      {view === "vet" && <Vet code={vetCode} q={`markets=${kinds.join(",")}&leagues=${encodeURIComponent(leagues.join(","))}`} pub={pub} />}
+      {view === "slip" && <>
       {!c ? <p className="az-note">Finding the best slip…</p> : onlyScorers ? null : s ? (
         <>
           <div className="az-kpis">
@@ -622,6 +794,7 @@ function Combo({ stamp, pub }) {
       )}
       {c?.scorers && <Scorers sc={c.scorers} q={q} target={t} pub={pub} />}
       {c && <Models m={c.models} kinds={kinds} />}
+      </>}
     </section>
   );
 }

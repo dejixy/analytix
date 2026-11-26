@@ -30,7 +30,8 @@ sportybet_sample.json.
 SportyBet booking codes: SportyBet only answers Nigerian addresses, so the combo builder's codes are made here. With
 --loop, between reads it looks every 15 seconds for slips the page asked a code for, books each on SportyBet (no account
 or stake: the same "book bet" its website has) and sends the code back. --try-code makes one code for a single bet and
-prints SportyBet's answer, to check it works.
+prints SportyBet's answer, to check it works. The same loop loads the tickets the combo builder's Vet is given (a
+booking code in, its games and SportyBet's odds back); --try-vet CODE loads one and prints what came back.
 
 The combo builder's other markets (draw no bet, over/under 0.5 to 4.5, each team's goals, both teams to score, a
 result or over x, total corners) are read from SportyBet (markets 11, 18, 19, 20, 29 and 166) and from whatever of them
@@ -448,6 +449,43 @@ def sporty_code(session, selections: list[dict]) -> dict:
     return {"code": d["shareCode"], "url": d.get("shareURL"), "deadline_ms": d.get("deadline"), "missing": missing}
 
 
+def sporty_ticket(data: dict) -> list[dict]:
+    """A loaded booking code's games: [{event, market, specifier, outcome, odds, active, home, away, t_ms, league,
+    market_desc, desc, status}] from SportyBet's answer (data.outcomes: each game with the market and outcome booked)."""
+    legs = []
+    for ev in data.get("outcomes") or []:
+        if not isinstance(ev, dict):
+            continue
+        cat = ((ev.get("sport") or {}).get("category") or {})
+        league = " ".join(x for x in (cat.get("name"), (cat.get("tournament") or {}).get("name")) if x)
+        for m in ev.get("markets") or []:
+            for o in (m or {}).get("outcomes") or []:
+                legs.append({"event": ev.get("eventId"), "market": str(m.get("id") or ""), "specifier": str(m.get("specifier") or ""),
+                             "outcome": str(o.get("id") or ""), "odds": o.get("odds"), "active": o.get("isActive", 1),
+                             "home": ev.get("homeTeamName"), "away": ev.get("awayTeamName"), "t_ms": ev.get("estimateStartTime"),
+                             "league": league, "market_desc": m.get("desc") or m.get("name"), "desc": o.get("desc"),
+                             "status": ev.get("matchStatus")})
+    booked = {(str(x.get("eventId")), str(x.get("marketId")), str(x.get("outcomeId")))
+              for x in ((data.get("ticket") or {}).get("selections") or []) if isinstance(x, dict)}
+    return [x for x in legs if (str(x["event"]), x["market"], x["outcome"]) in booked] if booked else legs
+
+
+def sporty_load(session, code: str) -> dict:
+    """A booking code's ticket from SportyBet: {legs, deadline_ms} or {error}."""
+    try:
+        r = session.get(f"{SPORTY_SHARE}/{code}", timeout=30)
+        body = r.json() if r.content else {}
+    except Exception as exc:                                      # noqa: BLE001 - reported back to the page
+        return {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+    d = body.get("data") if isinstance(body, dict) else None
+    if r.status_code != 200 or not isinstance(d, dict) or not d.get("outcomes"):
+        msg = (body.get("message") or body.get("msg")) if isinstance(body, dict) else None
+        return {"error": "code not found or expired" if r.status_code == 200 and not msg else f"HTTP {r.status_code}"
+                + (f": {str(msg)[:120]}" if msg else "")}
+    legs = sporty_ticket(d)
+    return {"legs": legs, "deadline_ms": d.get("deadline")} if legs else {"error": "no games on that code"}
+
+
 def server_call(server: str, token: str, path: str, body: dict | None = None):
     req = urllib.request.Request(f"{server.rstrip('/')}{path}", data=json.dumps(body).encode() if body is not None else None,
                                  method="POST" if body is not None else "GET",
@@ -483,6 +521,35 @@ def serve_codes(args, session) -> None:
             server_call(args.server, args.token, "/api/bets/code-jobs", {"id": job["id"], **got})
         except Exception as exc:                                  # noqa: BLE001
             print(f"  couldn't send it back ({type(exc).__name__})")
+
+
+def serve_vets(args, session) -> None:
+    """The booking codes the page's Vet was given: load each ticket from SportyBet and send its games back."""
+    try:
+        jobs = server_call(args.server, args.token, "/api/bets/vet-jobs") or []
+    except Exception:                                             # noqa: BLE001 - an older server, or the tunnel is down
+        return
+    for job in jobs if isinstance(jobs, list) else []:
+        got = sporty_load(session, str(job.get("code") or ""))
+        print(time.strftime("%H:%M:%S"), f"SportyBet ticket {job.get('code')} for the Vet:",
+              f"{len(got['legs'])} games" if got.get("legs") else got.get("error"))
+        try:
+            server_call(args.server, args.token, "/api/bets/vet-jobs", {"id": job["id"], **got})
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"  couldn't send it back ({type(exc).__name__})")
+
+
+def try_vet(code: str) -> None:
+    """One booking code loaded from SportyBet, with what came back printed."""
+    s = sporty_session()
+    r = s.get(f"{SPORTY_SHARE}/{code.strip().upper()}", timeout=30)
+    print(f"{code}: HTTP {r.status_code}")
+    print(r.text[:800])
+    got = sporty_load(s, code.strip().upper())
+    for x in got.get("legs") or []:
+        print(f"  {x['home']} v {x['away']}: {x['market_desc']} {x['desc']} at {x['odds']}")
+    if got.get("error"):
+        print("error:", got["error"])
 
 
 def try_code() -> None:
@@ -638,9 +705,12 @@ def main() -> None:
     ap.add_argument("--bet9ja-groups", default="", help="Bet9ja competition ids (or their addresses), comma-separated")
     ap.add_argument("--find", action="store_true", help="list the international competitions found; send nothing")
     ap.add_argument("--try-code", action="store_true", help="make one SportyBet booking code and print SportyBet's answer")
+    ap.add_argument("--try-vet", default="", metavar="CODE", help="load one SportyBet booking code and print what came back")
     args = ap.parse_args()
     if args.try_code:
         return try_code()
+    if args.try_vet:
+        return try_vet(args.try_vet)
     args.server = args.server.rstrip("/")
     if args.server.endswith("/bets"):                             # the page's address pasted as is
         args.server = args.server[:-len("/bets")]
@@ -667,11 +737,12 @@ def main() -> None:
         session = sporty_session() if "sportybet" in args.books else None
         wake = time.time() + args.every * 60
         if session:
-            print(time.strftime("%H:%M:%S"), "  making SportyBet codes the page asks for, until the next read at",
+            print(time.strftime("%H:%M:%S"), "  making SportyBet codes and loading tickets the page asks for, until the next read at",
                   time.strftime("%H:%M", time.localtime(wake)))
         while time.time() < wake:                                 # between reads: the page's SportyBet code requests
             if session:
                 serve_codes(args, session)
+                serve_vets(args, session)
             time.sleep(min(15, max(0, wake - time.time())))
 
 
