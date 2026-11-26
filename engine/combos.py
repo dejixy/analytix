@@ -60,9 +60,10 @@ def bins_for(top: float) -> int:
 
 
 def haircut(x: dict) -> float:
+    extra = x.get("reuse", 0.0)                                   # a mixer bundle's game already on another ticket
     if x.get("model") in B.COUNT_MODELS or x.get("model") == "subs":   # no sharp price at all (subs: half the book's)
-        return HAIRCUT_CORNERS
-    return HAIRCUT_LOW if B.lower(x) or x.get("model") else HAIRCUT
+        return HAIRCUT_CORNERS + extra
+    return (HAIRCUT_LOW if B.lower(x) or x.get("model") else HAIRCUT) + extra
 
 
 def chance(x: dict) -> float:
@@ -194,6 +195,63 @@ def snap(least: float | None) -> float | None:
 
 def mode(least: float | None) -> str:
     return "safest" if least is None else f"{least:.2f}"
+
+
+BUNDLE_N = (2, 3, 4, 5, 6, 8, 10)          # a mixer bundle's tickets, as chosen on the page
+PER_GAME = 2                                # a game goes on at most this many of a bundle's tickets
+REUSE = 0.03                                # a game already on a ticket counts 3 points lower for the next ones
+SHARE = 3                                   # two tickets share at most a third of the earlier one's games (at least one)
+
+
+def bundle(solvers: dict[str, Builder], target: float, n: int = 5, least: float | None = None, book: str | None = None,
+           cap: int | None = None, per_game: int = PER_GAME) -> dict:
+    """A mixer bundle: n tickets at the target, built one after another the way the slip is, with no game on more than
+    `per_game` of them, so one game going wrong sinks at most that many, and no two tickets sharing more than a third
+    of the earlier one's games (its likeliest ones are the ones offered again), so no two are nearly the same ticket.
+    A game already on a ticket counts REUSE lower for the next, so it is shared only when clearly better than a fresh
+    one; no ticket repeats another."""
+    target = min(max(float(target), T_MIN), T_MAX)
+    n = n if n in BUNDLE_N else 5
+    if book:
+        solvers = {k: v for k, v in solvers.items() if k == book}
+    least = snap(least)
+    top = min(T_MAX, target)
+    used: dict = {}
+    tickets: list[list[dict]] = []
+    seen: set = set()
+    for _ in range(n):
+        again: set = set()                                           # the games each earlier ticket may share with this one
+        for s in tickets:
+            free = sorted((x for x in s if used[x["match_id"]] < per_game), key=chance, reverse=True)
+            again |= {x["match_id"] for x in free[:max(1, len(s) // SHARE)]}
+        books = {b: Builder([x if not used.get(x["match_id"]) else {**x, "reuse": REUSE}
+                             for x in sv.bets if not used.get(x["match_id"]) or x["match_id"] in again], top)
+                 for b, sv in solvers.items()}
+        s = best_of(books, target, least, cap)
+        if s and frozenset(x["key"] for x in s) in seen:           # the same ticket again: built without its least likely game
+            worst = min(s, key=chance)["match_id"]
+            books = {b: Builder([x for x in sv.bets if x["match_id"] != worst], top) for b, sv in books.items()}
+            s = best_of(books, target, least, cap)
+        if not s:
+            break
+        seen.add(frozenset(x["key"] for x in s))
+        for x in s:
+            used[x["match_id"]] = used.get(x["match_id"], 0) + 1
+        tickets.append([{k: v for k, v in x.items() if k != "reuse"} for x in s])
+    on: dict = {}
+    for i, s in enumerate(tickets):
+        for x in s:
+            on.setdefault(x["match_id"], []).append(i + 1)
+    out = []
+    for i, s in enumerate(tickets):
+        t = slip(s)
+        t["legs"] = [{**x, "also": [j for j in on[x["match_id"]] if j != i + 1]} for x in t["legs"]]
+        out.append(t)
+    pairs = [len({x["match_id"] for x in a} & {x["match_id"] for x in b}) for i, a in enumerate(tickets) for b in tickets[i + 1:]]
+    return {"tickets": out, "asked": n, "per_game": per_game, "games": len(used), "shared": sum(1 for v in used.values() if v > 1),
+            "overlap": max(pairs, default=0),
+            "most": max(used.values(), default=0), "expected": sum(t["p"] for t in out), "target": target, "least": least,
+            "games_cap": games_cap(target, cap)}
 
 
 def best_of(books: dict[str, Builder], target: float, least: float | None = None, cap: int | None = None) -> list[dict] | None:

@@ -1219,3 +1219,127 @@ def test_the_combo_builder_picks_one_league():
     assert _leagues("E0, SP1,,") == ("E0", "SP1") and _leagues("") is None
     assert {x["home"] for x in C.solvers(board, svc.books, NOW, 1)["bet9ja"].bets} == {"Arsenal", "Barcelona"}
     assert C.same_league("LaLiga", "La Liga") and C.same_league("Champions League", "UEFA Champions League") and not C.same_league("Serie A", "La Liga")
+
+
+def _sporty_games(games, t):
+    """Sharp games and a SportyBet book for them: games = [(home, away, hours, (oh, od, oa), {market: price})]."""
+    sharp, rows = [], []
+    for i, (h, a, hrs, (oh, od, oa), prices) in enumerate(games):
+        sharp.append(_sharp(h, a, t + hrs * H, oh, od, oa, read=t, sid=f"s{i}"))
+        rows.append({"home": h, "away": a, "t_ms": t + hrs * H, "odds": dict(prices),
+                     "ids": {m: {"event": f"sr:match:{i}", "market": "1", "specifier": "", "outcome": m} for m in prices}})
+    return sharp, {"sportybet": {"t_ms": t, "rows": rows}}
+
+
+def test_the_vet_flags_games_and_fixes_the_ticket():
+    from engine import combos as C
+    from engine import vet as V
+    t = int(time.time() * 1000)
+    sharp, books = _sporty_games([("Arsenal", "Chelsea", 5, (1.70, 3.8, 5.0), {"1": 1.73, "O15": 1.25}),   # 56%, under fair
+                                  ("Everton", "Fulham", 6, (1.50, 4.2, 6.5), {"1": 1.73}),        # 63% at the same price
+                                  ("Burnley", "Wolves", 7, (1.22, 6.5, 12), {"1": 1.15}),         # 78%, 12% under fair
+                                  ("Leeds", "Brighton", 8, (1.30, 5.2, 9.5), {"1": 1.39, "DNB1": 1.20}),   # 72%, about fair
+                                  ("Hull", "Watford", 8, (1.30, 5.2, 9.5), {"1": 1.39})], t)
+    board = B.build(books, sharp, [], {}, t)
+    pool = C.legs(board, "sportybet", t, t, t + 7 * B.DAY)
+    leg = lambda i, odds, **k: {"event": f"sr:match:{i}", "market": "1", "specifier": "", "outcome": "1", "odds": odds,
+                                "active": 1, "t_ms": t + 5 * H, "status": "Not start", **k}
+    ticket = [leg(0, 1.73), leg(2, 1.15), leg(3, 1.39), leg(4, 1.39), leg(999, 1.5, home="Somewhere", away="Else", market_desc="1X2", desc="Home"),
+              leg(998, 2.0, t_ms=t - H, status="H1")]
+    got = V.vet(ticket, board, pool, t)
+    by = {x["sel"]["event"]: x for x in got["legs"]}
+    assert by["sr:match:0"]["verdict"] == "swap" and by["sr:match:0"]["options"][by["sr:match:0"]["fix"]]["bet"]["home"] == "Everton"
+    assert by["sr:match:0"].get("weakest") and by["sr:match:2"]["verdict"] == "drop" and by["sr:match:2"]["why"]
+    assert by["sr:match:4"]["verdict"] == "keep" and by["sr:match:999"]["verdict"] == "unknown" and by["sr:match:998"]["verdict"] == "started"
+    safer = by["sr:match:3"]["options"][by["sr:match:3"]["fix"]]                     # Leeds: draw no bet, likelier at 86% of the price
+    assert by["sr:match:3"]["verdict"] == "safer" and safer["bet"]["market"] == "DNB1" and safer["p"] > got["ticket"]["p"]
+    assert not any(o["kind"] == "safer" for o in by["sr:match:0"]["options"])       # over 1.5 at 1.25 is too far from 1.73
+    swap = by["sr:match:0"]["options"][by["sr:match:0"]["fix"]]
+    assert abs(swap["odds"] - got["ticket"]["odds"]) < 1e-9 and swap["p"] > got["ticket"]["p"]          # same odds, likelier
+    v = got["vetted"]
+    assert v["changes"] == 3 and v["n"] == 5 and v["coded"] and abs(v["odds"] - 1.73 * 1.20 * 1.39 * 1.5 * 2.0) < 1e-9
+    assert v["priced"] == 3 and abs(v["p"] - by["sr:match:4"]["p"] * swap["bet"]["p"] * safer["bet"]["p"]) < 1e-9
+    assert {x["sel"]["event"] for x in v["legs"]} == {"sr:match:1", "sr:match:3", "sr:match:4", "sr:match:999", "sr:match:998"}
+
+
+def test_the_vet_loads_a_code_through_the_laptop(monkeypatch):
+    import importlib.util
+    monkeypatch.setenv("ANALYTIX_BETS_TOKEN", "s3cret")
+    t = int(time.time() * 1000)
+    sharp, books = _sporty_games([("Arsenal", "Chelsea", 5, (1.70, 3.8, 5.0), {"1": 1.73}),
+                                  ("Everton", "Fulham", 6, (1.50, 4.2, 6.5), {"1": 1.73})], t)
+    svc = BetsService(SimpleNamespace(mode="live"))
+    svc.books, svc._board = books, (time.time(), svc._gen, B.build(books, sharp, [], {}, t))
+    assert asyncio.run(svc.vet("no!"))["status"] == "none"
+    assert asyncio.run(svc.vet("ab12cd"))["status"] == "waiting" and svc.vet_jobs("s3cret") == [{"id": "AB12CD", "code": "AB12CD"}]
+    with pytest.raises(PermissionError):
+        svc.vet_jobs("wrong")
+    spec = importlib.util.spec_from_file_location("naijaOdds", Path(__file__).parent.parent / "scripts" / "naijaOdds.py")
+    N = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(N)
+    answer = {"bizCode": 10000, "data": {"shareCode": "AB12CD", "deadline": t + 9 * B.DAY,
+              "ticket": {"selections": [{"eventId": "sr:match:0", "marketId": "1", "outcomeId": "1"}]},
+              "outcomes": [{"eventId": "sr:match:0", "estimateStartTime": t + 5 * H, "matchStatus": "Not start", "homeTeamName": "Arsenal",
+                            "awayTeamName": "Chelsea", "sport": {"category": {"name": "England", "tournament": {"name": "Premier League"}}},
+                            "markets": [{"id": "1", "desc": "1X2", "outcomes": [{"id": "1", "odds": "1.73", "isActive": 1, "desc": "Home"}]}]}]}}
+
+    class Session:
+        def get(self, url, timeout=None):
+            self.url = url
+            return SimpleNamespace(status_code=200, content=b"x", json=lambda: answer)
+    s = Session()
+    calls = []
+    monkeypatch.setattr(N, "server_call", lambda server, token, path, body=None: calls.append((path, body)) or
+                        (svc.vet_jobs(token) if body is None else svc.vet_done(body, token)))
+    N.serve_vets(SimpleNamespace(server="http://localhost:8001", token="s3cret"), s)
+    assert s.url == f"{N.SPORTY_SHARE}/AB12CD" and calls[1][0] == "/api/bets/vet-jobs" and calls[1][1]["legs"][0]["league"] == "England Premier League"
+    got = asyncio.run(svc.vet("AB12CD"))
+    assert got["status"] == "ready" and got["legs"][0]["verdict"] == "swap" and got["deadline_ms"] == t + 9 * B.DAY
+    code = asyncio.run(svc.vet_code("AB12CD"))                                   # the vetted ticket's booking code
+    assert code["status"] == "waiting" and svc.code_jobs("s3cret")[0]["selections"][0]["eventId"] == "sr:match:1"
+    svc.vet_done({"id": "ZZ99ZZ", "legs": []}, "s3cret")                          # an unknown job is ignored
+    svc.vets["QQ11QQ"] = {"id": "QQ11QQ", "status": "waiting", "asked": time.time() - 200}
+    assert "collector" in asyncio.run(svc.vet("QQ11QQ"))["why"]
+    svc.vets["QQ11QQ"].update(status="waiting", asked=time.time() - 200)
+    assert "laptop" not in asyncio.run(svc.vet("QQ11QQ", public=True))["why"]     # no laptop talk on the public link
+    from api.public import OPEN_PATHS, TOKEN_PATHS
+    assert {"/api/bets/vet", "/api/bets/vet/code", "/api/bets/combo/bundle"} <= OPEN_PATHS and "/api/bets/vet-jobs" in TOKEN_PATHS
+
+
+def test_the_mixer_bundle_puts_no_game_on_more_than_two_tickets():
+    from engine import combos as C
+    t = int(time.time() * 1000)
+    rnd = random.Random(7)
+    names = ["Arsenal", "Chelsea", "Everton", "Fulham", "Burnley", "Wolves", "Brentford", "Brighton", "Newcastle", "Liverpool",
+             "Tottenham", "Leeds", "Sunderland", "Bournemouth", "Palace", "Villa", "Forest", "Westham", "Leicester", "Ipswich",
+             "Southampton", "Norwich", "Watford", "Hull", "Celtic", "Rangers", "Hibernian", "Hearts"]
+    games = []
+    for i in range(0, len(names), 2):
+        oh = round(rnd.uniform(1.2, 1.6), 2)
+        games.append((names[i], names[i + 1], 3 + i / 2, (oh, 5.0, 8.0), {"1": round(oh * rnd.uniform(0.97, 1.03), 2)}))
+    sharp, books = _sporty_games(games, t)
+    board = B.build(books, sharp, [], {}, t)
+    sv = C.solvers(board, books, t, 1)
+    b = C.bundle(sv, 3, 5)
+    on: dict = {}
+    for k, s in enumerate(b["tickets"]):
+        assert 3 <= s["odds"] <= 3.3 and len({x["match_id"] for x in s["legs"]}) == s["n"]
+        for x in s["legs"]:
+            on.setdefault(x["match_id"], set()).add(k + 1)
+    assert len(b["tickets"]) == 5 and max(len(v) for v in on.values()) <= 2 == b["per_game"] and b["most"] <= 2
+    assert len({frozenset(x["key"] for x in s["legs"]) for s in b["tickets"]}) == 5                     # no ticket twice
+    ids = [{x["match_id"] for x in s["legs"]} for s in b["tickets"]]
+    assert all(len(ids[i] & ids[j]) <= max(1, len(ids[i]) // C.SHARE) for i in range(5) for j in range(i + 1, 5))   # mixed
+    assert b["overlap"] == max(len(ids[i] & ids[j]) for i in range(5) for j in range(i + 1, 5))
+    assert abs(b["expected"] - sum(s["p"] for s in b["tickets"])) < 1e-12 and b["games"] == len(on)
+    assert all(set(x["also"]) == on[x["match_id"]] - {k + 1} for k, s in enumerate(b["tickets"]) for x in s["legs"])
+    assert not any("reuse" in x for s in b["tickets"] for x in s["legs"])
+    lone = C.bundle(sv, 3, 5, per_game=1)                                                               # no sharing at all
+    assert len({x["match_id"] for s in lone["tickets"] for x in s["legs"]}) == sum(s["n"] for s in lone["tickets"])
+    svc = BetsService(SimpleNamespace(mode="live"))
+    svc.books, svc._board = books, (time.time(), svc._gen, board)
+    got = asyncio.run(svc.bundle(3, n=4))
+    assert len(got["tickets"]) == 4 and got["books"] == ["sportybet"] and "scorers" not in got["kinds"]
+    code = asyncio.run(svc.combo_code(3, which="t2", tickets=4))                       # ticket 2's booking code
+    assert code["status"] == "waiting" and code["games"] == got["tickets"][1]["n"]
+    assert asyncio.run(svc.combo_code(3, which="t9", tickets=4))["status"] == "none"   # no ticket 9

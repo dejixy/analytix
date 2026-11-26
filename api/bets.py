@@ -35,6 +35,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,7 @@ from engine import betstudy as S
 from engine import combos as C
 from engine import corners as K
 from engine import goals as G
+from engine import vet as V
 from ingestion import football as F
 
 log = logging.getLogger("analytix.bets")
@@ -73,6 +75,9 @@ FRESH_FROM_H, FRESH_TO_H, FRESH_EVERY_H = 0.5, 3, 2      # read again 30 min to 
 CODES_AN_HOUR = 30
 PUBLIC_WHY = "no code right now: try again in a minute"
 CODE_WAIT_S = 180            # a code not back from the laptop by then: the collector loop isn't running
+VETS_AN_HOUR = 30            # tickets loaded from SportyBet for the Vet, an hour
+VET_KEEP_S = 1800            # a loaded ticket is kept this long (its odds are SportyBet's at loading)
+BOOKING_CODE = re.compile(r"[A-Z0-9]{4,12}")
 
 
 class BetsService:
@@ -110,6 +115,7 @@ class BetsService:
         self._match_n: dict[str, tuple] = {}
         self._tasks: list[asyncio.Task] = []
         self.codes: dict[str, dict] = {}                      # SportyBet booking codes by slip: {signature: job}
+        self.vets: dict[str, dict] = {}                       # SportyBet tickets to vet, by booking code: {code: job}
         self.fetch_history, self.fetch_fixtures, self.fetch_odds_api = F.fetch_history, F.fetch_fixtures, F.fetch_odds_api
         self.fetch_sports = F.fetch_sports
         self._load_sharp()
@@ -499,10 +505,9 @@ class BetsService:
                 r["history"] = []
         return out
 
-    async def combo(self, target: float, days: int = 1, least: float | None = None, book: str | None = None,
-                    kinds: tuple | None = None, games: int | None = None, leagues: tuple | None = None) -> dict:
-        """The best slip for a total-odds target over the next `days` (1, 3 or 7), and the ladder of sizes: safest games
-        first, or with every game at least `least` likely (0.60 to 0.90)."""
+    async def _solvers(self, days: int, kinds: tuple | None, leagues: tuple | None):
+        """The combo builder's search for a window, markets and leagues, made once a board: (solvers, cache, days, kinds,
+        leagues, now)."""
         days = days if days in C.DAYS else 1
         board = await self.board_async(wait=False) if self.books else []
         now = int(time.time() * 1000)
@@ -510,15 +515,33 @@ class BetsService:
             self._combos = (board, {})
         kept = self._combos[1]
         kinds = tuple(k for k in B.KINDS if k in kinds) if kinds else B.KINDS
-        if ("leagues", days) not in kept:
-            kept[("leagues", days)] = C.leagues(board, now, days)
-        known = {d["code"]: d["name"] for d in kept[("leagues", days)]}
-        leagues = tuple(sorted(set(leagues))) if leagues else None   # ones with no games in this window give an empty slip
+        leagues = tuple(sorted(set(leagues))) if leagues else None
         if (days, kinds, leagues) not in kept:
             kept[(days, kinds, leagues)] = await asyncio.to_thread(C.solvers, board, dict(self.books), now, days, kinds, leagues)
+        return kept[(days, kinds, leagues)], kept, days, kinds, leagues, now
+
+    async def bundle(self, target: float, days: int = 1, least: float | None = None, book: str | None = None,
+                     kinds: tuple | None = None, games: int | None = None, leagues: tuple | None = None, n: int = 5) -> dict:
+        """The mixer bundle: n tickets at the target, no game on more than two of them (engine/combos.py's bundle)."""
+        kinds = tuple(k for k in (kinds or B.KINDS) if k != "scorers") or tuple(k for k in B.KINDS if k != "scorers")
+        sv, kept, days, kinds, leagues, now = await self._solvers(days, kinds, leagues)
         games = games if games in C.GAME_CAPS else None
-        out = await asyncio.to_thread(C.build, kept[(days, kinds, leagues)], target, None if leagues else self.combo_past,
-                                      least, book, kinds, games)
+        key = ("bundle", days, kinds, leagues, round(float(target), 4), C.snap(least), book, games, n)
+        if key not in kept:
+            kept[key] = await asyncio.to_thread(C.bundle, sv, target, n, least, book, games)
+        return {**kept[key], "days": days, "kinds": list(kinds), "now_ms": now, "bets": sum(x.n for x in sv.values()),
+                "books": sorted(k for k, x in sv.items() if x.n), "book": book}
+
+    async def combo(self, target: float, days: int = 1, least: float | None = None, book: str | None = None,
+                    kinds: tuple | None = None, games: int | None = None, leagues: tuple | None = None) -> dict:
+        """The best slip for a total-odds target over the next `days` (1, 3 or 7), and the ladder of sizes: safest games
+        first, or with every game at least `least` likely (0.60 to 0.90)."""
+        sv, kept, days, kinds, leagues, now = await self._solvers(days, kinds, leagues)   # leagues with no games: an empty slip
+        if ("leagues", days) not in kept:
+            kept[("leagues", days)] = C.leagues(self._combos[0], now, days)
+        known = {d["code"]: d["name"] for d in kept[("leagues", days)]}
+        games = games if games in C.GAME_CAPS else None
+        out = await asyncio.to_thread(C.build, sv, target, None if leagues else self.combo_past, least, book, kinds, games)
         if "scorers" in kinds:                                # players to score: a slip of their own
             sb = self.books.get("sportybet") or {}
             key = (sb.get("t_ms"), days, round(float(target), 4), games, leagues)
@@ -532,10 +555,16 @@ class BetsService:
     # ── SportyBet booking codes, made on the laptop ───────────────────────
     async def combo_code(self, target: float, days: int = 1, least: float | None = None, public: bool = False,
                          kinds: tuple | None = None, which: str = "slip", games: int | None = None,
-                         leagues: tuple | None = None) -> dict:
-        """The booking code for the SportyBet slip at these settings (or its players-to-score slip): ready, being made,
-        or why there's none (through the public link, without the laptop's side of it)."""
-        out = await self._combo_code(target, days, least, kinds, which, games, leagues)
+                         leagues: tuple | None = None, tickets: int = 5, book: str | None = None) -> dict:
+        """The booking code for the SportyBet slip at these settings (or its players-to-score slip, or ticket k of the
+        mixer bundle: which="t<k>"): ready, being made, or why there's none (through the public link, without the
+        laptop's side of it)."""
+        if which.startswith("t") and which[1:].isdigit():
+            got = await self.bundle(target, days, least, book, kinds, games, leagues, tickets)   # the bundle as shown
+            k = int(which[1:])
+            out = self._code_job(got["tickets"][k - 1] if 1 <= k <= len(got["tickets"]) else None)
+        else:
+            out = await self._combo_code(target, days, least, kinds, which, games, leagues)
         return out if not public else {**out, "why": PUBLIC_WHY if out.get("why") else None}
 
     async def lane_code(self, lane: str, public: bool = False) -> dict:
@@ -592,6 +621,83 @@ class BetsService:
     @staticmethod
     def _job_view(j: dict) -> dict:
         return {k: j.get(k) for k in ("status", "code", "url", "deadline_ms", "missing", "games", "odds", "why")}
+
+    # ── the Vet: a SportyBet ticket, loaded on the laptop, checked against the board ──
+    def _expire_vets(self, now: float) -> None:
+        for k, j in list(self.vets.items()):
+            if j["status"] == "waiting" and now - j["asked"] > CODE_WAIT_S:
+                j.update(status="failed", why="the laptop didn't answer: is the updated collector running with --loop?", laptop=True)
+            if now - j["asked"] > VET_KEEP_S or (j["status"] == "failed" and now - j["asked"] > CODE_WAIT_S + 60):
+                del self.vets[k]
+
+    async def vet(self, code: str, kinds: tuple | None = None, leagues: tuple | None = None, public: bool = False) -> dict:
+        """A SportyBet ticket by its booking code, game by game against the board (engine/vet.py): being loaded, or
+        ready; swaps come from these markets and leagues."""
+        code = (code or "").strip().upper()
+        if not BOOKING_CODE.fullmatch(code):
+            return {"status": "none", "why": "That isn't a SportyBet booking code (4 to 12 letters and digits)."}
+        now = time.time()
+        self._expire_vets(now)
+        j = self.vets.get(code)
+        if j is None:
+            if sum(1 for x in self.vets.values() if now - x["asked"] < 3600) >= VETS_AN_HOUR:
+                return {"status": "none", "why": f"{VETS_AN_HOUR} tickets vetted in the last hour: try again later."}
+            j = self.vets[code] = {"id": code, "status": "waiting", "asked": now}
+        if j["status"] != "ready":
+            why = PUBLIC_WHY.replace("code", "answer") if public and j.get("laptop") else j.get("why")
+            return {"status": j["status"], "code": code, "why": why}
+        kinds = tuple(k for k in (kinds or B.KINDS) if k != "scorers") or tuple(k for k in B.KINDS if k != "scorers")
+        sv, kept, _, kinds, leagues, now_ms = await self._solvers(7, kinds, leagues)
+        key = ("vet", code, j["loaded"], kinds, leagues)
+        if key not in kept:
+            pool = sv["sportybet"].bets if "sportybet" in sv else []
+            kept[key] = await asyncio.to_thread(V.vet, j["legs"], self._combos[0], pool, now_ms)
+        sb = self.books.get("sportybet") or {}
+        return {"status": "ready", "code": code, **kept[key], "loaded_ms": int(j["loaded"] * 1000),
+                "deadline_ms": j.get("deadline_ms"), "fresh": bool(sb) and (now_ms - sb["t_ms"]) / B.HOUR <= B.ODDS_FRESH_H}
+
+    async def vet_code(self, code: str, kinds: tuple | None = None, leagues: tuple | None = None, public: bool = False) -> dict:
+        """The booking code for a vetted ticket: its kept games and its fixes."""
+        got = await self.vet(code, kinds, leagues, public)
+        if got.get("status") != "ready":
+            return {"status": "none", "why": "the ticket isn't loaded yet"}
+        v = got["vetted"]
+        s = {"book": "sportybet", "legs": v["legs"], "odds": v["odds"], "last_ms": max(x["t_ms"] for x in v["legs"])} if v["legs"] else None
+        out = self._code_job(s)
+        return out if not public else {**out, "why": PUBLIC_WHY if out.get("why") else None}
+
+    def vet_jobs(self, token: str = "", public: bool = False) -> list[dict]:
+        """For the collector: the booking codes waiting to be loaded from SportyBet."""
+        self._check(token, public)
+        self._expire_vets(time.time())
+        return [{"id": j["id"], "code": j["id"]} for j in self.vets.values() if j["status"] == "waiting"]
+
+    def vet_done(self, payload: dict, token: str = "", public: bool = False) -> dict:
+        """From the collector: a ticket's games as SportyBet sent them ({id, legs, deadline_ms}) or {id, error}."""
+        self._check(token, public)
+        j = self.vets.get(str(payload.get("id") or "").upper())
+        if not j:
+            return {"ok": False}
+        legs = [self._vet_leg(x) for x in (payload.get("legs") or [])[:60] if isinstance(x, dict)]
+        if legs and all(x["event"] for x in legs):
+            j.update(status="ready", legs=legs, loaded=time.time(),
+                     deadline_ms=int(payload["deadline_ms"]) if str(payload.get("deadline_ms") or "").isdigit() else None)
+        else:
+            j.update(status="failed", why=f"SportyBet said: {str(payload.get('error') or 'no games on that code')[:160]}")
+        return {"ok": True}
+
+    @staticmethod
+    def _vet_leg(x: dict) -> dict:
+        def num(v, f=float, d=0):
+            try:
+                return f(v)
+            except (TypeError, ValueError):
+                return d
+        return {"event": str(x.get("event") or "")[:40], "market": str(x.get("market") or "")[:12],
+                "specifier": str(x.get("specifier") or "")[:80], "outcome": str(x.get("outcome") or "")[:80],
+                "odds": num(x.get("odds")), "active": num(x.get("active"), int, 1), "t_ms": num(x.get("t_ms"), int),
+                **{k: str(x.get(k) or "")[:n] for k, n in (("home", 60), ("away", 60), ("league", 80), ("market_desc", 60),
+                                                            ("desc", 80), ("status", 20))}}
 
     def code_jobs(self, token: str = "", public: bool = False) -> list[dict]:
         """For the collector: the slips waiting for a code."""
