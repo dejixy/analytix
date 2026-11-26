@@ -561,13 +561,10 @@ function Vet({ code, q, pub }) {
         <div><span className="muted">Games</span><b className="num">{tk.n}</b></div>
         <div><span className="muted">Chance of winning{tk.priced < tk.n ? ` (${tk.priced} priced)` : ""}</span><b className="num">{chance(tk.p)}</b></div>
         <div><span className="muted">Edge at this price</span><b className={`num ${tone(tk.edge)}`}>{sgn(tk.edge)}</b></div>
-        <div><span className="muted">Vetted ticket</span><b className="num">{odd(vt.odds)}</b></div>
+        <div><span className="muted">New ticket</span><b className="num">{odd(vt.odds)}</b></div>
         <div><span className="muted">Its chance{vt.priced < vt.n ? ` (${vt.priced} priced)` : ""}</span><b className={`num ${vt.p != null && tk.p != null ? tone(vt.p - tk.p) : ""}`}>{chance(vt.p)}</b></div>
         <div><span className="muted">Changes</span><b className="num">{vt.changes}</b></div>
       </div>
-      {vt.changes > 0 && vt.coded && vt.legs.length > 0 && (
-        <SportyCode url={`/api/bets/vet/code?code=${encodeURIComponent(code)}&${q}`} slip={`${code}:${vt.legs.map((x) => x.sel.event + x.sel.outcome).join()}`} pub={pub} />
-      )}
       {!v.fresh && <p className="az-note down">SportyBet's odds on the board are over 2 hours old: swaps may be missing.</p>}
       <div className="az-scroll"><table className="az-table bt-t">
         <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Chance</th><th className="r">Edge</th><th>Verdict</th><th>Fix</th><th className="r">Ticket after</th></tr></thead>
@@ -592,6 +589,57 @@ function Vet({ code, q, pub }) {
           })}
         </tbody>
       </table></div>
+      <NewTicket v={v} code={code} q={q} pub={pub} />
+    </>
+  );
+}
+
+// The new ticket: every fix in, one bet a game, what was left off and why, and its SportyBet code
+const LEFT = { drop: "taken off", started: "already started", clash: "a second bet on one game" };
+const CHANGE = { keep: ["kept", "muted"], swap: ["swapped in", "up"], safer: ["safer bet", "up"] };
+function NewTicket({ v, code, q, pub }) {
+  const vt = v.vetted;
+  const changed = vt.changes > 0 || vt.left.length > 0;
+  return (
+    <>
+      <div className="bt-kinds">
+        <b>New ticket</b>
+        <span className="num">{odd(vt.odds)}</span>
+        <span className="muted">{vt.n} games</span>
+        <span className="muted">chance <b className="num">{chance(vt.p)}</b></span>
+        {!changed && <span className="muted">nothing to change: your ticket stands</span>}
+      </div>
+      {changed && vt.legs.length > 0 && (vt.coded ? (
+        <SportyCode url={`/api/bets/vet/code?code=${encodeURIComponent(code)}&${q}`} slip={`${code}:${vt.legs.map((x) => x.sel.event + x.sel.outcome).join()}`} pub={pub} />
+      ) : !pub && <div className="bt-code"><span className="muted">A SportyBet code needs the updated collector on your laptop.</span></div>)}
+      {changed && (
+        <div className="az-scroll"><table className="az-table bt-t">
+          <thead><tr><th>Kick-off</th><th>Bet</th><th className="r">Odds</th><th className="r">Chance</th><th>On the new ticket</th></tr></thead>
+          <tbody>
+            {vt.legs.map((x) => {
+              const [word, cls] = CHANGE[x.change] || [x.change, "muted"];
+              return (
+                <tr key={`${x.sel.event}:${x.sel.outcome}`}>
+                  <td className="muted num">{kick(x.t_ms)}</td>
+                  <td className="bt-name"><b>{legName(x)}</b><span className="muted az-cat">{legSub(x)}</span></td>
+                  <td className="r num">{odd(x.odds)}</td>
+                  <td className="r num">{x.p == null ? "-" : pct(x.p, 1)}</td>
+                  <td className={cls}>{word}{x.was ? <span className="muted az-cat">for {legName(x.was)}, {x.was.home} v {x.was.away}</span> : null}</td>
+                </tr>
+              );
+            })}
+            {vt.left.map((x) => (
+              <tr key={`left:${x.sel.event}:${x.sel.outcome}`} className="muted">
+                <td className="num">{kick(x.t_ms)}</td>
+                <td className="bt-name"><s>{legName(x)}</s><span className="az-cat">{legSub(x)}</span></td>
+                <td className="r num">{odd(x.odds)}</td>
+                <td className="r num">-</td>
+                <td className="down">{LEFT[x.change] || x.change}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      )}
     </>
   );
 }
