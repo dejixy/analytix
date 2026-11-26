@@ -1257,9 +1257,37 @@ def test_the_vet_flags_games_and_fixes_the_ticket():
     swap = by["sr:match:0"]["options"][by["sr:match:0"]["fix"]]
     assert abs(swap["odds"] - got["ticket"]["odds"]) < 1e-9 and swap["p"] > got["ticket"]["p"]          # same odds, likelier
     v = got["vetted"]
-    assert v["changes"] == 3 and v["n"] == 5 and v["coded"] and abs(v["odds"] - 1.73 * 1.20 * 1.39 * 1.5 * 2.0) < 1e-9
+    assert v["changes"] == 3 and v["n"] == 4 and v["coded"] and abs(v["odds"] - 1.73 * 1.20 * 1.39 * 1.5) < 1e-9
     assert v["priced"] == 3 and abs(v["p"] - by["sr:match:4"]["p"] * swap["bet"]["p"] * safer["bet"]["p"]) < 1e-9
-    assert {x["sel"]["event"] for x in v["legs"]} == {"sr:match:1", "sr:match:3", "sr:match:4", "sr:match:999", "sr:match:998"}
+    assert {x["sel"]["event"] for x in v["legs"]} == {"sr:match:1", "sr:match:3", "sr:match:4", "sr:match:999"}   # every fix in
+    assert {(x["sel"]["event"], x["change"]) for x in v["left"]} == {("sr:match:2", "drop"), ("sr:match:998", "started")}
+    assert {x["change"] for x in v["legs"]} == {"swap", "safer", "keep"} and next(x for x in v["legs"] if x["change"] == "swap")["was"]["home"] == "Arsenal"
+    taken = {x["sel"]["event"] for x in v["legs"] if x["change"] == "swap"}
+    for x in got["legs"]:                                   # nothing offered clashes with the ticket or another game's fix
+        for k, o in enumerate(x["options"]):
+            if o["kind"] == "swap":
+                assert o["bet"]["sel"]["event"] not in {y["event"] for y in ticket}
+                assert k == x["fix"] or o["bet"]["sel"]["event"] not in taken
+
+
+def test_the_vet_never_offers_a_game_already_on_the_ticket():
+    from engine import combos as C
+    from engine import vet as V
+    t = int(time.time() * 1000)
+    sharp, books = _sporty_games([("Arsenal", "Chelsea", 5, (1.70, 3.8, 5.0), {"1": 1.73}),
+                                  ("Everton", "Fulham", 6, (1.50, 4.2, 6.5), {"1": 1.73}),
+                                  ("Leeds", "Brighton", 7, (1.70, 3.8, 5.0), {"1": 1.73})], t)
+    board = B.build(books, sharp, [], {}, t)
+    pool = C.legs(board, "sportybet", t, t, t + 7 * B.DAY)
+    leg = lambda i: {"event": f"sr:match:{i}", "market": "1", "specifier": "", "outcome": "1", "odds": 1.73, "active": 1,
+                     "t_ms": t + 5 * H, "status": "Not start"}
+    got = V.vet([leg(0), leg(1)], board, pool, t)                   # Everton is on it already: no swap to it
+    assert all(o["kind"] != "swap" or o["bet"]["home"] != "Everton" for x in got["legs"] for o in x["options"])
+    got = V.vet([leg(0), leg(2)], board, pool, t)                   # two weak games, one likelier game: it goes to one
+    fixes = [x["options"][x["fix"]] for x in got["legs"] if x["fix"] is not None and x["options"][x["fix"]]["kind"] == "swap"]
+    assert len(fixes) == 1 and all(o["kind"] != "swap" for x in got["legs"] if x["fix"] is None or x["options"][x["fix"]]["kind"] != "swap"
+                                   for o in x["options"])
+    assert len({x["sel"]["event"] for x in got["vetted"]["legs"]}) == len(got["vetted"]["legs"]) == 2
 
 
 def test_the_vet_loads_a_code_through_the_laptop(monkeypatch):

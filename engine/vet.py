@@ -10,7 +10,10 @@ Each game on the ticket gets the board's chance (Pinnacle's, or a model's) and i
 and the ones that can't be judged: started (kicked off or not "Not start" on SportyBet), off (SportyBet has suspended the
 bet), unpriced (the game is on the board but not this bet) and unknown (the game isn't on the board: no sharp price).
 Every option shows what the ticket becomes (total odds and chance). The fixes are taken least likely game first, each
-replacement game used once, and the result is the vetted ticket, with SportyBet's ids for a booking code.
+replacement game used once and never one already on the ticket (by SportyBet's own event id as well as ours); the
+other options shown are then chosen again around those fixes, so nothing offered clashes with them. The result is the
+new ticket: every fix in, one bet a game, games already started left off (SportyBet can't book them), with SportyBet's
+ids for a booking code.
 
 It can't say which game will go wrong: it finds the games that carry more risk than they pay for, and likelier ones
 at the same price.
@@ -85,6 +88,7 @@ def vet(ticket: list[dict], board: list[dict], pool: list[dict], now_ms: int) ->
         legs.append(leg)
 
     in_ticket = {x["match_id"] for x in legs if x["match_id"] is not None}
+    events = {x["sel"]["event"] for x in legs if x["sel"]["event"]}
     games: dict = {}
     for y in pool:
         games.setdefault(y["match_id"], []).append(y)
@@ -97,6 +101,13 @@ def vet(ticket: list[dict], board: list[dict], pool: list[dict], now_ms: int) ->
         """The ticket with this game's bet replaced by `new` (None: dropped)."""
         rest = [x for x in legs if x is not leg]
         return _ticket(rest + ([new] if new else []))
+
+    def swap_for(leg: dict, c, o, ev_old) -> dict | None:
+        """The likeliest other game at about this price: not on the ticket, not another game's fix."""
+        swaps = [y for g, ys in games.items() if g not in in_ticket and g not in taken for y in ys
+                 if (y.get("sel") or {}).get("event") not in events and y["t_ms"] <= until and y["odds"] >= o * SWAP_ODDS
+                 and (c is None or (C.chance(y) >= c + GAIN and C.ev(y) >= ev_old - SAFER_EV))]
+        return max(swaps, key=lambda y: (C.chance(y), C.ev(y))) if swaps else None
 
     def as_leg(y: dict) -> dict:
         pv = y.get("p_void") or 0.0
@@ -116,11 +127,8 @@ def vet(ticket: list[dict], board: list[dict], pool: list[dict], now_ms: int) ->
             if same:
                 y = max(same, key=lambda y: (C.chance(y), C.ev(y)))
                 opts.append({"kind": "safer", "bet": as_leg(y), **after(leg, as_leg(y))})
-        swaps = [y for g, ys in games.items() if g not in in_ticket and g not in taken for y in ys
-                 if y["t_ms"] <= until and y["odds"] >= o * SWAP_ODDS
-                 and (c is None or (C.chance(y) >= c + GAIN and C.ev(y) >= ev_old - SAFER_EV))]
-        if swaps:
-            y = max(swaps, key=lambda y: (C.chance(y), C.ev(y)))
+        y = swap_for(leg, c, o, ev_old)
+        if y:
             opts.append({"kind": "swap", "bet": as_leg(y), **after(leg, as_leg(y))})
         opts.append({"kind": "drop", "bet": None, **after(leg, None)})
         bad = leg.get("edge") is not None and leg["edge"] < EDGE_BAD
@@ -138,8 +146,19 @@ def vet(ticket: list[dict], board: list[dict], pool: list[dict], now_ms: int) ->
             fix = None                                         # unpriced or unknown: its risk isn't known, so it stays
         if fix is not None and opts[fix]["kind"] == "swap":
             taken.add(opts[fix]["bet"]["match_id"])
-        leg.update(options=opts, fix=fix, why=why)
+        leg.update(options=opts, fix=fix, why=why, ev_old=ev_old)
         leg["verdict"] = opts[fix]["kind"] if fix is not None else {"priced": "keep"}.get(leg["state"], leg["state"])
+    for leg in live:                                   # the other swaps offered, chosen again around every game's fix
+        k = next((k for k, x in enumerate(leg["options"]) if x["kind"] == "swap"), None)
+        if k is None or k == leg["fix"] or leg["options"][k]["bet"]["match_id"] not in taken:
+            continue
+        y = swap_for(leg, leg["p"], leg["odds"], leg["ev_old"])
+        fixed = leg["options"][leg["fix"]] if leg["fix"] is not None else None
+        leg["options"][k] = {"kind": "swap", "bet": as_leg(y), **after(leg, as_leg(y))} if y else None
+        leg["options"] = [x for x in leg["options"] if x]
+        leg["fix"] = next((j for j, x in enumerate(leg["options"]) if x is fixed), None) if fixed else None
+    for leg in live:
+        leg.pop("ev_old", None)
     for leg in legs:
         if leg["state"] == "started":
             leg.update(options=[], fix=None, why=[], verdict="started")
@@ -147,15 +166,28 @@ def vet(ticket: list[dict], board: list[dict], pool: list[dict], now_ms: int) ->
     if priced:
         min(priced, key=lambda x: x["p"])["weakest"] = True
 
-    vetted = []
-    for leg in legs:
-        if leg["fix"] is None:
-            vetted.append(leg)
-        elif leg["options"][leg["fix"]]["bet"]:
-            vetted.append({**leg["options"][leg["fix"]]["bet"], "was": leg["i"]})
+    vetted, left, seen = [], [], set()
+    for leg in sorted(legs, key=lambda x: x["t_ms"]):
+        fix = leg["options"][leg["fix"]] if leg["fix"] is not None else None
+        if leg["state"] == "started":
+            left.append({**leg, "change": "started"})            # SportyBet can't book a game that has kicked off
+            continue
+        if fix and not fix["bet"]:
+            left.append({**leg, "change": "drop"})
+            continue
+        new = {**fix["bet"], "change": fix["kind"], "was": {k: leg.get(k) for k in ("market", "home", "away", "label", "odds")}} if fix \
+            else {**leg, "change": "keep"}
+        ev = (new.get("sel") or {}).get("event")
+        if ev and ev in seen:                                  # one bet a game: SportyBet won't book two on one game
+            left.append({**new, "change": "clash"})
+            continue
+        seen.add(ev)
+        vetted.append(new)
+    slim = ("market", "home", "away", "t_ms", "odds", "p", "sel", "label", "league", "change", "was", "model")
+    vetted.sort(key=lambda x: x["t_ms"])
     v = _ticket(vetted)
     v.update(changes=sum(1 for x in legs if x["fix"] is not None), coded=all((x.get("sel") or {}).get("event") for x in vetted),
-             legs=[{k: x.get(k) for k in ("market", "home", "away", "t_ms", "odds", "p", "sel", "label", "league")} for x in vetted])
+             legs=[{k: x.get(k) for k in slim} for x in vetted], left=[{k: x.get(k) for k in slim} for x in left])
     strip = ("p_win", "chance_raw")
     return {"legs": [{k: v_ for k, v_ in x.items() if k not in strip} | {"options": [
                 {**o, "bet": {k: v_ for k, v_ in o["bet"].items() if k not in strip} if o["bet"] else None} for o in x["options"]]}
